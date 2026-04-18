@@ -65,7 +65,7 @@ include '../../ht_data.inc'              ; last
 ### Include Dependency Graph
 
 The summary graph below reflects the actual include order in /ht.inc:51-208.
-The TUI set collapses 29 `tui_*.inc` files into a single node; the Diffie-Hellman
+The TUI set collapses 32 `tui_*.inc` files into a single node; the Diffie-Hellman
 pool set collapses the per-size `dh_pool*.inc` files into a single node. Arrows
 follow the assembly-time order in which each group first appears inside `ht.inc`.
 
@@ -88,7 +88,7 @@ graph TD
     bigint[bigint.inc]
     dh[dh_pool*.inc, X509.inc]
     tlsssh[tls.inc<br/>ssh.inc]
-    tui[tui_*.inc - 29 files]
+    tui[tui_*.inc - 32 files]
     web[url.inc<br/>httpheaders.inc<br/>webserver.inc<br/>webclient.inc<br/>fcgiclient.inc<br/>cookiejar.inc]
 
     defaults --> ht
@@ -126,7 +126,7 @@ README cross-linked from `## See Also`.
 | Data Structures | `list.inc`, `maps.inc`, `heap.inc`, `buffer.inc`, `json.inc`, `mapped.inc`, `privmapped.inc`, `mappedheap.inc` | `/ds/README.md` |
 | Cryptography | `aes.inc`, `sha1.inc`, `sha2.inc`, `md5.inc`, `hmac.inc`, `hmac_drbg.inc`, `pbkdf2.inc`, `scrypt.inc`, `htcrypt.inc`, `htxts.inc`, `rng.inc`, `bigint.inc`, `X509.inc`, `dh_groups.inc`, `dh_pool*.inc`, `base64_latin1.inc`, `blacklist.inc` | `/crypto/README.md` |
 | Networking | `epoll.inc`, `epoll_child.inc`, `epoll_dns.inc`, `http1.inc`, `httpheaders.inc`, `tls.inc`, `ssh.inc`, `webclient.inc`, `webserver.inc`, `fcgiclient.inc`, `cookiejar.inc`, `url.inc`, `mimelike.inc` | `/net/README.md` |
-| Terminal UI | 29 `tui_*.inc` files | `/tui/README.md` |
+| Terminal UI | 32 `tui_*.inc` files | `/tui/README.md` |
 
 ### Subsystem Boundary Map
 
@@ -142,7 +142,7 @@ graph LR
     DS[Data Structures<br/>heap, list, maps<br/>buffer, json]
     Crypto[Cryptography<br/>aes, sha*, hmac<br/>scrypt, rng, bigint]
     Net[Networking<br/>epoll, tls, ssh<br/>webserver, webclient]
-    TUI[Terminal UI<br/>tui_* - 29 files]
+    TUI[Terminal UI<br/>tui_* - 32 files]
 
     Core --> DS
     DS --> Crypto
@@ -287,7 +287,7 @@ record to the socket.
 104 bytes (Source: /epoll.inc structure definition). `tls$` descends directly
 from `io$` rather than from `epoll$`, because TLS is a layer above epoll rather
 than a variant of it (Source: /tls.inc). `ssh$` descends similarly (Source:
-/ssh.inc). All 29 `tui_*` widgets descend from `tui_object`, which is laid out
+/ssh.inc). Most `tui_*` widgets descend from `tui_object`, which is laid out
 to mimic the `io$` layout so that the same timer and event-dispatch code can
 service widgets and sockets uniformly.
 

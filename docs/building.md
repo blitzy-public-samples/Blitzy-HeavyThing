@@ -40,7 +40,7 @@ flowchart TD
 
 ## Minimum Viable Build
 
-The canonical minimal build target is `/examples/hello_world/hello_world.asm` (Source: /examples/hello_world/hello_world.asm:1-41), a 41-line program that initialises the library, prints a single line, and exits cleanly. Its full body is shown below.
+The canonical minimal build target is `/examples/hello_world/hello_world.asm` (Source: /examples/hello_world/hello_world.asm:1-42), a 42-line program that initialises the library, prints a single line, and exits cleanly. Its full body is shown below.
 
 ```nasm
 ; hello_world.asm -- canonical three-file include contract
@@ -261,5 +261,5 @@ The `ldd` output is the canonical confirmation that a HeavyThing binary honours 
 - `/docs/security.md` — TLS, SSH, and cryptographic knob semantics with version-support matrices
 - `/examples/README.md` — the index of 14 worked examples grouped by library feature
 - `/ht_defaults.inc` — the single source of compile-time configuration
-- `/examples/hello_world/hello_world.asm` — the canonical 41-line minimal build target used above
+- `/examples/hello_world/hello_world.asm` — the canonical 42-line minimal build target used above
 - `/LICENSE` — full GPLv3 license text

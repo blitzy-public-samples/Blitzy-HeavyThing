@@ -209,7 +209,7 @@ MAC algorithms are intentionally omitted.
 | Server host key | both `ssh-rsa` and `ssh-dss` (when `ssh_kexinit_both` is selected; client mode always advertises both) | /ssh.inc:128-133 |
 | Cipher, both directions | `aes256-cbc` (only) | /ssh.inc:156-158 |
 | MAC, both directions | `hmac-sha2-256` (only) | /ssh.inc:160-162 |
-| Compression | `zlib@openssh.com`, `zlib`, and `none` | /ssh.inc:166-182 |
+| Compression | `zlib@openssh.com`, `zlib`, and `none` | /ssh.inc:163-180 |
 
 Compression is controlled by two knobs. When `ssh_do_compression = 1` (the
 default), compression is offered (Source: /ht_defaults.inc:405). When
