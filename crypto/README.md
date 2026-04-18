@@ -102,7 +102,7 @@ graph LR
 | [`../sha2.inc`](../sha2.inc) | SHA-224 / SHA-256 / SHA-384 / SHA-512 hashes, translated from Wei Dai public-domain code (Source: `/sha2.inc:22-30`). |
 | [`../md5.inc`](../md5.inc) | MD5 hash built on Marc Bevand's public-domain core; retained for TLS 1.0 / 1.1 interoperability only (Source: `/md5.inc:22-28`). |
 | [`../hmac.inc`](../hmac.inc) | HMAC construction over MD5 / SHA-1 / SHA-224 / SHA-256 / SHA-384 / SHA-512 per RFC 2104; includes the TLS PRF expansion helper `hmac$phash` (Source: `/hmac.inc:22-30`). |
-| [`../hmac_drbg.inc`](../hmac_drbg.inc) | HMAC-DRBG deterministic random-bit generator (NIST SP 800-90A) that reseeds from `/dev/urandom` at a `1 shl 19` byte interval (Source: `/hmac_drbg.inc:21-45`). |
+| [`../hmac_drbg.inc`](../hmac_drbg.inc) | HMAC-DRBG deterministic random-bit generator (NIST SP 800-90A) that reseeds from `/dev/urandom` after `1 shl 19` calls to `hmac_drbg$generate` (Source: `/hmac_drbg.inc:21-45`). |
 | [`../pbkdf2.inc`](../pbkdf2.inc) | PBKDF2 password-based key derivation (RFC 2898); every `pbkdf2$new_*` variant wraps the matching `hmac$new_*` (Source: `/pbkdf2.inc:22-26`). |
 | [`../scrypt.inc`](../scrypt.inc) | scrypt memory-hard KDF (Colin Percival, RFC 7914); the top-level labels are `scrypt` and `scrypt_iter` rather than `scrypt$*` (Source: `/scrypt.inc:22-60`). |
 | [`../rng.inc`](../rng.inc) | Combined SFMT + Mother-of-all PRNG transcoded from Agner Fog's library; the heavy-init path seeds 64 bytes from `rdtsc` + `gettimeofday` + `/dev/urandom` (Source: `/rng.inc:22-45`). |
