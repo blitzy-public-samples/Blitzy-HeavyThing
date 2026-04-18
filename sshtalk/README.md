@@ -12,14 +12,16 @@ sshtalk is a leaf application. It consumes the HeavyThing library but is not ref
 
 Incoming dependencies (what sshtalk uses):
 
-- `../ht_defaults.inc` and `../ht.inc` are included in that order at the top of the entry file (Source: /sshtalk/sshtalk.asm:22-23); `../ht_data.inc` is the final directive (Source: /sshtalk/sshtalk.asm:326). This follows the three-file include contract; see [`../docs/architecture.md`](../docs/architecture.md) for the authoritative description.
-- `../ssh.inc` provides the SSH2 server protocol (KEX, encryption, MAC, channel multiplexing). sshtalk calls `ssh$new_server` directly (Source: /sshtalk/sshtalk.asm:243-245).
-- `../tui_ssh.inc` renders the TUI tree over the SSH channel and sits at the application end of the io chain (Source: /sshtalk/sshtalk.asm:237-239).
-- `../tui_simpleauth.inc` provides the authentication dialog widget. sshtalk overrides its vtable to delegate authentication and new-user creation to the local userdb module (Source: /sshtalk/sshtalk.asm:69-73).
-- `../tui_splash.inc` decorates the authentication dialog with a startup splash (Source: /sshtalk/sshtalk.asm:234-235).
-- `../tui_object.inc` and the full TUI widget family (`tui_label`, `tui_panel`, `tui_statusbar`, `tui_newsticker`, `tui_vspacer`, `tui_bell`, `tui_textbox`, `tui_alert`, and others) are pulled in transitively via `../ht.inc`.
-- `../epoll.inc` provides the event loop. sshtalk builds its own three-layer io chain and hands control to `epoll$run` (Source: /sshtalk/sshtalk.asm:255-281).
-- `heap.inc`, `stringmap` (from `maps.inc`), `formatter.inc`, `buffer.inc`, `file.inc`, `scrypt.inc`, `hmac.inc`, and string helpers are consumed transitively via the userdb, chatroom, and screen modules.
+| Include | Purpose |
+|---------|---------|
+| `../ht_defaults.inc` and `../ht.inc` (head); `../ht_data.inc` (tail) | Included in that order at the top of the entry file (Source: /sshtalk/sshtalk.asm:22-23); `../ht_data.inc` is the final directive (Source: /sshtalk/sshtalk.asm:326). This follows the three-file include contract; see [`../docs/architecture.md`](../docs/architecture.md) for the authoritative description. |
+| `../ssh.inc` | Provides the SSH2 server protocol (KEX, encryption, MAC, channel multiplexing). sshtalk calls `ssh$new_server` directly (Source: /sshtalk/sshtalk.asm:243-245). |
+| `../tui_ssh.inc` | Renders the TUI tree over the SSH channel and sits at the application end of the io chain (Source: /sshtalk/sshtalk.asm:237-239). |
+| `../tui_simpleauth.inc` | Provides the authentication dialog widget. sshtalk overrides its vtable to delegate authentication and new-user creation to the local userdb module (Source: /sshtalk/sshtalk.asm:69-73). |
+| `../tui_splash.inc` | Decorates the authentication dialog with a startup splash (Source: /sshtalk/sshtalk.asm:234-235). |
+| `../tui_object.inc` and the full TUI widget family (`tui_label`, `tui_panel`, `tui_statusbar`, `tui_newsticker`, `tui_vspacer`, `tui_bell`, `tui_textbox`, `tui_alert`, and others) | Pulled in transitively via `../ht.inc`. |
+| `../epoll.inc` | Provides the event loop. sshtalk builds its own three-layer io chain and hands control to `epoll$run` (Source: /sshtalk/sshtalk.asm:255-281). |
+| `heap.inc`, `stringmap` (from `maps.inc`), `formatter.inc`, `buffer.inc`, `file.inc`, `scrypt.inc`, `hmac.inc`, and string helpers | Consumed transitively via the userdb, chatroom, and screen modules. |
 
 Outgoing dependencies: none.
 
@@ -83,10 +85,12 @@ Scrypt parameters are compile-time from `../ht_defaults.inc`: `N=1024`, `r=1`, `
 
 `_start` builds a three-widget chain that is passed to `tui_ssh`:
 
-- `screen` (the main application screen) is created via `screen$new` (Source: /sshtalk/sshtalk.asm:66).
-- `tui_simpleauth` wraps `screen` and is constructed with the new-user flag enabled. The first qword of the simpleauth object is overwritten with `userdb$vtable`, so authentication and new-user creation are delegated to the userdb module (Source: /sshtalk/sshtalk.asm:69-73, /sshtalk/userdb.inc:56-65).
-- `tui_splash` wraps `tui_simpleauth` to add the startup splash (Source: /sshtalk/sshtalk.asm:234-235).
-- `tui_ssh$new` wraps the splash into the SSH-aware TUI renderer; this is the application-layer head of the io chain (Source: /sshtalk/sshtalk.asm:237-239).
+| Widget | Role |
+|--------|------|
+| `screen` | The main application screen; created via `screen$new` (Source: /sshtalk/sshtalk.asm:66). |
+| `tui_simpleauth` | Wraps `screen` and is constructed with the new-user flag enabled. The first qword of the simpleauth object is overwritten with `userdb$vtable`, so authentication and new-user creation are delegated to the userdb module (Source: /sshtalk/sshtalk.asm:69-73, /sshtalk/userdb.inc:56-65). |
+| `tui_splash` | Wraps `tui_simpleauth` to add the startup splash (Source: /sshtalk/sshtalk.asm:234-235). |
+| `tui_ssh$new` | Wraps the splash into the SSH-aware TUI renderer; this is the application-layer head of the io chain (Source: /sshtalk/sshtalk.asm:237-239). |
 
 The splash itself is decorated with an internal widget tree built in-place before `tui_splash$new` is called:
 

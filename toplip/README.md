@@ -112,13 +112,13 @@ include '../ht_data.inc'
 
 Build the shipped tool with a single `fasm` and `ld` invocation:
 
-```
+```bash
 fasm -m 524288 toplip.asm && ld -o toplip toplip.o
 ```
 
 Representative runtime invocations cover the main modes. Each invocation below uses placeholder filenames:
 
-```
+```bash
 # Encrypt a plaintext file with a single interactive passphrase; ciphertext to stdout.
 ./toplip secret.txt > secret.bin
 

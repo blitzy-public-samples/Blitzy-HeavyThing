@@ -277,7 +277,7 @@ doubly linked, entry points such as `epoll$outbound`, `epoll$established`, and
 epoll object transparently (Source: /epoll.inc:30-43).
 
 **Concrete HTTPS example.** An outbound HTTPS request is composed as three
-links: `webclient` (root) → `tls` (middle) → `epoll` (tail). A byte arriving at
+links: `webclient` (root) -> `tls` (middle) -> `epoll` (tail). A byte arriving at
 the socket triggers `io_vreceive` at the epoll layer and walks backward: `epoll`
 buffers the raw bytes, `tls` decrypts, `webclient` parses the resulting HTTP.
 A `send` call made on the `webclient` object walks forward: `webclient` emits

@@ -1,6 +1,6 @@
 # rwasa — Rapid Web Application Server in Assembler
 
-A production-grade HTTP/HTTPS server written entirely in x86_64 assembly, serving as both a standalone showcase of the HeavyThing library and a template for embedding native-assembler request handlers.
+An HTTP/HTTPS server written entirely in x86_64 assembly, serving as both a standalone showcase of the HeavyThing library and a template for embedding native-assembler request handlers.
 
 ## Overview
 
@@ -44,9 +44,9 @@ All inter-process messages share an 8-byte header (`[+0]=type`, `[+4]=total_len`
 
 | Constant | Value | Direction | Purpose | Composer | Handler |
 |---|---|---|---|---|---|
-| `linkmessage_ocsp` | `0` | master → all workers | Propagate an updated OCSP-stapling response for a given subject CN; oneshot broadcast capped at 4096 bytes per message | `master_ocsp_hook` (/rwasa/master.inc:271) | `masterlink$receive` `.ocsp` branch (/rwasa/worker.inc:277) |
-| `linkmessage_log` | `1` | worker → master | Forward access-log or error-log records from worker to master, which writes to `webservercfg$log` or `webservercfg$logerror` | `worker_loghook` (/rwasa/worker.inc:156) | `master$receive` `.logmessage` branch (/rwasa/master.inc:229) |
-| `linkmessage_tlsupdate` | `2` | worker → master → other workers | Broadcast a new TLS session-cache entry (32-byte session id + 64-byte state, fixed 104-byte message) so that resumption works across workers | `worker_tlscache` (/rwasa/worker.inc:208) | master `.tlsbroadcast` (/rwasa/master.inc:210); worker `masterlink$receive` tlsupdate fallthrough (/rwasa/worker.inc:259–275) |
+| `linkmessage_ocsp` | `0` | master -> all workers | Propagate an updated OCSP-stapling response for a given subject CN; oneshot broadcast capped at 4096 bytes per message | `master_ocsp_hook` (/rwasa/master.inc:271) | `masterlink$receive` `.ocsp` branch (/rwasa/worker.inc:277) |
+| `linkmessage_log` | `1` | worker -> master | Forward access-log or error-log records from worker to master, which writes to `webservercfg$log` or `webservercfg$logerror` | `worker_loghook` (/rwasa/worker.inc:156) | `master$receive` `.logmessage` branch (/rwasa/master.inc:229) |
+| `linkmessage_tlsupdate` | `2` | worker -> master -> other workers | Broadcast a new TLS session-cache entry (32-byte session id + 64-byte state, fixed 104-byte message) so that resumption works across workers | `worker_tlscache` (/rwasa/worker.inc:208) | master `.tlsbroadcast` (/rwasa/master.inc:210); worker `masterlink$receive` tlsupdate fallthrough (/rwasa/worker.inc:259–275) |
 
 The worker `masterlink$receive` handler temporarily clears `tls$sessioncache_hook` when applying an inbound `linkmessage_tlsupdate` to avoid echoing the update back to the master (Source: /rwasa/worker.inc:265–269).
 

@@ -56,9 +56,9 @@ Ordering constraints enforced by `../ht.inc`:
   `../ht.inc:87`, because the profiler's internal TUI object needs the ANSI
   color macros declared first (Source: `../ht.inc:81–82`).
 - The remaining 29 `tui_*.inc` files are included at `../ht.inc:173–201` in a
-  specific order: base class → render pipeline → lock → top-level renderers →
-  base presentation → drawing primitives → input widgets → containers → effects
-  → specialty widgets → form → statusbar/newsticker. This load order reflects
+  specific order: base class -> render pipeline -> lock -> top-level renderers ->
+  base presentation -> drawing primitives -> input widgets -> containers -> effects
+  -> specialty widgets -> form -> statusbar/newsticker. This load order reflects
   real compile-time dependencies and must not be reordered (Source: `../ht.inc:173–201`).
 - `../tui_geometry.inc` is included BY `../tui_object.inc:34`, not by `../ht.inc`
   directly.
@@ -150,7 +150,7 @@ graph TD
 
 The following table enumerates all 32 `tui_*.inc` modules. Purpose descriptions
 are derived from each file's header comment block at lines 22–40. Rows are
-grouped by role (infrastructure → drawing → widgets → containers → effects →
+grouped by role (infrastructure -> drawing -> widgets -> containers -> effects ->
 specialty).
 
 | File | Purpose |

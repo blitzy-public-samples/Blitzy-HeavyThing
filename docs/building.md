@@ -86,10 +86,12 @@ The `call ht$init` at the top of every entry point is the only mandatory runtime
 
 The four remaining constructs in the hello_world source deserve a brief note:
 
-- **`public _start`** declares `_start` as the ELF entry-point symbol. The GNU linker looks for this symbol by default when no `-e` override is specified on the `ld` command line. No libc startup machinery runs — execution begins directly at the `_start:` label.
-- **`string$to_stdoutln`** is a library label that writes a HeavyThing string to file descriptor 1 followed by a newline. The register contract — input string pointer in `rdi` — is part of the library-wide `subsystem$function` label pattern documented in `/docs/calling-convention.md`.
-- **`cleartext .helloworld, 'Hello World'`** is a macro that defines a static HeavyThing string object with a label `_start.helloworld` (a local label under `_start`) and an immutable payload. The macro is defined in `/cleartext.inc`, which is included from `/ht.inc:67`.
-- **`syscall_exit`** and the surrounding `syscall` instruction invoke the Linux exit syscall directly. The `syscall_*` constants are defined in `/syscall.inc`. Because there is no libc `exit()` wrapper, the return code is placed in `rdi` and the syscall number in `rax` (or `eax`) per the Linux x86_64 syscall convention.
+| Construct | Purpose |
+|-----------|---------|
+| `public _start` | Declares `_start` as the ELF entry-point symbol. The GNU linker looks for this symbol by default when no `-e` override is specified on the `ld` command line. No libc startup machinery runs — execution begins directly at the `_start:` label. |
+| `string$to_stdoutln` | A library label that writes a HeavyThing string to file descriptor 1 followed by a newline. The register contract — input string pointer in `rdi` — is part of the library-wide `subsystem$function` label pattern documented in `/docs/calling-convention.md`. |
+| `cleartext .helloworld, 'Hello World'` | A macro that defines a static HeavyThing string object with a label `_start.helloworld` (a local label under `_start`) and an immutable payload. The macro is defined in `/cleartext.inc`, which is included from `/ht.inc:67`. |
+| `syscall_exit` and the surrounding `syscall` | Invoke the Linux exit syscall directly. The `syscall_*` constants are defined in `/syscall.inc`. Because there is no libc `exit()` wrapper, the return code is placed in `rdi` and the syscall number in `rax` (or `eax`) per the Linux x86_64 syscall convention. |
 
 ## The Three-File Include Contract
 
@@ -264,6 +266,11 @@ The `ldd` output is the canonical confirmation that a HeavyThing binary honours 
 - `/examples/README.md` — the index of 14 worked examples grouped by library feature
 - `/ht_defaults.inc` — the single source of compile-time configuration
 - `/examples/hello_world/hello_world.asm` — the canonical 42-line minimal build target used above
+- `/rwasa/README.md` — the HTTP/HTTPS web server tool; documents the `fasm` + `ld` build for both the standard and `rwasa_tlsmin` variants
+- `/webslap/README.md` — the HTTP/HTTPS load-testing tool; documents the build for both the standard and `webslap_tlsmin` variants
+- `/sshtalk/README.md` — the SSH-enabled terminal chat tool; documents build, host-key setup, and user-database format
+- `/toplip/README.md` — the encrypted-file utility; documents build, passphrase handling, and CLI modes
+- `/dhtool/README.md` — the Diffie-Hellman parameter generation and verification utility; documents build and three CLI modes
 
 ---
 

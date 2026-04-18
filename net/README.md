@@ -123,9 +123,9 @@ The vmethod table is 7 `dq` (pointer) slots. A networking application builds its
 
 | Offset | Slot | Dispatch direction |
 |--------|------|--------------------|
-| `io_vdestroy` = 0 | destructor | forward (parent → child) |
+| `io_vdestroy` = 0 | destructor | forward (parent -> child) |
 | `io_vclone` = 8 | clone | forward |
-| `io_vconnected` = 16 | connection established | backward (child → parent) |
+| `io_vconnected` = 16 | connection established | backward (child -> parent) |
 | `io_vsend` = 24 | send bytes | forward |
 | `io_vreceive` = 32 | bytes received | backward |
 | `io_verror` = 40 | error | backward |
@@ -145,7 +145,7 @@ Handler register conventions:
 
 ## Usage
 
-Minimal TCP echo server — condensed from `examples/echo/echo.asm` (Source: /examples/echo/echo.asm:21–108). The three-file include contract `ht_defaults.inc` → `ht.inc` → `ht_data.inc` is mandatory and is visible at the top and bottom of the file.
+Minimal TCP echo server — condensed from `examples/echo/echo.asm` (Source: /examples/echo/echo.asm:21–108). The three-file include contract `ht_defaults.inc` -> `ht.inc` -> `ht_data.inc` is mandatory and is visible at the top and bottom of the file.
 
 ```nasm
 include '../../ht_defaults.inc'

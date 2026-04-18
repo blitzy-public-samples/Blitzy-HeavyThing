@@ -67,10 +67,11 @@ Authoritative build commands — including the exact `gcc`/`g++` invocations and
 - `../docs/building.md` — Full build guide, FASM prerequisites, `include_everything` semantics, exit codes 96 through 99
 - `../docs/architecture.md` — Include-dependency graph, `ht$init` and event-loop lifecycle, IO chaining model
 - `../docs/calling-convention.md` — `subsystem$function` label naming convention and register contract used throughout every example
-- `../rwasa/README.md` — Production web server built on the same library primitives
-- `../webslap/README.md` — Production HTTP load tester built on the same library primitives
-- `../sshtalk/README.md` — Production SSH-enabled terminal chat server
-- `../toplip/README.md` — Production encrypted-file utility
-- `../dhtool/README.md` — Production Diffie-Hellman parameter generation utility
+- `../tui/README.md` — TUI subsystem overview for readers interested in the widget framework demonstrated by `tuimatrix` and `tuieffects`
+- `../rwasa/README.md` — Web server built on the same library primitives
+- `../webslap/README.md` — HTTP load tester built on the same library primitives
+- `../sshtalk/README.md` — SSH-enabled terminal chat server
+- `../toplip/README.md` — Encrypted-file utility
+- `../dhtool/README.md` — Diffie-Hellman parameter generation utility
 
 Licensed under GPLv3. See ../LICENSE.
