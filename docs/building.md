@@ -4,6 +4,8 @@
 
 HeavyThing is written for **FASM (Flat Assembler)** by Tomasz Grysztar, not NASM. The first line of compiled output is established by the `format ELF64` directive in `/ht_defaults.inc:26`, accompanied by the explicit comment "we are the first include, set our fasm format" (Source: /ht_defaults.inc:24-26). Every `.asm` entry point and every `.inc` module in the repository is pure FASM syntax. The build process is intentionally minimal — two commands, `fasm` to produce an ELF64 object followed by `ld` to produce a static binary. No Makefile, autotools configuration, package manifest, or CI workflow is present in the repository.
 
+Every public label in HeavyThing uses the form `subsystem$function`. The dollar sign is a legal identifier character in FASM and serves as the namespace separator. This is one of the reasons the library is authored in FASM rather than NASM: NASM treats `$` as the current-address expression operator and would not accept it as part of an identifier. The full label-naming convention is documented in `/docs/calling-convention.md`.
+
 Three properties follow from this minimalism. First, a HeavyThing binary has no shared-library dependencies at runtime because the library does not link against libc (Source: /ht.inc:22-42). Second, the build is reproducible from an unmodified checkout without any package-manager prerequisites beyond FASM itself and GNU `ld`. Third, compile-time configuration is handled entirely through integer and symbol assignments in `/ht_defaults.inc`, not through build-system flags — every knob that affects the emitted binary is a source-level constant.
 
 A display-syntax note: the Markdown code fences throughout HeavyThing documentation use the `nasm` language tag because GitHub's syntax highlighter does not offer a `fasm` option, and `nasm` provides the closest Intel-syntax rendering. The assembler invoked by every build command shown below is FASM. Syntactic differences between FASM and NASM — for example, FASM's `format ELF64` directive versus NASM's command-line `-f elf64` flag — are significant and are not interchangeable.
@@ -227,7 +229,7 @@ Nested directory depth affects the include paths. The `/examples/hello_world/hel
 | `error: undefined symbol 'xxxx'` at assembly time | Either a typo in a label name (labels are case-sensitive) or the module defining the label is not wired into `/ht.inc`. | Verify spelling with `grep -n '^xxxx:' *.inc`. Confirm the relevant module is listed in `/ht.inc` at the appropriate point in the include chain. |
 | Binary is unexpectedly large | `include_everything = 1` was left set, or `public_funcs = 1` is exporting every label as a global symbol. | Remove `include_everything = 1` for production builds. Set `public_funcs = 0` if downstream link-time consumers tolerate the reduced symbol table (Source: /ht_defaults.inc:59, /ht_defaults.inc:91). |
 
-The full exit-code contract and the complete register calling convention are authoritative in `/docs/calling-convention.md`.
+The full exit-code table is authoritative in `/docs/architecture.md`. The complete register calling convention is authoritative in `/docs/calling-convention.md`.
 
 ### Diagnostic Commands
 
@@ -255,11 +257,14 @@ The `ldd` output is the canonical confirmation that a HeavyThing binary honours 
 
 ## See Also
 
-- `/docs/architecture.md` — the authoritative reference for the three-file include contract, the include-dependency graph, and subsystem boundaries
-- `/docs/calling-convention.md` — register contract, stack alignment, label-naming convention, and the complete exit-code table
+- `/docs/architecture.md` — the authoritative reference for the three-file include contract, the include-dependency graph, subsystem boundaries, and the exit-code table
+- `/docs/calling-convention.md` — register contract, stack alignment, and label-naming convention
 - `/docs/contributing.md` — procedures for adding new `.inc` modules and wiring them into `/ht.inc`
 - `/docs/security.md` — TLS, SSH, and cryptographic knob semantics with version-support matrices
 - `/examples/README.md` — the index of 14 worked examples grouped by library feature
 - `/ht_defaults.inc` — the single source of compile-time configuration
 - `/examples/hello_world/hello_world.asm` — the canonical 42-line minimal build target used above
-- `/LICENSE` — full GPLv3 license text
+
+---
+
+Licensed under GPLv3. See [`../LICENSE`](../LICENSE).

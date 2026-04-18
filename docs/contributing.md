@@ -108,8 +108,8 @@ section of `./building.md`.
    (Source: /ht.inc:1-20 serves as the canonical source). Adjust the
    copyright line to reflect the contributing party if the contribution
    is not being routed through the original project maintainers. The
-   license itself must remain GPLv3 or a GPLv3-compatible license; see
-   the License section below.
+   license itself must remain GPLv3 or a GPLv3-compatible license; the
+   full license text is at `../LICENSE`.
 
 3. **Add the line-22 purpose comment** in the form
    `; <filename>: <one-line summary>`. Keep the summary under roughly
@@ -298,35 +298,26 @@ The recommended procedure for a new module is:
    failure; 98 indicates profiler stack overrun; 97 indicates
    `epoll_minfds` was not met by `setrlimit`; 96 indicates
    `epoll_create` failure (Source: /ht.inc:38-42). The authoritative
-   exit-code table is maintained in `./calling-convention.md`.
+   exit-code table is maintained in `./architecture.md`.
 
 The historical record of what each release actually changed is preserved
 in `/ChangeLog`; every entry describes observable behavioural changes
 rather than test-suite metrics, which reflects the demo-driven
 validation model that remains in effect today.
 
-## License
-
-HeavyThing is distributed under the GNU General Public License, version
-3, dated 29 June 2007 (Source: /LICENSE:1-2). Every contribution must
-carry a GPLv3-compatible license preamble. The canonical 20-line
-preamble block used throughout the repository appears at /ht.inc:1-20
-and should be copied verbatim into any new `.inc` or `.asm` file, with
-the copyright line adjusted to identify the contributing party where
-appropriate. The full license text is available at `../LICENSE`.
-
 ## See Also
 
 - `./architecture.md` — the authoritative treatment of the three-file
   include contract, the full include-dependency graph, subsystem
-  boundaries, and the `ht$init` lifecycle
+  boundaries, the `ht$init` lifecycle, and the authoritative exit-code
+  table
 - `./building.md` — FASM invocation, the `fasm -m 524288` rationale,
   the linker invocation, the `include_everything` flag for C and C++
   integration, and the Adding a New Tool procedure that complements
   the Adding a New Module procedure above
 - `./calling-convention.md` — register contract, stack alignment, the
-  `subsystem$function` label-naming convention, the `prolog` and
-  `epilog` macro contract, and the authoritative exit-code table
+  `subsystem$function` label-naming convention, and the `prolog` and
+  `epilog` macro contract
 - `./security.md` — cryptographic primitive scope and the TLS and SSH
   support matrices, relevant when contributing to the crypto or
   networking subsystems
@@ -347,5 +338,9 @@ appropriate. The full license text is available at `../LICENSE`.
   minimal entry-point template referenced in step 8 above
 - `../ChangeLog` — historical record of released versions, terminating
   at v1.13 (16 July 2015)
-- `../LICENSE` — the full GPLv3 license text
 - `../README.md` — the project landing page
+
+---
+
+Licensed under GPLv3. See [`../LICENSE`](../LICENSE).
+

@@ -107,10 +107,8 @@ either biases instruction-fetch behaviour on certain microarchitectures.
 ## Label Naming Convention
 
 Every public label in HeavyThing uses the form `subsystem$function`. The
-dollar sign is a legal identifier character in FASM and serves as the
-namespace separator. This is one of the reasons the library is authored
-in FASM rather than NASM: NASM treats `$` as the current-address
-expression operator and would not accept it as part of an identifier.
+dollar sign serves as the namespace separator; see `./building.md` for
+the FASM-specific rationale for this character choice.
 
 Representative examples taken directly from the library:
 
@@ -356,20 +354,9 @@ C++ without linking libc.
 
 ## Exit Codes
 
-The library reserves four process exit codes for internal failure
-signals. User code should therefore avoid returning these from
-`_start`. The table below is reproduced here for locality; the same
-table appears in `./architecture.md`, which is the authoritative
-cross-reference.
-
-| Exit Code | Meaning |
-|---|---|
-| `96` | `epoll_create` syscall failed during `epoll$init` (Source: /ht.inc:41) |
-| `97` | Epoll minimum file-descriptor count (`epoll_minfds`) could not be met via `setrlimit` (Source: /ht.inc:40) |
-| `98` | Profiler record stack overrun (`profiler_recordcount` exceeded) (Source: /ht.inc:39) |
-| `99` | Heap `mmap` or `mremap` failed during `heap$init` (Source: /ht.inc:38) |
-
-User code should return `0` for success and a distinct non-zero value
+The full exit-code contract (codes `96`, `97`, `98`, `99`, plus the
+normal-exit convention) is authoritative in `./architecture.md`. User
+code should return `0` for success and a distinct non-zero value
 (conventionally `1` or `2`) for failure, so as not to shadow the
 library-reserved signals.
 
@@ -395,4 +382,7 @@ library-reserved signals.
 - `../dataseg_macros.inc` — `globals { ... }` macro
 - `../cleartext.inc` — `cleartext` static-string macro
 - `../syscall.inc` — symbolic Linux x86_64 syscall constants
-- `../LICENSE` — GPLv3 license text
+
+---
+
+Licensed under GPLv3. See [`../LICENSE`](../LICENSE).

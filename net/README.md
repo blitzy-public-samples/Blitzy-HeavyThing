@@ -57,7 +57,7 @@ graph TD
 
 ### IO Chaining Model
 
-IO objects are doubly linked by `io_parent_ofs` and `io_child_ofs` (Source: /io.inc:40–43). The virtual-method slots at offsets `io_vdestroy`, `io_vclone`, `io_vconnected`, `io_vsend`, `io_vreceive`, `io_verror`, `io_vtimeout` (Source: /io.inc:47–54) are dispatched along the chain in two directions: `destroy`, `clone`, and `send` propagate **forward** (parent to child); `receive`, `connected`, `error`, and `timeout` propagate **backward** (child to parent) (Source: /io.inc:23–27). An object chain bound to the event loop must terminate in an `epoll` object; `epoll$inbound`, `epoll$outbound`, `epoll$outbound_hostname`, and `epoll$established` walk down the `io_child_ofs` pointers to find it (Source: /epoll.inc:1401–1418). TLS and SSH place themselves between the application object and the terminal `epoll` object so that encrypted bytes flow out and plaintext flows in transparently (Source: /tls.inc:38–47).
+IO objects are doubly linked by `io_parent_ofs` and `io_child_ofs` (Source: /io.inc:32–33). The virtual-method slots at offsets `io_vdestroy`, `io_vclone`, `io_vconnected`, `io_vsend`, `io_vreceive`, `io_verror`, `io_vtimeout` (Source: /io.inc:38–44) are dispatched along the chain in two directions: `destroy`, `clone`, and `send` propagate **forward** (parent to child); `receive`, `connected`, `error`, and `timeout` propagate **backward** (child to parent) (Source: /io.inc:26–27). An object chain bound to the event loop must terminate in an `epoll` object; `epoll$inbound`, `epoll$outbound`, `epoll$outbound_hostname`, and `epoll$established` walk down the `io_child_ofs` pointers to find it (Source: /epoll.inc:1401–1418). TLS and SSH place themselves between the application object and the terminal `epoll` object so that encrypted bytes flow out and plaintext flows in transparently (Source: /tls.inc:87–91).
 
 ## Key Components
 
@@ -218,6 +218,8 @@ All compile-time knobs live in `ht_defaults.inc`. Values shown are defaults; ove
 | `epoll_unixconnect_forgiving` | 1 | Queue `EAGAIN` connects for unix-domain sockets |
 | `dns_timeout_msecs` | 10000 | DNS query timeout in milliseconds |
 
+`epoll_minfds` is enforced at `ht$init` time: the library calls `getrlimit(RLIMIT_NOFILE)` and exits with code `97` if the soft limit is below this value (Source: /ht.inc:38–42). Tools that expect to handle tens of thousands of simultaneous connections (rwasa, webslap) raise the rlimit in a pre-launch shell wrapper or through `setrlimit` before `ht$init` runs. `epoll_readsize` controls the chunk size passed to each `read()` on established sockets; larger values reduce syscall count at the cost of per-connection buffer memory. `epoll_outbound_cloexec` and `epoll_del_before_close` exist for edge cases where worker processes fork and should not inherit listener fds; they default off because most HeavyThing applications do not use `fork` after `ht$init`.
+
 ### TLS
 
 | Knob | Default | Meaning |
@@ -235,6 +237,8 @@ All compile-time knobs live in `ht_defaults.inc`. Values shown are defaults; ove
 | `tls_client_sessioncache` | 3600 | Client-side session cache TTL |
 | `tls_client_encryptcache` | 1 | Encrypt client session cache |
 
+`tls_minimalist` is the most architecturally significant TLS knob: when enabled, it shrinks the cipher-suite dispatch table to a single `MULTICIPHER` entry (RSA key exchange, AES-128-CBC, HMAC-SHA1), which in turn lets FASM's `if used` conditional compilation eliminate the AES-256, SHA-256, DHE, and ECDHE code paths entirely. The result is a noticeably smaller binary used by `rwasa_tlsmin` and `webslap_tlsmin` for workloads where raw throughput matters more than agility (Source: /tls.inc:49–56). `tls_pem_refresh_interval` drives the hot-reload polling loop; the old certificate buffer is intentionally leaked on reload to avoid racing in-flight handshakes (Source: /tls.inc:112–114). `tls_blacklist` is an `86400`-second (24-hour) default penalty applied via `blacklist.inc` whenever a peer triggers a handshake-level failure; this value is shared with `ssh_blacklist` so that operators who tune one generally tune both.
+
 ### SSH
 
 | Knob | Default | Meaning |
@@ -243,6 +247,8 @@ All compile-time knobs live in `ht_defaults.inc`. Values shown are defaults; ove
 | `ssh_do_compression` | 1 | Offer compression |
 | `ssh_force_compression` | 1 | Require compression |
 | `ssh_blacklist` | 86400 | Blacklist seconds on SSH errors |
+
+`ssh_dh_dynamic` has a pronounced startup-time impact: when set to `0` (default), DH group generation is skipped because `dh_pool.inc` and the related `dh_pool_*.inc` files ship with pre-generated safe primes at 2048/3072/4096/6144/8192/16384 bit sizes. Setting it to `1` forces on-the-fly DH-parameter generation during each handshake's group-exchange step, which is computationally expensive (hundreds of milliseconds to multiple seconds per handshake depending on `dh_bits`) and is rarely a net security gain for typical deployments. `ssh_force_compression = 1` is an opinionated default: the library refuses to negotiate an uncompressed session, which rejects some embedded SSH clients but prevents plaintext-size traffic analysis for the common interactive-shell use case.
 
 ### Web server
 
@@ -259,6 +265,8 @@ All compile-time knobs live in `ht_defaults.inc`. Values shown are defaults; ove
 | `webserver_breach_mitigation` | 48 | Random `X-NB` header bytes to mitigate BREACH |
 | `webserver_fastcgi_postprocess` | 0 | Post-process FastCGI responses |
 
+`webserver_filecache_time` controls the granularity of the mmap-based static-file cache: every cached response is only rechecked against the on-disk `mtime` after this many seconds elapse. The default of `300` (five minutes) means a file edit may not be visible to clients until the window expires, and — more importantly — an in-place size change within a window can produce zero-padded or truncated responses because the original mmap length is reused (Source: /webserver.inc:35–63). The documented workaround is to replace files atomically: `rm` then create a new file rather than rewriting in place. `webserver_breach_mitigation` prepends a random-length `X-NB` header to each compressed response; this is a BREACH countermeasure (Source: /webserver.inc:83–92). `webserver_autogzip = 1` enables on-the-fly gzip for responses whose Content-Type matches a compressible family; `webserver_fastcgi_postprocess` is off by default because post-processing the FastCGI response body defeats streaming.
+
 ### Web client
 
 | Knob | Default | Meaning |
@@ -268,18 +276,66 @@ All compile-time knobs live in `ht_defaults.inc`. Values shown are defaults; ove
 | `webclient_follow_redirects` | 1 | Follow 3xx redirects |
 | `webclient_global_dnscache` | 1 | Share DNS resolutions across webclient instances |
 
+`webclient_maxconns = 4` throttles concurrent requests to any single hostname regardless of how many parallel requests the caller queues; above this limit, additional requests are queued inside the webclient and dispatched as earlier ones complete. Tools such as `webslap` that intend to saturate a single host raise this value substantially (see `/webslap/README.md` for the load-test configuration once that file lands in Checkpoint 2). `webclient_global_dnscache = 1` is the safer default for production code because it avoids a per-client DNS lookup storm, but multi-tenant tools that must see fresh DNS per instance can disable it to force a per-webclient resolver pool.
+
 ## Limitations
 
 - **Linux only.** Uses `epoll_create`/`epoll_ctl`/`epoll_wait` directly; there is no portability shim for kqueue, IOCP, or `io_uring`.
 - **TLS 1.2 only.** No TLS 1.3. No ECDHE (design choice citing NIST curve concerns post-Snowden), no ChaCha20-Poly1305, no AEAD (CCM/GCM) suites. MAC is limited to CBC modes with SHA1/SHA256 HMAC (Source: /tls.inc:22–66).
-- **X.509 handling is garbage-in garbage-out.** The TLS layer does not perform chain validation; whatever PEM is loaded is presented to peers as-is (Source: /tls.inc:31).
-- **PEM hot-reload is leaky by design.** During reload, the old certificate memory is intentionally not freed to avoid quiescing active connections. This is a documented trade-off (Source: /tls.inc:53).
+- **X.509 handling is garbage-in garbage-out.** The TLS layer does not perform chain validation; whatever PEM is loaded is presented to peers as-is (Source: /tls.inc:26–34).
+- **PEM hot-reload is leaky by design.** During reload, the old certificate memory is intentionally not freed to avoid quiescing active connections. This is a documented trade-off (Source: /tls.inc:112–114).
 - **SSH version 2 only, narrow cipher set.** Only `diffie-hellman-group-exchange-sha256` KEX; only `ssh-rsa` and `ssh-dsa` host keys; only `aes256-cbc` cipher; only `hmac-sha2-256` MAC. No ed25519, no curve25519, no ChaCha20-Poly1305 (Source: /ssh.inc:27–37).
-- **SSH client has no hostkey database.** The client verifies RSA/DSA signatures on host keys but does not pin them to a known-hosts file (Source: /ssh.inc:67–70).
+- **SSH client has no hostkey database.** The client verifies RSA/DSA signatures on host keys but does not pin them to a known-hosts file (Source: /ssh.inc:79–83).
 - **HTTP/1.x only.** No HTTP/2, no HTTP/3, no WebSocket. Parsing is performed by `httpheaders$parse_http1` and `httpheaders$tobuffer_http1` from `httpheaders.inc`; the standalone `http1.inc` is optional and not auto-included by `ht.inc`.
 - **Web server file cache is mtime-based, not size-aware.** If a file's size changes without an mtime change, responses can contain zero-padding or be truncated within one `webserver_filecache_time` window (Source: /webserver.inc:50–58). The documented workaround is to replace files atomically (delete-then-recreate rather than in-place rewrite).
 - **Web client destructor must not be called from within a callback.** Schedule a 1-ms timer and call `webclient$destroy` from that timer handler instead (Source: /webclient.inc:39–41).
 - **Subsystem-specific exit codes.** `96` = `epoll_create` failed; `97` = `epoll_minfds` not met at startup (Source: /ht.inc:38–42).
+
+## Operational Notes
+
+### Startup sequencing
+
+`ht$init` performs several startup checks before returning control to application code.
+
+It verifies that the process's maximum open-file-descriptor limit is at least `epoll_minfds`, creates the epoll fd via `epoll_create1`, and then bootstraps the heap, profiler, and (if configured) `rng_heavy_init` for the HMAC-DRBG entropy pool.
+
+Failure in any of these steps produces a distinct exit code: `96` for `epoll_create` failure, `97` for `epoll_minfds` not met, `98` for profiler stack overrun, `99` for heap `mmap` failure (Source: /ht.inc:38–42).
+
+Applications that need to drop privileges should do so after `ht$init` completes and before the first call into the event loop, because the epoll fd and any bound listening sockets must be created while the process still holds the launching user's privileges.
+
+### Multi-process workers
+
+`rwasa` and `webslap` fork worker processes after `ht$init` and call `epoll_child` (from `epoll_child.inc`) to coordinate the parent/worker relationship.
+
+`epoll_child.inc` itself is described as "a blocking fork'd child process, but bound on the parent side to an epoll object" (Source: /epoll_child.inc:22–24); this allows the parent to monitor worker health and worker-side activity through the same event loop used for ordinary network IO.
+
+Both `rwasa/master.inc` and `webslap/master.inc` call `epoll_child_killall` on the shutdown path to avoid leaving orphan processes after a master exit; applications that adopt this pattern should follow the same discipline.
+
+Each worker has an independent epoll instance; there is no shared state between workers beyond the on-disk filesystem and whatever IPC the application sets up on top of the parent/worker channel.
+
+### DNS resolution
+
+`epoll_dns.inc` implements "simple DNS routines using our epoll layer" (Source: /epoll_dns.inc:22–23): lookups are asynchronous and dispatched through the same event loop as TCP IO.
+
+The resolver re-reads `/etc/resolv.conf` when its mtime changes, tracked by `_dns_resolve_mtime` and polled at the granularity of `_dns_resolve_checktime`; name servers are used in round-robin order through `_dns_server_cur`.
+
+The global DNS cache (enabled by `webclient_global_dnscache = 1`) is shared across all webclient instances in the process and is invalidated by TTL; tools that need to observe DNS changes without waiting for TTL expiry can disable the global cache and pay the additional per-lookup latency.
+
+### Blacklist tuning
+
+`blacklist.inc` is described as "a convenience object to deal with unsigned keys + time delay" and is "coupled with epoll, and as such it uses the global time var in epoll to manage times" (Source: /blacklist.inc:22–25).
+
+The object is constructed with `blacklist$new`, which takes an expiry duration in seconds and returns a handle backed by an `unsignedmap` and a doubly-linked list of pending expiries (Source: /blacklist.inc:42–58).
+
+TLS and SSH handshake-failure paths insert peer addresses into their respective blacklists using the configured `tls_blacklist` and `ssh_blacklist` defaults (both `86400` seconds by default); expired entries are pruned on subsequent inserts.
+
+Tools that front untrusted networks typically keep these defaults; tools that front known peers can reduce the duration or disable the mechanism by setting the knob to `0`.
+
+### Graceful shutdown
+
+There is no built-in signal-handler wiring in `epoll.inc`; applications that need graceful shutdown install their own signal handler (typically for `SIGINT` and `SIGTERM`) that sets a flag consulted from the event loop.
+
+When the flag is observed, the application traverses its outstanding IO chains and calls destroy on each root object; the destroy dispatch propagates forward along `io_child_ofs` and releases per-object resources in order (Source: /io.inc:26–27, /io.inc:38–44).
 
 ## See Also
 
@@ -296,4 +352,4 @@ All compile-time knobs live in `ht_defaults.inc`. Values shown are defaults; ove
 
 ---
 
-Licensed under GPL-3.0-or-later. See [/LICENSE](../LICENSE).
+Licensed under GPLv3. See [`../LICENSE`](../LICENSE).

@@ -224,13 +224,8 @@ document where each group is described in detail.
 - [`ChangeLog`](ChangeLog) — version-by-version history of the library;
   the newest entry in this repository snapshot is v1.13 dated 2015-07-16
   (Source: `/ChangeLog:1-3`).
-- [`LICENSE`](LICENSE) — the full text of the GNU General Public License,
-  version 3.
 
-## License
+---
 
-HeavyThing is distributed under the GNU General Public License, version 3.
-See [`LICENSE`](LICENSE) for the full text. Every source file in the
-repository begins with a standard GPLv3 preamble in its header comment
-block; `/ht.inc:1-20` is a representative example.
+Licensed under GPLv3. See [`LICENSE`](LICENSE).
 

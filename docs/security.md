@@ -142,11 +142,11 @@ by the `tls_minimalist` and `tls_perfect_forward_secrecy_only` knobs in
 | TLS_RSA_WITH_AES_256_CBC_SHA (0x00, 0x35) | Yes | No | No |
 | TLS_RSA_WITH_AES_128_CBC_SHA (0x00, 0x2f) | Yes | No | Yes (only suite) |
 
-The Default build offers twelve suites (Source: /tls.inc:145-160); the
+The Default build offers twelve suites (Source: /tls.inc:146-158); the
 PFS-Only build (selected by `tls_perfect_forward_secrecy_only = 1`) drops the
 four static-RSA key-exchange suites and offers eight (Source:
-/tls.inc:154-160); the Minimalist build (selected by `tls_minimalist = 1`)
-offers only `TLS_RSA_WITH_AES_128_CBC_SHA` (Source: /tls.inc:162-164). Note
+/tls.inc:146-153); the Minimalist build (selected by `tls_minimalist = 1`)
+offers only `TLS_RSA_WITH_AES_128_CBC_SHA` (Source: /tls.inc:163). Note
 that `/tls.inc:148` carries a source-comment typo: the suite hex `0x00, 0x32`
 is tagged `TLS_DHE_DSS_WITH_AES_128_CBC_SHA256`, whereas the IANA-registered
 meaning of `0x00, 0x32` is `TLS_DHE_DSS_WITH_AES_128_CBC_SHA`; the table
@@ -298,6 +298,18 @@ affect an integration decision.
 - HKDF as an isolated primitive is not implemented.
 - TLS client certificate authentication is not supported.
 - X509 certificate chain validation is not performed (Source: /tls.inc:25-35).
+- Client-side OCSP response validation is not performed. The server-side
+  can staple OCSP responses when `tls_server_ocsp_stapling` is enabled
+  (Source: /tls.inc:805-807, /tls.inc:883-885), but a HeavyThing-based
+  client that receives a stapled OCSP response does not validate that
+  response against a responder or a trust anchor.
+- Automated TLS session-ticket rotation is not provided. HeavyThing
+  implements session-ID-based resumption via `tls_server_sessioncache`
+  (Source: /ht_defaults.inc:334, /tls.inc:2318) but does not implement
+  RFC 5077 session tickets, so there is no ticket-key rotation surface to
+  manage.
+- Certificate Transparency (RFC 6962) is not supported. Signed Certificate
+  Timestamps (SCTs) are neither produced, stapled, nor verified.
 - Client-side SSH host-key verification against a known-hosts database is
   not performed; the library verifies the host signature but does not
   maintain a known-hosts file (Source: /ssh.inc:79-83).
@@ -323,4 +335,7 @@ affect an integration decision.
 - `../toplip/README.md` — toplip utility, the primary consumer of htcrypt and htxts
 - `../ht.inc` — crypto and protocol include chain at `/ht.inc:141-167`
 - `../ht_defaults.inc` — authoritative source for every configuration knob referenced above
-- `../LICENSE` — GPLv3 terms that govern the library, its primitives, and every application linked against it
+
+---
+
+Licensed under GPLv3. See [`../LICENSE`](../LICENSE).

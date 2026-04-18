@@ -131,10 +131,11 @@ README cross-linked from `## See Also`.
 ### Subsystem Boundary Map
 
 Edges on the map below show dependencies derived from the include order: `heap.inc`
-at /ht.inc:90 precedes every higher layer; cryptography is pulled in after data
-structures and before the network stack; TUI is included after networking because
-some widgets (e.g. `tui_ssh.inc`) sit on top of the networking layer (Source:
-/ht.inc:159-201).
+at /ht.inc:90 precedes every higher layer; the cryptography block opens at
+/ht.inc:141 (`sha2.inc`) and closes at /ht.inc:149 (`aes.inc`); the networking
+stack opens at /ht.inc:159 (`epoll.inc`) after `io.inc` at /ht.inc:157; TUI is
+included after networking because some widgets (e.g. `tui_ssh.inc` at
+/ht.inc:194) sit on top of the networking layer (Source: /ht.inc:141-201).
 
 ```mermaid
 graph LR
@@ -357,4 +358,7 @@ non-zero exit originates from application code. Source: /ht.inc:38-42.
 - `../tui/README.md` — terminal UI subsystem
 - `../ht.inc` — master include file (lines 51-208 for the include chain; lines 314-628 for `ht$init_args` and `ht$init`)
 - `../ht_defaults.inc` — compile-time configuration knobs
-- `../LICENSE` — GPLv3 license text
+
+---
+
+Licensed under GPLv3. See [`../LICENSE`](../LICENSE).

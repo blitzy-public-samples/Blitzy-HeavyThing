@@ -12,7 +12,7 @@ The five files form a small dependency chain within the library:
 
 - `heap.inc` is foundational. Every other container in this subsystem allocates its control blocks and payload storage through `heap$alloc` and releases them through `heap$free`. Verified call sites include `list$new` at `/list.inc:50` invoking `heap$alloc` at `/list.inc:53`, `mapcommon$new` at `/maps.inc:53` invoking `heap$alloc` at `/maps.inc:69`, `buffer$new` at `/buffer.inc:40` invoking `heap$alloc` twice (at `/buffer.inc:43` for the object header and `/buffer.inc:46` for the initial 256-byte backing store), and `json$newvalue` at `/json.inc:45` invoking `heap$alloc` at `/json.inc:56`.
 - `buffer.inc` is the foundation for string operations throughout the library. The string engines `string16.inc` and `string32.inc` build on the same byte-buffer idioms, and `json$tostring` at `/json.inc:367` explicitly calls `buffer$new` at `/json.inc:371` to compose its UTF-32 output before handing the bytes to the active string engine via `string$from_utf32` (Source: `/json.inc:381`).
-- `json.inc` consumes `buffer.inc` both for serialisation (`json$tostring`, Source: `/json.inc:367-387`) and for parsing (`json$parse_object` at `/json.inc:921` allocates its working buffer via `buffer$new` at `/json.inc:926`). It is architecturally adjacent to `maps.inc` as a structured-container layer built above the same heap foundation, although JSON tree nodes are stored as linked children rather than in an AVL tree.
+- `json.inc` consumes `buffer.inc` and integrates with `maps.inc`: it uses `buffer.inc` for serialisation (`json$tostring`, Source: `/json.inc:367-387`) and for parsing (`json$parse_object` at `/json.inc:921` allocates its working buffer via `buffer$new` at `/json.inc:926`); it integrates with `maps.inc` as a structured-container layer built above the same heap foundation, although JSON tree nodes are stored as linked children rather than in an AVL tree.
 - `maps.inc` exposes four parallel entry-point families (`intmap$*`, `unsignedmap$*`, `doublemap$*`, `stringmap$*`) that share a single AVL tree implementation via the `mapcommon$*` multi-entry-point labels (Source: `/maps.inc:53-82`).
 
 The subsystem is loaded by `ht.inc` in the following order: `heap.inc` at `/ht.inc:90`, `list.inc` at `/ht.inc:106`, `json.inc` at `/ht.inc:118`, `maps.inc` at `/ht.inc:122`, and `buffer.inc` at `/ht.inc:128`. Note that `json.inc` is included before `maps.inc` and `buffer.inc`; FASM resolves forward references at end-of-pass, so the apparent out-of-order include has no runtime consequence. For the complete include-dependency graph across the entire library, see `../docs/architecture.md`.
@@ -91,9 +91,9 @@ All data-structure labels follow the library-wide `subsystem$function` naming pa
 | `list$pop_front` | `rdi` = list | `rax` = popped value | `/list.inc:240` |
 | `list$foreach` | `rdi` = list, `rsi` = function pointer (receives value in `rdi`) | none | `/list.inc:517` |
 | `list$clear` | `rdi` = list, `rsi` = optional cleanup function (or 0) | none | `/list.inc:743` |
-| `list$destroy` | `rdi` = list | none; frees only the list object and its nodes — call `list$clear` first if values need freeing | `/list.inc:67` |
+| `list$destroy` | `rdi` = list | none; frees only the list object and its nodes — call `list$clear` first if values need freeing | `/list.inc:64-67` |
 
-The `list$destroy` narrative comment states that the routine does not walk the list and that callers must invoke `list$clear` first to free stored values (Source: `/list.inc:64-65`).
+The `list$destroy` narrative comment states that the routine does not walk the list and that callers must invoke `list$clear` first to free stored values (Source: `/list.inc:64-67`).
 
 ### Maps (maps.inc)
 
@@ -153,6 +153,39 @@ include 'ht_data.inc'
 
 `ht$init` must run before any routine that allocates from the heap, because it performs the initial `mmap` of the heap base (Source: `/ht.inc:609` and `/heap.inc:83-84`). Every public data-structure entry point follows the `subsystem$function` convention shown above — `list$new`, `list$push_back`, `heap$alloc`, and so on — which is the same pattern used throughout the rest of the library (Source: `/examples/hello_world/hello_world.asm:30-33`).
 
+A more complete lifecycle example demonstrates the ownership contract called out in the Limitations section: containers must be cleared with a cleanup function before destruction if their stored values are heap-owned. The snippet below allocates a buffer, appends content, then releases it; and allocates a list of buffers, iterates them for free, and destroys the list:
+
+```nasm
+include 'ht_defaults.inc'
+include 'ht.inc'
+public _start
+_start:
+    call    ht$init                 ; required before any heap-dependent call
+
+    ; --- buffer lifecycle ---
+    call    buffer$new              ; rax = new empty buffer (Source: /buffer.inc:40)
+    mov     rdi, rax                ; rdi = buffer pointer
+    lea     rsi, [msg]              ; rsi = source bytes
+    mov     rdx, msg_len            ; rdx = byte count
+    call    buffer$append           ; appends bytes (Source: /buffer.inc:263)
+    call    buffer$destroy          ; frees buffer and its backing store (Source: /buffer.inc:63)
+
+    ; --- list-of-buffers lifecycle with proper cleanup ---
+    call    list$new                ; rax = new empty list (Source: /list.inc:50)
+    ; (insert buffer pointers via list$push_back here)
+    mov     rdi, rax                ; rdi = list pointer
+    lea     rsi, [buffer$destroy]   ; rsi = cleanup function; each value is freed
+    call    list$clear              ; walks list, calls cleanup per value (Source: /list.inc:743)
+    call    list$destroy            ; releases list object and nodes (Source: /list.inc:64-67)
+
+    mov     eax, syscall_exit
+    xor     edi, edi
+    syscall
+include 'ht_data.inc'
+```
+
+The key invariant shown above is that `list$clear` — not `list$destroy` — is responsible for releasing the heap memory owned by stored values; the same ownership rule applies to `stringmap$clear` versus `stringmap$destroy` (Source: `/maps.inc:85-86`). Callers that omit the `*$clear` step leak the contents.
+
 ## Configuration
 
 The following `ht_defaults.inc` knobs directly affect the behaviour of this subsystem:
@@ -185,3 +218,8 @@ Some TUI components require `string_bits = 32` to work correctly (Source: `/ht_d
 - `../crypto/README.md` — cryptographic primitives that allocate working state via `heap$alloc`
 - `../net/README.md` — networking subsystem, which uses lists for queued I/O
 - `../tui/README.md` — TUI widget framework, which composes with `stringmap` and `buffer`
+
+---
+
+Licensed under GPLv3. See [`../LICENSE`](../LICENSE).
+

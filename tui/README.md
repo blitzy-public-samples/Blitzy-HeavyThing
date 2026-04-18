@@ -208,11 +208,7 @@ style. Abstract bases (`tui_object`, `tui_render`) do not expose `$new`.
 | `$new_rect` | Pre-computed rect argument |
 | `$new_str` | Initialized with a source string |
 
-Representative constructors confirmed: `tui_panel$new_{rect,id,di,dd,ii}` at
-`../tui_panel.inc:311–414`; `tui_label$new_{ii,str,dd,id,di,rect}` at
-`../tui_label.inc:79–286`; `tui_form$new_{rect,id,di,dd,ii}` at
-`../tui_form.inc:72–168`; `tui_datagrid$new_{copy,rect,id,di,...}` at
-`../tui_datagrid.inc:83–294`.
+Representative constructors confirmed: `tui_panel$new_{rect,id,di,dd,ii}` at `../tui_panel.inc:311–414`; `tui_label$new_{ii,str,dd,id,di,rect}` at `../tui_label.inc:79–286`; `tui_form$new_{rect,id,di,dd,ii}` at `../tui_form.inc:72–168`; `tui_datagrid$new_{copy,rect,id,di,...}` at `../tui_datagrid.inc:83–294`.
 
 Vtable pattern: each widget defines a `tui_<widget>$vtable` at a deterministic
 offset, and a widget instance's first 8 bytes hold a pointer to this vtable
@@ -347,7 +343,6 @@ Related subsystems and references:
 | `../docs/calling-convention.md` | Register contract, `prolog`/`epilog`, label-naming convention |
 | `../docs/security.md` | SSH/TLS posture for `tui_ssh`-based deployments |
 
-Root pointers:
+---
 
-- Repository root: `../README.md`
-- License: `../LICENSE` (GPLv3)
+Licensed under GPLv3. See [`../LICENSE`](../LICENSE).

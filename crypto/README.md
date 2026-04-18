@@ -102,7 +102,7 @@ graph LR
 | [`../sha2.inc`](../sha2.inc) | SHA-224 / SHA-256 / SHA-384 / SHA-512 hashes, translated from Wei Dai public-domain code (Source: `/sha2.inc:22-30`). |
 | [`../md5.inc`](../md5.inc) | MD5 hash built on Marc Bevand's public-domain core; retained for TLS 1.0 / 1.1 interoperability only (Source: `/md5.inc:22-28`). |
 | [`../hmac.inc`](../hmac.inc) | HMAC construction over MD5 / SHA-1 / SHA-224 / SHA-256 / SHA-384 / SHA-512 per RFC 2104; includes the TLS PRF expansion helper `hmac$phash` (Source: `/hmac.inc:22-30`). |
-| [`../hmac_drbg.inc`](../hmac_drbg.inc) | HMAC-DRBG deterministic random-bit generator (NIST SP 800-90A) that reseeds from `/dev/urandom` at a `1 shl 19` byte interval (Source: `/hmac_drbg.inc:22-45`). |
+| [`../hmac_drbg.inc`](../hmac_drbg.inc) | HMAC-DRBG deterministic random-bit generator (NIST SP 800-90A) that reseeds from `/dev/urandom` at a `1 shl 19` byte interval (Source: `/hmac_drbg.inc:21-45`). |
 | [`../pbkdf2.inc`](../pbkdf2.inc) | PBKDF2 password-based key derivation (RFC 2898); every `pbkdf2$new_*` variant wraps the matching `hmac$new_*` (Source: `/pbkdf2.inc:22-26`). |
 | [`../scrypt.inc`](../scrypt.inc) | scrypt memory-hard KDF (Colin Percival, RFC 7914); the top-level labels are `scrypt` and `scrypt_iter` rather than `scrypt$*` (Source: `/scrypt.inc:22-60`). |
 | [`../rng.inc`](../rng.inc) | Combined SFMT + Mother-of-all PRNG transcoded from Agner Fog's library; the heavy-init path seeds 64 bytes from `rdtsc` + `gettimeofday` + `/dev/urandom` (Source: `/rng.inc:22-45`). |
@@ -138,7 +138,7 @@ top-level labels rather than `scrypt$*` (Source: `/scrypt.inc:63-90`,
 | `hmac$data` | `rdi` = HMAC, `rsi` = data, `rdx` = length | state advanced | `/hmac.inc:367` |
 | `hmac$final` | `rdi` = HMAC, `rsi` = destination buffer | digest written | `/hmac.inc:602` |
 | `hmac$phash` | `rdi` = HMAC, `rsi` = output, `edx` = desired length, `rcx` = seed bytes, `r8d` = seed length | TLS PRF-style expansion | `/hmac.inc:382` |
-| `aes$init_encrypt` | `rdi` = AES object (forced-aligned to 16), `rsi` = key ptr, `edx` = key length (16 / 24 / 32) | AES-NI vs. Wei Dai dispatch via `has_AESNI`; object size is `aes_size = 264` | `/aes.inc:251`, `:615` |
+| `aes$init_encrypt` | `rdi` = AES object (forced-aligned to 16), `rsi` = key ptr, `edx` = key length (16 / 24 / 32) | Entry point forces 16-byte alignment and calls `aes$init_common`, which dispatches to AES-NI or Wei Dai SSE2 via `has_AESNI`; object size is `aes_size = 264` | `/aes.inc:615` (`aes$init_encrypt`), `/aes.inc:251` (`aes$init_common` dispatcher) |
 | `aes$init_decrypt` | same argument shape as `aes$init_encrypt` | initialised for decryption | `/aes.inc:681` |
 | `aes$encrypt` | `rdi` = AES object, `rsi` = 16-byte block pointer | block encrypted in place | `/aes.inc:977` |
 | `aes$decrypt` | `rdi` = AES object, `rsi` = 16-byte block pointer | block decrypted in place | `/aes.inc:1202` |
@@ -156,10 +156,14 @@ Alignment notes. The AES object is forced to 16-byte alignment by
 `aes$init_encrypt` / `aes$init_decrypt` on entry (`add rdi, 0xf` / `and rdi, not
 0xf`) and `aes$init_common` dispatches to AES-NI or Wei Dai SSE2 based on the
 boot-time `has_AESNI` flag; the object layout (`aes_size = 264`) is identical in
-either path (Source: `/aes.inc:251-260`, `/aes.inc:615-650`). SHA and HMAC state
-objects select aligned vs. unaligned internal sub-buffers at runtime via an
-alignment test documented in the respective file headers (Source:
-`/sha2.inc:40-55`, `/hmac.inc:30-60`).
+either path (Source: `/aes.inc:251-260`, `/aes.inc:615-650`). SHA state objects
+force all three internal pointer fields (`sha_stateptr_ofs`,
+`sha_bitcountptr_ofs`, `sha_bufferptr_ofs`) to 16-byte alignment at `init` time
+(Source: `/sha2.inc:41-46`). HMAC does not perform its own alignment-selection
+test; instead it holds a function-pointer table (`hmac_macinit_ofs`,
+`hmac_macupdate_ofs`, `hmac_macfinal_ofs`, `hmac_macsize_ofs`) at the start of
+its state object and delegates every hash call to the underlying SHA or MD5
+implementation, which handles its own alignment (Source: `/hmac.inc:22-32`).
 
 ## Usage
 
