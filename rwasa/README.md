@@ -44,11 +44,11 @@ All inter-process messages share an 8-byte header (`[+0]=type`, `[+4]=total_len`
 
 | Constant | Value | Direction | Purpose | Composer | Handler |
 |---|---|---|---|---|---|
-| `linkmessage_ocsp` | `0` | master → all workers | Propagate an updated OCSP-stapling response for a given subject CN; oneshot broadcast capped at 4096 bytes per message | `master_ocsp_hook` (/rwasa/master.inc:271) | `masterlink$receive` `.ocsp` branch (/rwasa/worker.inc:239) |
-| `linkmessage_log` | `1` | worker → master | Forward access-log or error-log records from worker to master, which writes to `webservercfg$log` or `webservercfg$logerror` | `worker_loghook` (/rwasa/worker.inc:156) | `master$receive` (/rwasa/master.inc:183) |
-| `linkmessage_tlsupdate` | `2` | worker → master → other workers | Broadcast a new TLS session-cache entry (32-byte session id + 64-byte state, fixed 104-byte message) so that resumption works across workers | `worker_tlscache` (/rwasa/worker.inc:208) | master `.tlsbroadcast`; worker `masterlink$receive` `.tls` branch (/rwasa/worker.inc:239) |
+| `linkmessage_ocsp` | `0` | master → all workers | Propagate an updated OCSP-stapling response for a given subject CN; oneshot broadcast capped at 4096 bytes per message | `master_ocsp_hook` (/rwasa/master.inc:271) | `masterlink$receive` `.ocsp` branch (/rwasa/worker.inc:277) |
+| `linkmessage_log` | `1` | worker → master | Forward access-log or error-log records from worker to master, which writes to `webservercfg$log` or `webservercfg$logerror` | `worker_loghook` (/rwasa/worker.inc:156) | `master$receive` `.logmessage` branch (/rwasa/master.inc:229) |
+| `linkmessage_tlsupdate` | `2` | worker → master → other workers | Broadcast a new TLS session-cache entry (32-byte session id + 64-byte state, fixed 104-byte message) so that resumption works across workers | `worker_tlscache` (/rwasa/worker.inc:208) | master `.tlsbroadcast` (/rwasa/master.inc:210); worker `masterlink$receive` tlsupdate fallthrough (/rwasa/worker.inc:259–275) |
 
-The worker `masterlink$receive` handler temporarily clears `tls$sessioncache_hook` when applying an inbound `linkmessage_tlsupdate` to avoid echoing the update back to the master (Source: /rwasa/worker.inc:239).
+The worker `masterlink$receive` handler temporarily clears `tls$sessioncache_hook` when applying an inbound `linkmessage_tlsupdate` to avoid echoing the update back to the master (Source: /rwasa/worker.inc:265–269).
 
 ## Key Components
 
@@ -179,22 +179,54 @@ The built-in `asmcall` demonstration handler at `/rwasa/rwasa.asm:66` responds t
 
 ### Compile-time knobs (from `../ht_defaults.inc` unless noted)
 
+Knobs are listed by subsystem. Citations point at `../ht_defaults.inc` because `/rwasa/tlsmin_defaults.inc` shares every line number with it except the two-line delta called out below.
+
+**epoll**
+
 | Knob | Default | Relevance to rwasa |
 |---|---|---|
+| `epoll_minfds` | `4096` | Minimum file-descriptor slot count reserved at startup; if the soft `RLIMIT_NOFILE` is below this the binary exits with code 97 (Source: /ht_defaults.inc:130) |
+| `epoll_multiple_accepts` | `1` | Drain `accept()` in a loop per wake-up so a single epoll event can admit many pending connections (Source: /ht_defaults.inc:133) |
+| `epoll_stacksize` | `4096` | Per-connection stack budget inside the epoll handler dispatcher, in bytes (Source: /ht_defaults.inc:148) |
+
+**TLS**
+
+| Knob | Default | Relevance to rwasa |
+|---|---|---|
+| `tls_server_cipher_order` | `1` | Server-preferred cipher ordering; when enabled the server's list wins the negotiation (Source: /ht_defaults.inc:300) |
+| `tls_pem_refresh_interval` | `3600` | Seconds between PEM-file re-reads; enables cert hot-reload without restart (Source: /ht_defaults.inc:304) |
+| `tls_minimalist` | `0` (standard) / `1` (tlsmin) | In the minimalist variant, restricts the TLS cipher list to RSA key-exchange with AES-128/CBC only — no DHE, no AES-256 (Source: /ht_defaults.inc:319, /rwasa/tlsmin_defaults.inc:319) |
+| `tls_blacklist` | `86400` | Seconds an offending client IP stays on the TLS blacklist after repeated handshake failures (Source: /ht_defaults.inc:327) |
 | `tls_server_sessioncache` | `3600` | TLS session-cache entry lifetime in seconds; longer values increase resumption hit rate at memory cost (Source: /ht_defaults.inc:334) |
 | `tls_server_ocsp_stapling` | `1` | Enables OCSP-stapling refresh in the master, propagated to workers via `linkmessage_ocsp` (Source: /ht_defaults.inc:343) |
+
+**webserver**
+
+| Knob | Default | Relevance to rwasa |
+|---|---|---|
 | `webserver_maxheader` | `32768` | Maximum bytes allowed in an incoming HTTP request header block (Source: /ht_defaults.inc:443) |
 | `webserver_maxrequest` | `64 * 1048576` | Maximum request body size, 64 MiB default (Source: /ht_defaults.inc:448) |
+| `webserver_bigfile` | `32 * 1048576` | Threshold at which static-file responses switch to `mmap`-backed serving, 32 MiB default (Source: /ht_defaults.inc:455) |
+| `webserver_autogzip` | `1` | Transparently gzip responses whose `Content-Type` is on the compressible list (Source: /ht_defaults.inc:458) |
+| `webserver_initialsend` | `262144` | Bytes sent in the first write after a response header is emitted (Source: /ht_defaults.inc:467) |
+| `webserver_subsequentsend` | `262144` | Bytes sent per subsequent write-completion callback (Source: /ht_defaults.inc:468) |
+| `webserver_hotlist_statfreq` | `120` | Seconds between `stat()` refreshes for files in the hot-list cache (Source: /ht_defaults.inc:474) |
+| `webserver_hotlist_time` | `900` | Seconds an unreferenced file is retained in the hot-list cache before eviction (Source: /ht_defaults.inc:479) |
 | `webserver_hsts` | `1` | When a TLS listener is active, emit `Strict-Transport-Security` headers on responses (Source: /ht_defaults.inc:485) |
 | `webserver_breach_mitigation` | `48` | Bytes of random padding inserted into compressible responses to frustrate BREACH-style attacks (Source: /ht_defaults.inc:499) |
-| `tls_minimalist` | `0` (standard) / `1` (tlsmin) | In the minimalist variant, restricts the TLS cipher list to RSA key-exchange with AES-128/CBC only — no DHE, no AES-256 (Source: /ht_defaults.inc:319, /rwasa/tlsmin_defaults.inc:319) |
+| `webserver_fastcgi_postprocess` | `0` | When non-zero, post-process FastCGI responses (for example to inject additional headers) before forwarding to the client (Source: /ht_defaults.inc:503) |
+
+**webclient (used for `-backpath` upstreams)**
+
+| Knob | Default | Relevance to rwasa |
+|---|---|---|
 | `webclient_maxconns` | `4` (standard) / `6` (tlsmin) | Maximum simultaneous outbound webclient connections per hostname; raised in the minimalist build because cipher negotiation is cheaper (Source: /ht_defaults.inc:509, /rwasa/tlsmin_defaults.inc:509) |
 
 ### The `tlsmin_defaults.inc` two-line delta
 
 `/rwasa/tlsmin_defaults.inc` is an otherwise byte-identical copy of `../ht_defaults.inc` with exactly two assignments changed:
 
-```
+```diff
 319c319
 < 	tls_minimalist = 0
 ---
