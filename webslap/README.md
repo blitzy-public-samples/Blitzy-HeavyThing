@@ -4,7 +4,7 @@ HTTP/HTTPS load-testing utility with a multi-process worker pool, preemptive DNS
 
 ## Overview
 
-webslap is an ApacheBench-style load generator (Source: /webslap/webslap.asm:22–23) that drives sustained HTTP/1.x or HTTPS traffic against one or more URLs with configurable concurrency, total request count, and multi-process fan-out. Two build targets are produced from this folder: the standard `webslap`, and the TLS-minimalist `webslap_tlsmin` variant — the latter differs structurally from the standard build only in that it substitutes `tlsmin_defaults.inc` for `../ht_defaults.inc` so that `tls_minimalist = 1` is in effect at compile time (Source: /webslap/webslap_tlsmin.asm:50, /webslap/tlsmin_defaults.inc:315–319). Internally, the tool exercises the HeavyThing library's `webclient`, `tls`, `epoll`, `epoll_dns`, and `epoll_child` subsystems (Source: /webslap/webslap.asm:46–51), and identifies itself as `WebSlap v1.12` in its startup greeting (Source: /webslap/webslap.asm:161).
+webslap is an ApacheBench-style load generator (Source: /webslap/webslap.asm:22–23) that drives sustained HTTP/1.x or HTTPS traffic against one or more URLs with configurable concurrency, total request count, and multi-process fan-out. Two build targets are produced from this folder: the standard `webslap`, and the TLS-minimalist `webslap_tlsmin` variant — the latter differs structurally from the standard build only in that it substitutes `tlsmin_defaults.inc` for `../ht_defaults.inc` so that `tls_minimalist = 1` and `webclient_maxconns = 6` are in effect at compile time (Source: /webslap/webslap_tlsmin.asm:50, /webslap/tlsmin_defaults.inc:319, /webslap/tlsmin_defaults.inc:509). Internally, the tool exercises the HeavyThing library's `webclient`, `tls`, `epoll`, `epoll_dns`, and `epoll_child` subsystems (Source: /webslap/webslap.asm:46–51), and identifies itself as `WebSlap v1.12` in its startup greeting (Source: /webslap/webslap.asm:161).
 
 ## Architecture Fit
 
@@ -43,7 +43,7 @@ A single master process performs argument parsing and a one-shot preemptive DNS 
 | `./master.inc` | Master process: worker spawn via `epoll_child`, benchmark orchestration, `childcomms` result aggregation, and TSV/JSON output (Source: /webslap/master.inc:22, /webslap/master.inc:244–302) |
 | `./master_ui.inc` | Optional TUI status panel built from `tui_label`, `tui_statusbar`, and `tui_terminal`; 100ms timer-driven repaints (Source: /webslap/master_ui.inc:22, /webslap/master_ui.inc:94) |
 | `./worker.inc` | Per-worker request loop, `channel_fire` launch, and `channel_response` callback that assembles the parent-bound result record (Source: /webslap/worker.inc:22, /webslap/worker.inc:210–216) |
-| `./tlsmin_defaults.inc` | Local copy of `../ht_defaults.inc` with `tls_minimalist = 1`; consumed only by `webslap_tlsmin.asm` (Source: /webslap/tlsmin_defaults.inc:315–319) |
+| `./tlsmin_defaults.inc` | Local copy of `../ht_defaults.inc` with two deltas — `tls_minimalist = 1` and `webclient_maxconns = 6`; consumed only by `webslap_tlsmin.asm` (Source: /webslap/tlsmin_defaults.inc:319, /webslap/tlsmin_defaults.inc:509) |
 
 Compiled outputs — `webslap`, `webslap.o`, `webslap_tlsmin`, and `webslap_tlsmin.o` — are build artifacts and are not documented as source units.
 
@@ -154,7 +154,8 @@ webslap reads compile-time constants from `../ht_defaults.inc` (standard build) 
 | Knob | Relevance to webslap |
 |---|---|
 | `webclient_global_dnscache` | Hard prerequisite. The preflight calls `wcdns$lookup_ipv4` only when this is `1`; otherwise the build aborts with the FASM diagnostic `HeavyThing library setting webclient_global_dnscache is required for webslap` (Source: /webslap/webslap.asm:200–205, /webslap/webslap_tlsmin.asm:204–207) |
-| `tls_minimalist` | `0` in the standard build (from `../ht_defaults.inc`); forced to `1` in `webslap_tlsmin` via `./tlsmin_defaults.inc:319`. When `1`, the TLS client advertises only RSA/AES-128/CBC ciphersuites and excludes DHE-based suites (Source: /webslap/tlsmin_defaults.inc:315–319). The full support matrix is documented in `../docs/security.md` |
+| `tls_minimalist` | `0` in the standard build (from `../ht_defaults.inc`); forced to `1` in `webslap_tlsmin` via `./tlsmin_defaults.inc:319`. When `1`, the TLS client advertises only RSA/AES-128/CBC ciphersuites and excludes DHE-based suites (Source: /webslap/tlsmin_defaults.inc:319). The full support matrix is documented in `../docs/security.md` |
+| `webclient_maxconns` | `4` in the standard build (from `../ht_defaults.inc`); raised to `6` in `webslap_tlsmin` via `./tlsmin_defaults.inc:509`. Defines the upper limit on simultaneous connections per hostname in the webclient — raised in the minimalist build to permit higher per-host concurrency when cipher negotiation is cheaper (Source: /webslap/tlsmin_defaults.inc:509) |
 | `epoll_minfds` | Must accommodate every per-channel socket plus listener and parent-socketpair descriptors; insufficient descriptors trigger exit code `97` during `ht$init` (Source: /ht.inc:38–42) |
 | `epoll_stacksize` | Size of the per-coroutine stack backing every in-flight channel |
 | `epoll_readsize` | Per-`recv` buffer size; affects the cost of each TCP read |
