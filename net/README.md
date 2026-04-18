@@ -190,7 +190,7 @@ include '../../ht_data.inc'
 
 Build with FASM and GNU `ld`:
 
-```
+```bash
 fasm -m 524288 echo.asm && ld -o echo echo.o
 ```
 
