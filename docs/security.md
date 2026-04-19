@@ -36,7 +36,7 @@ lineage of the implementation.
 | HMAC | `/hmac.inc` | RFC 2104 | Function-pointer dispatch; state buffer sized to accommodate SHA-512 so the same struct works for every digest (Source: /hmac.inc:22-32) |
 | HMAC-DRBG | `/hmac_drbg.inc` | NIST SP 800-90A | Caller supplies initial seed; reseed interval is `1 shl 19` = 524288 generations (Source: /hmac_drbg.inc:41-44); on reseed, pulls "the underlying hash size length worth of bytes" from `/dev/urandom` (Source: /hmac_drbg.inc:23-29) |
 | PBKDF2 | `/pbkdf2.inc` | RFC 2898 | Thin wrapper over HMAC; supports every HMAC variant (Source: /pbkdf2.inc:22-23) |
-| scrypt | `/scrypt.inc` | RFC 7914 | Colin Percival reference-style implementation; supported with `r = 1` and `p = 1` only; default `scrypt_N = 1024` (Source: /scrypt.inc:22-40) |
+| scrypt | `/scrypt.inc` | RFC 7914 (with non-standard SHA-512 extension when `scrypt_sha512 = 1`) | Colin Percival reference-style implementation; supported with `r = 1` and `p = 1` only; default `scrypt_N = 1024`. The default `scrypt_sha512 = 1` substitutes PBKDF2-HMAC-SHA512 for the RFC-mandated PBKDF2-HMAC-SHA256 as the mixing KDF; this is a non-standard library extension, not RFC 7914-conformant (Source: /scrypt.inc:22-40, /scrypt.inc:94-97, /ht_defaults.inc:385-386) |
 | Diffie-Hellman (DH) | `/bigint.inc`, `/dh_pool.inc` | RFC 2631, RFC 4419 | Precomputed safe primes shipped in `/dh_pool.inc` families; bigint arithmetic is library-private (Source: /ht.inc:162-164) |
 | htcrypt | `/htcrypt.inc` | Library-specific | Cascaded AES-256 using 256 independent contexts derived from an 8 KiB modified-scrypt / HMAC-SHA512 key schedule with an additional 1024-round AES-256 grind; not used by TLS or SSH (Source: /ht.inc:150) |
 | htxts | `/htxts.inc` | Library-specific | AES-XTS-style wrapper layered over htcrypt; block size 2048 bytes; not used by TLS or SSH (Source: /ht.inc:151) |
@@ -100,7 +100,7 @@ appropriate for a given deployment.
 | SHA-160 / SHA-1 is known-weak | /sha1.inc:22-28 | Present only for TLS 1.0/1.1 interoperability; new application code must use SHA-256 or higher |
 | MD5 is cryptographically broken | RFC 6151; /md5.inc:22-26 | Exposed primarily inside HMAC-MD5 and PBKDF2-HMAC-MD5 for legacy compatibility; standalone digest labels are present but must not be used for new data-integrity purposes |
 | Software AES may leak via cache-timing when AESNI is absent | /aes.inc:26-34 | Wei Dai timing countermeasure is applied; the AESNI path is preferred when the CPU reports AESNI |
-| CBC-mode TLS requires constant-time MAC verification to avoid padding-oracle attacks | /tls.inc (CBC-only suite list, /tls.inc:145-166) | HeavyThing's TLS implementation uses the documented countermeasure pattern; AEAD cipher suites are not implemented |
+| CBC-mode TLS requires constant-time MAC verification to avoid padding-oracle attacks (Lucky13 / CVE-2013-0169 class) | /tls.inc (CBC-only suite list, /tls.inc:145-166) | HeavyThing's TLS implementation uses the documented countermeasure pattern; AEAD cipher suites are not implemented. Residual timing channels on the CBC MAC-compare path are further compensated by `tls_blacklist = 86400`, which quarantines a source IP for 24 hours after any TLS handshake failure (Source: /ht_defaults.inc:327) |
 | SSH CBC-mode is vulnerable to the Plaintext Recovery Attack by default | /ssh.inc:46-60 | Triple-layer mitigation: bad-length handling runs for a random time so bad-length and bad-HMAC cannot be distinguished; normal operation never produces HMAC errors, so on an HMAC error the length requirement is randomised; in client mode an `SSH_MSG_IGNORE` carrying random data is sent before the password (see the paper at isg.rhul.ac.uk / ~kp / SandPfinal.pdf cited in /ssh.inc:48-49) |
 | The fast RNG (SFMT + Mother-Of-All) is not cryptographically secure for continuous output | /rng.inc:32-50 | Use HMAC-DRBG via `/hmac_drbg.inc` for long-term keying material; the TLS and SSH stacks use `rng$block` / `rng$block_nzb`, which internally discard bits |
 | RNG state is not thread-safe | /rng.inc:52 | Callers must serialise access or maintain per-thread state |
@@ -108,6 +108,23 @@ appropriate for a given deployment.
 | HeavyThing's TLS does not perform X509 chain validation | /tls.inc:25-35 | Documented as explicit garbage-in / garbage-out policy; operators deploying HeavyThing as a TLS client must pin known-good certificates out-of-band and must not rely on CA trust |
 | HeavyThing's SSH client does not verify the server host key against a known-hosts database | /ssh.inc:79-83 | Host-key fingerprinting hooks are marked in `/ssh.inc` for applications to implement; the library verifies the host signature but does not maintain a known-hosts file |
 | On PEM reload, old X509 objects are intentionally never freed | /tls.inc:92-124 | Deliberate design to avoid quiescing in-flight connections during certificate rotation; acceptable because rotations are expected approximately once per year or two; replacing a PEM with an invalid file while the server is running will likely crash in-flight handshakes |
+
+### Public CVE Cross-Reference
+
+The following CVEs are widely associated with the cryptographic and network
+protocols HeavyThing implements. This table records each CVE's applicability
+and where in this document the relevant mitigation (or non-applicability
+rationale) is discussed.
+
+| CVE | Name | Applicability | Where Discussed |
+|---|---|---|---|
+| CVE-2013-0169 | Lucky13 | Applicable in principle to CBC-mode TLS; residual MAC-compare timing channel compensated by 24-hour IP quarantine via `tls_blacklist = 86400` | CBC-mode caveat row above (Source: /ht_defaults.inc:327) |
+| CVE-2012-4929 | CRIME | Not applicable; TLS record-layer compression is not implemented (only the `null` compression method is advertised and accepted) | "What Is NOT Provided" bullet below (Source: /tls.inc:1032-1046, /tls.inc:1118, /tls.inc:4318-4323) |
+| CVE-2015-4000 | LogJam | Not applicable; `dh_bits = 2048` minimum is enforced at configuration default and at compile time (`/dh_pool.inc` refuses to build below 2048 bits) | "DH parameter size" row in Operational Guidance (Source: /ht_defaults.inc:280-293, /dh_pool.inc:58-73) |
+| CVE-2016-2183 | SWEET32 | Not applicable; HeavyThing implements no 64-bit block ciphers (no 3DES, Blowfish, IDEA, CAST5) | Cipher-suite matrix below (Source: /tls.inc:145-166) |
+| CVE-2011-3389 | BEAST | Not applicable; HeavyThing implements TLS 1.2 only, and BEAST targets TLS 1.0 CBC | TLS Support Matrix below (Source: /tls.inc:22-23) |
+| CVE-2014-0160 | Heartbleed | Not applicable; the TLS heartbeat extension is not implemented | TLS Support Matrix below (Source: /tls.inc) |
+| CVE-2023-48795 | Terrapin | Not applicable; HeavyThing's SSH uses `aes256-cbc` with `hmac-sha2-256` (MAC-of-plaintext, not encrypt-then-MAC) and does not negotiate `chacha20-poly1305@openssh.com`, so neither of the documented attack paths is reachable | SSH Support Matrix below (Source: /ssh.inc:130-180) |
 
 ## TLS Support Matrix
 
@@ -179,7 +196,7 @@ bit-width is governed by `dh_bits` and the private-key bit-width by
 | `tls_minimalist` | 0 | When 1, restricts the cipher list to `TLS_RSA_WITH_AES_128_CBC_SHA` only and strips most of the handshake state machine (Source: /ht_defaults.inc:319) |
 | `tls_perfect_forward_secrecy_only` | 0 | When 1, restricts the cipher list to the eight DHE suites only (Source: /ht_defaults.inc:308) |
 | `tls_server_cipher_order` | 1 | When 1, the server imposes its cipher ordering rather than the client's (Source: /ht_defaults.inc:300) |
-| `tls_server_rsa_blinding` | 0 | Controls RSA blinding countermeasure against remote timing attack; see `/tls.inc:37-45` for rationale (Source: /ht_defaults.inc:314) |
+| `tls_server_rsa_blinding` | 0 (disabled by default) | Controls RSA blinding countermeasure against remote timing attack on the server's RSA private-key operations. The underlying `/bigint.inc` Montgomery routines are not constant-time, so a remote attacker that can measure handshake latency may in principle recover RSA private-key bits over many connections when blinding is disabled. Internet-facing TLS servers should set this to `1`; see `/tls.inc:37-45` for rationale and `/tls.inc:5268-5340` for the blinding implementation path (Source: /ht_defaults.inc:314) |
 | `tls_pem_refresh_interval` | 3600 | Seconds between checks of each loaded PEM file's mtime for hot-reload (Source: /ht_defaults.inc:304) |
 | `tls_blacklist` | 86400 | Seconds that a remote IP stays blacklisted after a crypto error in server mode; the underlying blacklist is `/blacklist.inc` (Source: /ht_defaults.inc:327) |
 | `tls_server_sessioncache` | 3600 | Server-side TLS session cache lifetime in seconds, per RFC 5246 (Source: /ht_defaults.inc:334) |
@@ -274,13 +291,16 @@ or any application built on it.
 | OCSP refresh tuning | `X509_ocsp_refresh = 7200000` milliseconds (two hours) between refreshes; `X509_ocsp_retry = 300000` milliseconds (five minutes) between retries on failure (Source: /ht_defaults.inc:356,360) |
 | Session caching | Enable `tls_server_sessioncache` and `tls_client_sessioncache` (both default to 3600 seconds) to reduce per-connection handshake cost (Source: /ht_defaults.inc:334,381) |
 | Forward secrecy | Prefer the DHE_* cipher suites; set `tls_perfect_forward_secrecy_only = 1` to reject the static-RSA suites outright (Source: /ht_defaults.inc:308) |
-| DH parameter size | `dh_bits = 2048` (reduced from the earlier default of 4096 on community feedback) and `dh_privatekey_size = 256` (Source: /ht_defaults.inc:280-293) |
+| DH parameter size | `dh_bits = 2048` (reduced from the earlier default of 4096 on community feedback) and `dh_privatekey_size = 256`. The 2048-bit default defends against the LogJam attack (CVE-2015-4000), which exploited 512-bit `TLS_DHE_EXPORT`-grade primes via a downgrade path; `/dh_pool.inc` additionally refuses to compile with a `dh_bits` value below 2048, so LogJam-grade primes cannot be selected at build time either. The smallest precomputed safe-prime pool shipped with the library is `/dh_pool_2k.inc` (Source: /ht_defaults.inc:280-293, /dh_pool.inc:58-73) |
 | DSA parameter size | `dsa_size = 3072` with `dsa_subgroup_size = 256` (Source: /ht_defaults.inc:275-277) |
 | Primality testing rigour | `millerrabinerrorrate = 64` iterations, selectable from 64, 80, 128, 160, or 256 (Source: /ht_defaults.inc:272) |
 | Minimalist builds | For appliances that only serve a single cipher path, consider `tls_minimalist = 1`; the tools `/rwasa/rwasa_tlsmin.asm` and `/webslap/webslap_tlsmin.asm` are built with this setting (Source: /ht_defaults.inc:319) |
-| scrypt tuning | `scrypt_N = 1024` with `scrypt_sha512 = 1`; `r = p = 1` only (Source: /ht_defaults.inc:386-389, /scrypt.inc:35-40) |
+| scrypt tuning | `scrypt_N = 1024` with `scrypt_sha512 = 1` (non-standard SHA-512 mixing KDF vs RFC 7914's SHA-256; see the scrypt row in the Cryptographic Primitive Scope table); `r = p = 1` only (Source: /ht_defaults.inc:386-389, /scrypt.inc:35-40) |
 | BREACH mitigation | `webserver_breach_mitigation = 48` controls the randomised byte padding injected into HTTP responses (Source: /ht_defaults.inc:499) |
 | HSTS | `webserver_hsts = 1` sets the `Strict-Transport-Security` header on HTTPS responses (Source: /ht_defaults.inc:485) |
+| Privilege drop | `rwasa` binds its listen sockets while still root, then enters `masterthread` which performs `setgid` followed by `setuid` to the resolved runas GID/UID before any request is served (Source: /rwasa/master.inc:37-48). The default target account is `nobody`; override with `-runas <user>` to run under a dedicated unprivileged system account in production (Source: /rwasa/arguments.inc:131). `sshtalk` and other library demos do not drop privileges and run under whichever UID launched them (Source: /sshtalk/sshtalk.asm:255-281) |
+| Sensitive-file permissions | The library does not runtime-enforce file permissions on the secrets it reads (no `chmod`/`fchmod` call path exists; those syscall numbers are merely declared at /syscall.inc:119-120). Operators are responsible for restricting PEM private-key files loaded via `rwasa -tls pemfile` (Source: /rwasa/arguments.inc:404 `.argtls`; example `/etc/ssl/site.pem`) and the SSH host keys under `sshtalk`'s default `/etc/ssh` directory (Source: /sshtalk/sshtalk.asm:243-245) to mode `0600` owned by the runas target account. The library itself uses mode `0600` when it opens mapped files on behalf of the process (Source: /privmapped.inc:96-97 `mov edx, 0x180 ; 0600 mode`), and `sshtalk`'s README already notes that `/etc/ssh/ssh_host_rsa_key` is normally `0600` owned by root (Source: /sshtalk/README.md Limitations). Because PEM files are re-read periodically when `tls_pem_refresh_interval` elapses (Source: /ht_defaults.inc:304, /tls.inc:832 `tls$pemrevalidate`), restrictive permissions must be preserved for the entire uptime of the daemon, not just at startup |
+| `-sandbox` scope | The `-sandbox` CLI flag on `rwasa` is a URL-to-filesystem path-prefix join, not an OS-level `chroot(2)` jail. At request time the resolved sandbox directory is string-concatenated with the request path to produce the served file's absolute path (Source: /webserver.inc:616 comment "concat strings once during request processing"). No `chroot` syscall is ever invoked by the library; the syscall number is declared as a constant only (Source: /syscall.inc:190 `syscall_chroot = 161`) and has no call site anywhere in the codebase. Operators who need kernel-enforced filesystem isolation must layer an external mechanism (chroot wrapper, systemd `RootDirectory=`, container, namespace) around the `rwasa` process; the `-sandbox` flag alone does not provide this |
 
 ## What Is NOT Provided
 
@@ -291,6 +311,12 @@ affect an integration decision.
 - TLS 1.3 is not implemented (Source: /tls.inc:22-23).
 - AEAD cipher suites (GCM, CCM, ChaCha20-Poly1305) are not implemented in
   TLS; commented-out GCM placeholders are visible at `/tls.inc:138-143`.
+- TLS record-layer compression is not implemented; the server advertises
+  exactly one compression method (`null`) on every handshake and rejects
+  any non-zero compression byte received from a peer (Source:
+  /tls.inc:1032-1046, /tls.inc:1118, /tls.inc:4318-4323). The CRIME attack
+  (CVE-2012-4929), which recovers secrets from TLS-compressed records, is
+  therefore not applicable to HeavyThing.
 - Elliptic-curve primitives (Ed25519, X25519, NIST P-curves, secp256k1) are
   not implemented (Source: /tls.inc:64-72).
 - Modern memory-hard password KDFs (Argon2, bcrypt) are not implemented;
@@ -332,6 +358,7 @@ affect an integration decision.
 - `../crypto/README.md` — cryptography subsystem overview with per-primitive calling conventions
 - `../net/README.md` — networking subsystem overview, including the epoll event loop and TLS / SSH layering
 - `../rwasa/README.md` — rwasa web server, the primary TLS-server consumer in the repository
+- `../sshtalk/README.md` — sshtalk SSH chat demo; its Limitations section enumerates the demo-only scrypt posture of the bundled userdb, including the salt-equals-password anti-pattern, the user-existence timing oracle, the deliberately modest scrypt cost factors, and the absence of per-user rate limiting (Source: /sshtalk/userdb.inc)
 - `../toplip/README.md` — toplip utility, the primary consumer of htcrypt and htxts
 - `../ht.inc` — crypto and protocol include chain at `/ht.inc:141-167`
 - `../ht_defaults.inc` — authoritative source for every configuration knob referenced above

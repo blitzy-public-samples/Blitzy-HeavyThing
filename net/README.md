@@ -68,7 +68,7 @@ IO objects are doubly linked by `io_parent_ofs` and `io_child_ofs` (Source: /io.
 | `../epoll_child.inc` | Fork and inter-process helpers for multi-process master/worker tools; used by `rwasa` and `webslap` |
 | `../epoll_dns.inc` | Asynchronous DNS resolver integrated into the event loop; included from `epoll.inc` |
 | `../tls.inc` | Minimalist TLS 1.2 client and server. AES-128/256-CBC cipher suites with SHA1/SHA256 HMAC; PEM hot-reload; session cache |
-| `../ssh.inc` | SSH version 2 client and server transport. `diffie-hellman-group-exchange-sha256` KEX; `ssh-rsa`/`ssh-dsa` host keys; `aes256-cbc` cipher; `hmac-sha2-256` MAC |
+| `../ssh.inc` | SSH version 2 client and server transport. `diffie-hellman-group-exchange-sha256` KEX; `ssh-rsa`/`ssh-dss` host keys; `aes256-cbc` cipher; `hmac-sha2-256` MAC |
 | `../http1.inc` | Optional HTTP/1.x message parser and builder. Standalone — not auto-included by `ht.inc`. Consumers must `include 'http1.inc'` themselves |
 | `../httpheaders.inc` | HTTP header canonicalization tables. Provides `httpheaders$parse_http1` and `httpheaders$tobuffer_http1` used by `webserver.inc` and `webclient.inc` |
 | `../url.inc` | URL parsing and normalization |
@@ -284,7 +284,7 @@ All compile-time knobs live in `ht_defaults.inc`. Values shown are defaults; ove
 - **TLS 1.2 only.** No TLS 1.3. No ECDHE (design choice citing NIST curve concerns post-Snowden), no ChaCha20-Poly1305, no AEAD (CCM/GCM) suites. MAC is limited to CBC modes with SHA1/SHA256 HMAC (Source: /tls.inc:22–66).
 - **X.509 handling is garbage-in garbage-out.** The TLS layer does not perform chain validation; whatever PEM is loaded is presented to peers as-is (Source: /tls.inc:26–34).
 - **PEM hot-reload is leaky by design.** During reload, the old certificate memory is intentionally not freed to avoid quiescing active connections. This is a documented trade-off (Source: /tls.inc:112–114).
-- **SSH version 2 only, narrow cipher set.** Only `diffie-hellman-group-exchange-sha256` KEX; only `ssh-rsa` and `ssh-dsa` host keys; only `aes256-cbc` cipher; only `hmac-sha2-256` MAC. No ed25519, no curve25519, no ChaCha20-Poly1305 (Source: /ssh.inc:27–37).
+- **SSH version 2 only, narrow cipher set.** Only `diffie-hellman-group-exchange-sha256` KEX; only `ssh-rsa` and `ssh-dss` host keys; only `aes256-cbc` cipher; only `hmac-sha2-256` MAC. No ed25519, no curve25519, no ChaCha20-Poly1305 (Source: /ssh.inc:27–37).
 - **SSH client has no hostkey database.** The client verifies RSA/DSA signatures on host keys but does not pin them to a known-hosts file (Source: /ssh.inc:79–83).
 - **HTTP/1.x only.** No HTTP/2, no HTTP/3, no WebSocket. Parsing is performed by `httpheaders$parse_http1` and `httpheaders$tobuffer_http1` from `httpheaders.inc`; the standalone `http1.inc` is optional and not auto-included by `ht.inc`.
 - **Web server file cache is mtime-based, not size-aware.** If a file's size changes without an mtime change, responses can contain zero-padding or be truncated within one `webserver_filecache_time` window (Source: /webserver.inc:50–58). The documented workaround is to replace files atomically (delete-then-recreate rather than in-place rewrite).
