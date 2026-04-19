@@ -106,7 +106,7 @@ All keybindings are dispatched by `screen$firekeyevent` (Source: /sshtalk/screen
 |-----------|--------|
 | `Ctrl-A` | Add buddy. Context-sensitive: on a 1:1 chat with an unknown remote, adds silently and saves the userdb; otherwise opens the Add Buddy modal (Source: /sshtalk/screen.inc:1467-1468, 1515-1575). |
 | `Ctrl-R` | Remove buddy (Source: /sshtalk/screen.inc:1477-1478). |
-| `Ctrl-J` | Join or create a named room (Source: /sshtalk/screen.inc:1473-1474, 1230-1260). |
+| `Ctrl-J` | Join or create a named room (Source: /sshtalk/screen.inc:1473-1474, 1230-1260, 1740). |
 | `Ctrl-W` | Close the currently focused chat (Source: /sshtalk/screen.inc:1475-1476). |
 | `Ctrl-C` | Exit. `screen$firekeyevent` explicitly lets `esi=3` fall through so that `tui_ssh` terminates the SSH session (Source: /sshtalk/screen.inc:1459-1460). |
 | `Up` / `Down` | Scroll the focused chat panel history. Passed to the focused child via `tui_vfirekeyevent` (Source: /sshtalk/screen.inc:1480-1484). |

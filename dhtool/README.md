@@ -84,7 +84,8 @@ Size bounds (Source: `dhtool/dhtool.asm:86,150-152`):
 |---|---|---|
 | Minimum bits | `1536` | `_start` compares `SIZE` against 1536 and rejects smaller values |
 | Maximum bits | `insane_primesize = 131072` | `_start` compares `SIZE` against 131072 and rejects larger values |
-| Maximum CPU count | `16384` | `_start` caps `-XX` at 16384; values higher than this are rejected |
+| Auto-detect CPU ceiling | `16384` | When `-XX` is not supplied, the `.nocpuarg:` branch caps `sysinfo$cpucount` at 16384 via `cmova` (Source: `dhtool/dhtool.asm:187-198`) |
+| `-XX` validation bound | `sysinfo$cpucount` | When `-XX` is supplied, `_start` rejects values that exceed the actual detected core count by branching to `.cputoomany` (Source: `dhtool/dhtool.asm:180-184`) |
 
 Output streams in create mode (Source: `dhtool/dhtool.asm:30-43`):
 

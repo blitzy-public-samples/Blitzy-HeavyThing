@@ -153,7 +153,7 @@ webslap reads compile-time constants from `../ht_defaults.inc` (standard build) 
 
 | Knob | Relevance to webslap |
 |---|---|
-| `webclient_global_dnscache` | Hard prerequisite. The preflight calls `wcdns$lookup_ipv4` only when this is `1`; otherwise the build aborts with the FASM diagnostic `HeavyThing library setting webclient_global_dnscache is required for webslap` (Source: /webslap/webslap.asm:200–205, /webslap/webslap_tlsmin.asm:204–207) |
+| `webclient_global_dnscache` | Hard prerequisite. The preflight calls `wcdns$lookup_ipv4` only when this is `1`; otherwise the build aborts with the FASM diagnostic `HeavyThing library setting webclient_global_dnscache is required for webslap` (Source: /webslap/webslap.asm:200–205, /webslap/webslap_tlsmin.asm:204–209) |
 | `tls_minimalist` | `0` in the standard build (from `../ht_defaults.inc`); forced to `1` in `webslap_tlsmin` via `./tlsmin_defaults.inc:319`. When `1`, the TLS client advertises only RSA/AES-128/CBC ciphersuites and excludes DHE-based suites (Source: /webslap/tlsmin_defaults.inc:319). The full support matrix is documented in `../docs/security.md` |
 | `webclient_maxconns` | `4` in the standard build (from `../ht_defaults.inc`); raised to `6` in `webslap_tlsmin` via `./tlsmin_defaults.inc:509`. Defines the upper limit on simultaneous connections per hostname in the webclient — raised in the minimalist build to permit higher per-host concurrency when cipher negotiation is cheaper (Source: /webslap/tlsmin_defaults.inc:509) |
 | `epoll_minfds` | Must accommodate every per-channel socket plus listener and parent-socketpair descriptors; insufficient descriptors trigger exit code `97` during `ht$init` (Source: /ht.inc:38–42) |
