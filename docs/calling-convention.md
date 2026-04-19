@@ -110,6 +110,13 @@ Every public label in HeavyThing uses the form `subsystem$function`. The
 dollar sign serves as the namespace separator; see `./building.md` for
 the FASM-specific rationale for this character choice.
 
+Two historical exceptions exist in the cryptography subsystem and are
+preserved for API compatibility: `scrypt` (Source: /scrypt.inc:68) and
+`scrypt_iter` (Source: /scrypt.inc:446). Both predate the
+`subsystem$function` convention and are exported as bare identifiers
+without the `$` separator. New code should not follow this pattern;
+see `./contributing.md` for naming guidance for new modules.
+
 Representative examples taken directly from the library:
 
 - `ht$init` (Source: /ht.inc:609) is the master initialiser.
@@ -126,20 +133,21 @@ list is not exhaustive but illustrates the pattern.
 | Subsystem | Representative Labels |
 |---|---|
 | `ht` | `ht$init`, `ht$init_args`, `ht$syscall`, `ht$codeseg`, `ht$dataseg` |
-| `heap` | `heap$init`, `heap$alloc`, `heap$free`, `heap$realloc` |
+| `heap` | `heap$init`, `heap$alloc`, `heap$alloc_permanent`, `heap$alloc_clear`, `heap$free` |
 | `string` | `string$to_stdoutln`, `string$from_utf8`, `string$indexof_charcode`, `string$substr` |
 | `list` | `list$new`, `list$push_back`, `list$foreach` |
-| `stringmap` | `stringmap$new`, `stringmap$insert`, `stringmap$find`, `stringmap$findvalue` |
+| `stringmap` | `stringmap$new`, `stringmap$insert`, `stringmap$find`, `stringmap$find_value` |
 | `unsignedmap` | `unsignedmap$new`, `unsignedmap$insert` |
 | `buffer` | `buffer$new`, `buffer$append`, `buffer$destroy` |
-| `json` | `json$parse`, `json$stringify` |
+| `json` | `json$parse_object`, `json$tostring`, `json$newobject`, `json$appendchild`, `json$destroy` |
 | `epoll` | `epoll$init`, `epoll$iteration`, `epoll$run`, `epoll$send`, `epoll$outbound`, `epoll$established` |
 | `rng` | `rng$init`, `rng$int`, `rng$block`, `rng$block_nzb` |
 | `aes` | `aes$init_encrypt`, `aes$encrypt`, `aes$init_decrypt`, `aes$decrypt` |
-| `sha160` | `sha160$new`, `sha160$init`, `sha160$write`, `sha160$read` |
+| `sha160` | `sha160$new`, `sha160$init`, `sha160$update`, `sha160$final` |
 | `sha224` / `sha256` / `sha384` / `sha512` | `sha224$new`, `sha256$new`, `sha384$new`, `sha512$new` |
 | `hmac` | `hmac$new_md5`, `hmac$new_sha256`, `hmac$key` |
 | `pbkdf2` | `pbkdf2$new_md5`, `pbkdf2$init_md5`, `pbkdf2$new_sha256` |
+| `scrypt` (exception) | `scrypt`, `scrypt_iter` (bare identifiers, no `$` — see exception note above) |
 | `tls` | `tls$peminit`, `tls$pemlookup`, `tls$sessioncacheinit`, `tls$new_server`, `tls$new_client` |
 | `ssh` | `ssh$new_server`, `ssh$blacklist` |
 | `X509` | `X509$new`, `X509$new_pem`, `X509$new_ssh`, `X509$destroy` |
@@ -148,7 +156,7 @@ list is not exhaustive but illustrates the pattern.
 | `webserver` | `webserver$init`, `webservercfg$init`, `webservercfg$function_map`, `webservercfg$hotlist`, `webservercfg$direxists`, `webservercfg$fastcgi_map` |
 | `fcgiclient` | `fcgiclient$init` |
 | `wcdns` | `wcdns$init` |
-| `tui_*` | `tui_splash$initlogo`, `tui_statusbar$globalinit`, `tui_button$new`, `tui_form$new` |
+| `tui_*` | `tui_splash$initlogo`, `tui_statusbar$globalinit`, `tui_button$new`, `tui_form$new_rect` |
 | `profiler` | `profiler$init`, `profiler$leave`, `profiler$enter`, `profiler$reset` |
 | `vdso` | `vdso$init` |
 | `syslog` | `syslog$init` |

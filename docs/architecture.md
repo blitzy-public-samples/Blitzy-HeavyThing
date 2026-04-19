@@ -272,9 +272,13 @@ The propagation rule is stated explicitly in the source: `destroy`, `clone`, and
 **Chain composition.** An application constructs a chain top-down: the
 application-layer object is the root (its parent pointer is null) and the
 `epoll$` object is the tail (its child pointer is null). Because the chain is
-doubly linked, entry points such as `epoll$outbound`, `epoll$established`, and
-`epoll$send` can be invoked on any link in the chain and will walk to the real
-epoll object transparently (Source: /epoll.inc:30-43).
+doubly linked, the four chainwalk-capable entry points `epoll$inbound`,
+`epoll$outbound`, `epoll$outbound_hostname`, and `epoll$established` can be
+invoked on any link in the chain and will walk to the real epoll object
+transparently (Source: /epoll.inc:30-43). Note that `epoll$send` is not a
+chainwalk entry point: it dereferences the IO object's `epoll_outbuf_ofs` and
+`epoll_fd_ofs` slots directly and assumes its `rdi` argument is already an
+epoll object (Source: /epoll.inc:590-634).
 
 **Concrete HTTPS example.** An outbound HTTPS request is composed as three
 links: `webclient` (root) -> `tls` (middle) -> `epoll` (tail). A byte arriving at
@@ -325,7 +329,7 @@ The bin layout accommodates four tiers of fixed-granularity bins and a direct
 | > 1048576 (1 MB) | direct `mmap` per allocation | — |
 
 The in-heap header occupies `139272 + (heap_bincheck * 8)` bytes (Source:
-/heap.inc:63). The never-return-to-kernel strategy is deliberate: HeavyThing
+/heap.inc:103, /heap.inc:111). The never-return-to-kernel strategy is deliberate: HeavyThing
 targets long-running server processes whose resident-set size converges to a
 steady state after warm-up. The allocator minimises `mmap`/`munmap` syscall
 traffic on the hot path, at the cost of appearing to leak memory from an

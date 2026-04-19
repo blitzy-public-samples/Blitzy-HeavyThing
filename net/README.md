@@ -80,7 +80,7 @@ IO objects are doubly linked by `io_parent_ofs` and `io_child_ofs` (Source: /io.
 
 ## Calling Convention
 
-The library-wide register contract is documented in [/docs/calling-convention.md](../docs/calling-convention.md). Networking entry points use System V AMD64 argument order unless noted. All entry labels follow the `subsystem$function` pattern (e.g., `epoll$send`, `tls$new`). Stack alignment is 16-byte at call boundaries, enforced by the `prolog` and `epilog` macros from `profiler.inc`.
+The library-wide register contract is documented in [/docs/calling-convention.md](../docs/calling-convention.md). Networking entry points use System V AMD64 argument order unless noted. All entry labels follow the `subsystem$function` pattern (e.g., `epoll$send`, `tls$new_server` for listener endpoints, `tls$new_client` for outbound connections). Stack alignment is 16-byte at call boundaries, enforced by the `prolog` and `epilog` macros from `profiler.inc`.
 
 ### epoll entry points
 
@@ -141,7 +141,7 @@ Handler register conventions:
 `epoll$sendcb` (Source: /epoll.inc:2653) registers a two-stage callback for applications that need to know when the output buffer is in use and when it is drained:
 
 - Stage 1 (`rdi` = arg, `esi` = 0): buffering has started because the kernel could not accept all bytes immediately.
-- Stage 2 (`rdi` = arg, `esi` = 1): buffer is empty; it is safe to push more bytes (Source: /epoll.inc:49–76).
+- Stage 2 (`rdi` = arg, `esi` = 1): buffer is empty; it is safe to push more bytes (Source: /epoll.inc:84–102).
 
 ## Usage
 
@@ -265,7 +265,7 @@ All compile-time knobs live in `ht_defaults.inc`. Values shown are defaults; ove
 | `webserver_breach_mitigation` | 48 | Random `X-NB` header bytes to mitigate BREACH |
 | `webserver_fastcgi_postprocess` | 0 | Post-process FastCGI responses |
 
-`webserver_filecache_time` controls the granularity of the mmap-based static-file cache: every cached response is only rechecked against the on-disk `mtime` after this many seconds elapse. The default of `300` (five minutes) means a file edit may not be visible to clients until the window expires, and — more importantly — an in-place size change within a window can produce zero-padded or truncated responses because the original mmap length is reused (Source: /webserver.inc:35–63). The documented workaround is to replace files atomically: `rm` then create a new file rather than rewriting in place. `webserver_breach_mitigation` prepends a random-length `X-NB` header to each compressed response; this is a BREACH countermeasure (Source: /webserver.inc:83–92). `webserver_autogzip = 1` enables on-the-fly gzip for responses whose Content-Type matches a compressible family; `webserver_fastcgi_postprocess` is off by default because post-processing the FastCGI response body defeats streaming.
+`webserver_filecache_time` controls the granularity of the mmap-based static-file cache: every cached response is only rechecked against the on-disk `mtime` after this many seconds elapse. The default of `300` (five minutes) means a file edit may not be visible to clients until the window expires, and — more importantly — an in-place size change within a window can produce zero-padded or truncated responses because the original mmap length is reused (Source: /webserver.inc:35–63). The documented workaround is to replace files atomically: `rm` then create a new file rather than rewriting in place. `webserver_breach_mitigation` prepends a random-length `X-NB` header to each compressed response; this is a BREACH countermeasure (Source: /webserver.inc:4353–4385, /webserver.inc:4577–4578). `webserver_autogzip = 1` enables on-the-fly gzip for responses whose Content-Type matches a compressible family; `webserver_fastcgi_postprocess` is off by default because post-processing the FastCGI response body defeats streaming.
 
 ### Web client
 

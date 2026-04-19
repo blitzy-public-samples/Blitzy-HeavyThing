@@ -46,7 +46,7 @@ Dependencies out:
 | Consumer | Composition |
 |---|---|
 | `../sshtalk/` | SSH-enabled multi-user chat using `tui_simpleauth`, `tui_splash`, `tui_ssh` |
-| `../hnwatch/` | HackerNews terminal reader built on `tui_datagrid`, `tui_panel`, `tui_label`, `tui_statusbar` (Source: `../hnwatch/ui.inc:22–32`) |
+| `../hnwatch/` | HackerNews terminal reader built on `tui_datagrid`, `tui_label`, `tui_statusbar` (Source: `../hnwatch/ui.inc:22–32`) |
 | `../examples/tuimatrix/` | Canonical minimal TUI demo |
 | `../examples/tuieffects/` | Effect-library transitions showcase |
 

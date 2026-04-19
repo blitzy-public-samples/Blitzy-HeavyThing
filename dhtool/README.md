@@ -124,14 +124,13 @@ fasm -m 524288 dhtool.asm && ld -o dhtool dhtool.o
 ./dhtool -convert params.pem >moduli.line
 ```
 
-The program reuses the HeavyThing three-file include contract; the source opens with:
+The program follows the HeavyThing three-file include contract with one sanctioned variation: `dhtool_settings.inc` substitutes for `ht_defaults.inc` so that the tool can override a small number of library defaults locally while keeping the rest of the configuration in the same translation unit. The actual include sequence in `dhtool/dhtool.asm` is:
 
 ```nasm
-include 'ht_defaults.inc'
-include '../ht.inc'
-include 'dhtool_settings.inc'
+include 'dhtool_settings.inc'   ; defaults file (substitutes for ht_defaults.inc) — Source: /dhtool/dhtool.asm:83
+include '../ht.inc'              ; main library include — Source: /dhtool/dhtool.asm:84
 ; ... body ...
-include '../ht_data.inc'
+include '../ht_data.inc'         ; data finale — Source: /dhtool/dhtool.asm:1097
 ```
 
 See [`../docs/building.md`](../docs/building.md) for the library-wide build flow, including the `-m 524288` symbol-pool flag and the conditional-inclusion (`if used`) mechanism.

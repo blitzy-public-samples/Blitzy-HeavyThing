@@ -60,7 +60,7 @@ The worker `masterlink$receive` handler temporarily clears `tls$sessioncache_hoo
 | `./master.inc` | Master process: privilege drop, daemonisation, worker fork, OCSP-stapling broadcast hook, master-side link-message receive dispatch, logwriter timer (1500ms) that iterates `[configs]` calling `webservercfg$timer` (Source: /rwasa/master.inc:37–46, /rwasa/master.inc:173–183, /rwasa/master.inc:271). |
 | `./worker.inc` | Worker process: per-worker log/session hooks, master-link composer and receiver, OCSP-response application into each TLS PEM's X509 cert cache via `tls$pem_byptr` AVL walk (Source: /rwasa/worker.inc:36–38, /rwasa/worker.inc:156, /rwasa/worker.inc:208, /rwasa/worker.inc:239). |
 | `./tlsmin_defaults.inc` | Local copy of `../ht_defaults.inc` with exactly two deltas relative to the repository-wide defaults — `tls_minimalist = 1` and `webclient_maxconns = 6`; consumed only by `rwasa_tlsmin.asm` (Source: /rwasa/tlsmin_defaults.inc:319, /rwasa/tlsmin_defaults.inc:509). |
-| `./README.rwasa_tlsmin` | Preserved 7-line operator note explaining the motivation for the `rwasa_tlsmin` variant (Source: /rwasa/README.rwasa_tlsmin). |
+| `./README.rwasa_tlsmin` | Preserved 6-line operator note explaining the motivation for the `rwasa_tlsmin` variant (Source: /rwasa/README.rwasa_tlsmin). |
 
 ## CLI Reference
 
