@@ -163,6 +163,16 @@ Several knobs only take effect when others are enabled. Three notable cases are 
 | `calltracing` | `profiling = 1` | Call tracing is a profiling feature layered on top of the base profiler; enabling it without profiling has no effect (Source: /ht_defaults.inc:66-69). |
 | `ssh_force_compression` | `ssh_do_compression = 1` | Forcing compression implies that compression is available in the first place (Source: /ht_defaults.inc:405-417). |
 
+### Additional Utility Knobs
+
+A handful of utility knobs affect logging, diagnostics, and formatter behaviour but do not belong to any single subsystem. They are grouped here so that their defaults and legal values are visible to operators even though the subsystems they decorate are not covered by a dedicated README.
+
+| Knob | Default | Effect |
+|---|---|---|
+| `syslog_facility` | `1*8` (user-level) | Facility code prepended to every `syslog$*` message. Accepts the standard facility encodings: `0*8` kernel, `1*8` user, `2*8` mail, `3*8` system daemons, `4*8` security/auth, `6*8` lpd, `7*8` news, `8*8` uucp, `9*8` clockd, `10*8` security/auth, `11*8` ftp (Source: /ht_defaults.inc:243). |
+| `syslog_stderr` | `0` | When `1`, every `syslog$*` message is additionally written to stderr in tandem with the syslog send. Useful for foreground debugging; leave at `0` for production daemons (Source: /ht_defaults.inc:246). |
+| `formatter_datetime_fractional` | `0` | When `1`, `formatter$add_datetime` emits ISO-8601 timestamps with fractional seconds; when `0`, the formatter stops at whole seconds (Source: /ht_defaults.inc:252). |
+
 ## Conditional Compilation
 
 HeavyThing's most distinctive compile-time mechanism is FASM's `if used` directive. The library is physically monolithic — a single `include 'ht.inc'` brings in the full transitive graph — yet the resulting binary contains only code for labels that are actually referenced by the entry point. Two directives implement this:
@@ -205,6 +215,34 @@ include '../../ht_data.inc'
 The `settings.inc` file in each example directory is itself a copy of `/ht_defaults.inc` with the `include_everything` knob at line 91 adjusted. The two examples differ in exactly one line — `/examples/hello_world_c1/settings.inc:91` has `include_everything = 1` active, while `/examples/hello_world_c2/settings.inc:91` has the same line commented out. The authoritative comment above the knob, identical in both files, states that "if this is defined (whether set to 1 or not), then instead of only functions being included that are used, EVERYTHING ends up in the resultant binary" (Source: /examples/hello_world_c1/settings.inc:87-91).
 
 The practical difference is that `hello_world_c1` tolerates any C-side reference pattern because every library label is present, while `hello_world_c2` relies on the C code calling a small fixed set of HeavyThing labels that FASM can resolve via `if used` — specifically those referenced from `ht.asm` via `public` declarations. The `hello_world_c2` variant produces a smaller binary; the `hello_world_c1` variant is safer when the C side evolves.
+
+Once the example directory's `ht.asm` has been assembled into `ht.o` via the canonical FASM command, the C or C++ translation unit is linked against that object using the system compiler as the linker driver. Because HeavyThing supplies its own `_start`, provides no libc, and handles its own syscalls, every mixed-language build passes `-nostdlib` to both the compile step and the link step so that the toolchain does not inject `crt*.o`, libc startup code, or a default `_start` symbol that would collide with HeavyThing's. C++ sources additionally pass `-fno-exceptions` so the compiler does not emit references to the C++ personality routine or RTTI tables that the HeavyThing runtime does not provide. The canonical single-step `hello_world_c1` build is:
+
+```bash
+# Step 1: assemble the HeavyThing object with FASM
+fasm -m 524288 ht.asm ht.o
+
+# Step 2: compile and link the C source against ht.o using gcc as the driver
+gcc -nostdlib hello.c ht.o -o hello
+```
+
+The `hello_world_c2` variant follows the same shape but separates compilation from linking so that the C translation unit can be inspected or re-linked independently:
+
+```bash
+fasm -m 524288 ht.asm ht.o
+gcc -nostdlib -c hello.c -o hello.o
+gcc -nostdlib hello.o ht.o -o hello
+```
+
+C++ integration follows the same pattern with `g++` and the additional `-fno-exceptions` flag. Every HeavyThing label referenced from a C++ translation unit must be declared inside an `extern "C" { ... }` block so the compiler emits un-mangled symbol names that match the FASM assembly labels (Source: /examples/simplechat_c++/simplechat.cpp). The three `simplechat_*` C++ examples build as:
+
+```bash
+fasm -m 524288 ht.asm ht.o
+g++ -nostdlib -fno-exceptions -c simplechat.cpp -o simplechat.o
+g++ -nostdlib -fno-exceptions simplechat.o ht.o -o simplechat
+```
+
+The canonical long-form rationale for `-nostdlib`, the `extern "C"` requirement, and the C++ runtime subset that HeavyThing permits is maintained by the library author at `https://2ton.com.au/rants_and_musings/gcc_integration.html` and referenced from the comment headers of every `.c` and `.cpp` source under `/examples/`.
 
 ## Adding a New Tool
 

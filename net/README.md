@@ -278,6 +278,21 @@ All compile-time knobs live in `ht_defaults.inc`. Values shown are defaults; ove
 
 `webclient_maxconns = 4` throttles concurrent requests to any single hostname regardless of how many parallel requests the caller queues; above this limit, additional requests are queued inside the webclient and dispatched as earlier ones complete. Tools such as `webslap` that intend to saturate a single host raise this value substantially (see `/webslap/README.md` for the load-test configuration once that file lands in Checkpoint 2). `webclient_global_dnscache = 1` is the safer default for production code because it avoids a per-client DNS lookup storm, but multi-tenant tools that must see fresh DNS per instance can disable it to force a per-webclient resolver pool.
 
+### Compression and MIME handling
+
+The HTTP composition layer sits between `webserver.inc` / `webclient.inc` and the raw wire, and is configured via a small cluster of `mimelike_*` and `zlib_deflate_*` knobs that tune how response bodies are framed, chunked, and compressed on the way out.
+
+| Knob | Default | Meaning |
+|------|---------|---------|
+| `mimelike_mingzip` | 1024 | Minimum body length (bytes) below which a `Content-Encoding: gzip` header is stripped and the body is sent uncompressed |
+| `mimelike_minchunked` | 0 | When nonzero, minimum body length (bytes) below which `Transfer-Encoding: chunked` is rewritten to a fixed `Content-Length` header |
+| `mimelike_chunksize` | 65535 | Chunk size used when chunked transfer encoding is retained |
+| `mimelike_setcookie_split` | 1 | When `1`, multiple cookies are emitted as separate `Set-Cookie` headers instead of being concatenated into one `, `-joined header (required for older browsers) |
+| `zlib_deflate_level` | 6 | zlib compression level applied to gzip bodies: `0` = `Z_NO_COMPRESSION`, `1` = `Z_BEST_SPEED`, `6` = zlib's normal default, `9` = `Z_BEST_COMPRESSION` |
+| `zlib_deflate_reserve` | 16384 | Output-buffer size (bytes) reserved up-front whenever `zlib$deflate` is invoked |
+
+`mimelike_mingzip` and `mimelike_minchunked` together define the "don't bother" thresholds for per-response compression and chunking: very small bodies skip both pathways so that the transport overhead does not dominate the payload (Source: /ht_defaults.inc:199-207). `mimelike_setcookie_split = 1` preserves interop with older browsers that cannot parse comma-joined cookie headers; modern clients accept either form (Source: /ht_defaults.inc:214). `zlib_deflate_level = 6` matches zlib's own default and is a balanced choice for web traffic; raising it to `9` trades CPU for a few extra percent of compression, while `1` is appropriate when the server is CPU-bound (Source: /ht_defaults.inc:421-424).
+
 ## Limitations
 
 - **Linux only.** Uses `epoll_create`/`epoll_ctl`/`epoll_wait` directly; there is no portability shim for kqueue, IOCP, or `io_uring`.

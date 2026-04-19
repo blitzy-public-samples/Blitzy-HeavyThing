@@ -278,6 +278,20 @@ treats each loaded X509 as authoritative for its serving identity; clients
 do not walk certificate chains up to a trust anchor. Operators deploying
 HeavyThing as a TLS client must pin the expected certificate set out-of-band.
 
+### X509/OCSP Configuration Knobs
+
+The X509/OCSP subsystem exposes a small, focused set of knobs that govern how
+OCSP responses are fetched, refreshed, and emitted. These are the authoritative
+defaults as compiled into the library; the Operational Guidance table below
+refers to the same knobs in a recommendations-oriented voice.
+
+| Knob | Default | Effect |
+|---|---|---|
+| `X509_ocsp_sha256` | `0` | When `1`, OCSP requests use SHA-256 for the CertID hash rather than the OCSP-spec-mandated SHA-1; leave at `0` because most OCSP responders still require SHA-1 per RFC 6960 (Source: /ht_defaults.inc:347) |
+| `X509_ocsp_refresh` | `7200000` | Milliseconds between successful OCSP response refreshes (two hours); refresh is triggered on the epoll timer regardless of the validity period returned by the OCSP responder (Source: /ht_defaults.inc:356) |
+| `X509_ocsp_retry` | `300000` | Milliseconds between OCSP retry attempts after a failure (five minutes); applies when the OCSP responder is unreachable or returns an error (Source: /ht_defaults.inc:360) |
+| `X509_ocsp_syslog` | `1` | When `1`, OCSP stapling activity is emitted to syslog for operator visibility; set to `0` to silence the stream in environments where OCSP activity is not audited (Source: /ht_defaults.inc:365) |
+
 ## Operational Guidance
 
 The following recommendations apply to production deployments of HeavyThing

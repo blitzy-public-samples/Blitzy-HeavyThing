@@ -195,6 +195,7 @@ The following `ht_defaults.inc` knobs directly affect the behaviour of this subs
 | `heap_bincheck` | `0` | When set to `1`, the bin-index qword that precedes every non-`mmap` allocation is validated on `heap$free`. Adds runtime overhead but catches heap corruption. | `/ht_defaults.inc:82` |
 | `heap_barriers` | `0` | When set to `1`, an 8-byte canary (`0x46464646`) is prepended to every non-`mmap` allocation and checked on `heap$free`; a mismatch triggers a breakpoint. Increases per-allocation overhead by 8 bytes. | `/ht_defaults.inc:86`; canary check at `/heap.inc:893-895` |
 | `string_bits` | `32` | Selects the string engine that is linked into the binary: `16` includes `string16.inc` (UTF-16), `32` includes `string32.inc` (UTF-32). The chosen engine ripples through every `string$*` label as well as the `buffer$append_string` and `json$tostring` helpers. | `/ht_defaults.inc:103`; selector at `/ht.inc:111-115` |
+| `privmapped_noatime` | `0` | When `1`, `privmapped` (the private memory-mapped-file helper used by `mapped.inc`/`mappedheap.inc`) passes `O_NOATIME` on the underlying `open` so that reads do not update the file's `atime`. Leave at `0` unless the process runs as the owning user or as root: non-owner `O_NOATIME` has historically produced `EPERM` on older kernels. | `/ht_defaults.inc:431` |
 
 Some TUI components require `string_bits = 32` to work correctly (Source: `/ht_defaults.inc:102`); reducing to 16 is therefore an advanced choice that constrains the rest of the library.
 
