@@ -108,6 +108,10 @@ num-integer = "0.1"
 flate2     = "1"                          # zlib deflate/inflate: replaces zlib_*.inc
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"                          # JSON: replaces json.inc
+indexmap   = "2"                          # insertion-ordered map: required by hnwatch/hnmodel.rs
+                                          # (Checkpoint 7) to preserve Hacker News item ordering;
+                                          # HashMap is unordered and BTreeMap sorts by key.
+                                          # Proactive workspace declaration per AAP §0.8.7 / CD6.
 base64     = "0.22"                       # replaces base64_latin1.inc
 url        = "2"                          # replaces url.inc
 png        = "0.17"                       # PNG: replaces png.inc
@@ -115,6 +119,12 @@ crc32fast  = "1"                          # CRC-32: replaces crc.inc
 
 # --- Linux syscall / FFI primitives (AAP §0.6.1 + §0.7.4) ---
 libc    = "0.2"
+# `nix` features extend AAP §0.6.1's explicit set (`user`, `process`, `fs`, `socket`, `signal`)
+# with `mman` — required by `crates/heavything/src/util/mappedheap.rs` (Checkpoint 4) for
+# `mprotect(2)` / `madvise(2)` / `mlock(2)` on the heap-over-mmap TLS session-cache allocator
+# per AAP §0.5.1.7. `memmap2` alone exposes safe file-backed mmap but does NOT provide these
+# lower-level syscalls; `nix::sys::mman` is the chosen wrapper to keep unsafe-block counts low
+# per AAP §0.7.4 (preferring `nix` over raw `libc` wherever possible).
 nix     = { version = "0.29", features = ["user", "process", "fs", "socket", "signal", "mman"] }
 memmap2 = "0.9"                           # mmap helpers: replaces mapped.inc
 

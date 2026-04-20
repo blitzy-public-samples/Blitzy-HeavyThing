@@ -20,3 +20,10 @@
 *.swp
 *.swo
 .DS_Store
+
+# IDE-generated artifacts (JetBrains, VS Code, emacs/vim backup files)
+# Onboarding hygiene per Checkpoint 1 review INFO finding — keeps the
+# workspace clean for contributors who do not set a global gitignore.
+.idea/
+.vscode/
+*~

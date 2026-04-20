@@ -61,6 +61,25 @@
 //! are byte-for-byte frozen per AAP §0.1.1 — they MUST match the FASM
 //! baseline exactly so HTTPS clients and OpenSSH peers continue to see
 //! the same wire-level bytes.
+//!
+//! # Exit codes are in the crate root (not in this module)
+//!
+//! The four process exit-code constants (mirroring FASM `ht.inc`
+//! lines 38-41) are declared in the crate root `lib.rs`, not in this
+//! module, because they derive from `ht.inc` rather than
+//! `ht_defaults.inc` and because crate-root placement is more
+//! prominent for binary-crate consumers. See:
+//!
+//! - [`crate::EXIT_HEAP_MMAP_FAIL`] (99 — heap mmap failure),
+//! - [`crate::EXIT_PROFILER_OVERFLOW`] (98 — profiler buffer overflow),
+//! - [`crate::EXIT_ULIMIT_TOO_LOW`] (97 — `RLIMIT_NOFILE` below
+//!   [`EPOLL_MINFDS`]),
+//! - [`crate::EXIT_EPOLL_CREATE_FAIL`] (96 — `epoll_create`/tokio
+//!   runtime construction failure).
+//!
+//! Per AAP §0.7.1.2 these four codes are part of HeavyThing's
+//! externally observable interface and MUST be produced under
+//! equivalent failure conditions.
 
 // ============================================================================
 // System and alignment

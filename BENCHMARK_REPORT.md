@@ -74,6 +74,17 @@ Example lines will resemble:
      * the suspected cause (inline-copy overhead, bounds-check elision failure, SIMD intrinsic selection, etc.),
      * any follow-up action (e.g., file an upstream issue, switch to a different crate version, add a micro-optimization in crates/heavything/src/crypto/aes.rs). -->
 
+### Per-Size Breakdown
+
+Criterion group names follow the convention `aes_cbc/<size>` so individual cases are selectable via `cargo bench --bench aes_cbc -- aes_cbc/1KiB` (et al.). Measurements MUST be captured for each mandated input size (1 KiB, 64 KiB, 1 MiB, 16 MiB) before Gate 3 sign-off per AAP §0.3.1.4 and §0.8.5. All rows fold into the aggregate "AES-128-CBC throughput" row of the Threshold Compliance Summary below; individual-size ratios in excess of 3.00× MUST be called out in the regression root-cause block above.
+
+| Input size | Criterion group | Assembly (MB/s) | Rust (MB/s) | Ratio vs. Assembly | Notes |
+|------------|-----------------|-----------------|-------------|--------------------|-------|
+| 1 KiB      | `aes_cbc/1KiB`  | _TBD_           | _TBD_       | _TBD_              | _TBD_ |
+| 64 KiB     | `aes_cbc/64KiB` | _TBD_           | _TBD_       | _TBD_              | _TBD_ |
+| 1 MiB      | `aes_cbc/1MiB`  | _TBD_           | _TBD_       | _TBD_              | _TBD_ |
+| 16 MiB     | `aes_cbc/16MiB` | _TBD_           | _TBD_       | _TBD_              | _TBD_ |
+
 ## SHA-256 Throughput
 
 **Benchmark description**: Hashes a 64 MiB buffer with SHA-256 in a single `digest::Context::update` call; throughput measured in MB/s. Assembly uses SHA-NI when available with a pure-x86_64 fallback; Rust uses `ring::digest::SHA256` which internally dispatches to SHA-NI on supporting CPUs.
@@ -102,6 +113,19 @@ Example lines will resemble:
      * whether `ring` selected the expected backend (verify via `cpuid | grep SHA`),
      * the hot path identified via `perf record`,
      * any follow-up action. -->
+
+### Per-Size Breakdown
+
+Criterion group names follow the convention `sha256/<size>` so individual cases are selectable via `cargo bench --bench sha256 -- sha256/1KiB` (et al.). Measurements MUST be captured for each mandated input size (64 B, 1 KiB, 64 KiB, 1 MiB, 16 MiB, 64 MiB) before Gate 3 sign-off per AAP §0.3.1.4 and §0.8.5. All rows fold into the aggregate "SHA-256 throughput" row of the Threshold Compliance Summary below; individual-size ratios in excess of 3.00× MUST be called out in the regression root-cause block above.
+
+| Input size | Criterion group | Assembly (MB/s) | Rust (MB/s) | Ratio vs. Assembly | Notes |
+|------------|-----------------|-----------------|-------------|--------------------|-------|
+| 64 B       | `sha256/64B`    | _TBD_           | _TBD_       | _TBD_              | _TBD_ |
+| 1 KiB      | `sha256/1KiB`   | _TBD_           | _TBD_       | _TBD_              | _TBD_ |
+| 64 KiB     | `sha256/64KiB`  | _TBD_           | _TBD_       | _TBD_              | _TBD_ |
+| 1 MiB      | `sha256/1MiB`   | _TBD_           | _TBD_       | _TBD_              | _TBD_ |
+| 16 MiB     | `sha256/16MiB`  | _TBD_           | _TBD_       | _TBD_              | _TBD_ |
+| 64 MiB     | `sha256/64MiB`  | _TBD_           | _TBD_       | _TBD_              | _TBD_ |
 
 ## HTTP Round-Trip Latency
 
@@ -132,6 +156,16 @@ Example lines will resemble:
      * syscall vectoring via `libc::accept4` vs. direct assembly syscall,
      * hash-map overhead for HTTP header parsing vs. hand-written state machine.
      Fill in which cause was confirmed via `perf record` / `strace -c` and any follow-up action. -->
+
+### Per-Concurrency Breakdown
+
+Criterion group names follow the convention `http_rtt/<concurrency>` so individual cases are selectable via `cargo bench --bench http_rtt -- http_rtt/c1` (et al.). Measurements MUST be captured for each mandated concurrency level (c=1, c=4, c=16) before Gate 3 sign-off per AAP §0.3.1.4 and §0.8.5. All rows fold into the aggregate "HTTP RTT p95" row of the Threshold Compliance Summary below; individual-concurrency ratios in excess of 3.00× MUST be called out in the regression root-cause block above.
+
+| Concurrency | Criterion group | Assembly p95 (µs) | Rust p95 (µs) | Ratio vs. Assembly | Notes |
+|-------------|-----------------|-------------------|---------------|--------------------|-------|
+| c=1         | `http_rtt/c1`   | _TBD_             | _TBD_         | _TBD_              | _TBD_ |
+| c=4         | `http_rtt/c4`   | _TBD_             | _TBD_         | _TBD_              | _TBD_ |
+| c=16        | `http_rtt/c16`  | _TBD_             | _TBD_         | _TBD_              | _TBD_ |
 
 ## Reproducing These Measurements
 
