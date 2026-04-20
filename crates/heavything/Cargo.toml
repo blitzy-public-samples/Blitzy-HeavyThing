@@ -68,6 +68,7 @@ ring   = { workspace = true }
 aes    = { workspace = true }
 cbc    = { workspace = true }
 md-5   = { workspace = true }    # legacy MD5 (not for new crypto)
+sha2   = { workspace = true }    # SHA-224 fallback (ring 0.17 lacks SHA-224)
 scrypt = { workspace = true }    # RFC 7914 scrypt KDF
 
 # --- TLS stack (replaces tls.inc + X509.inc) ---
