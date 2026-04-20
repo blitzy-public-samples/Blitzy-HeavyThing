@@ -20,21 +20,23 @@
 //! assembly library (crypto, async networking, TUI, data structures,
 //! and utilities) per AAP §0.1.1.
 //!
-//! **This file is a minimal scaffold** created to let the foundational
-//! [`error`] module compile in isolation. It declares only:
+//! **This file is an in-progress scaffold.** It currently declares:
 //!
 //! * The four FASM exit-code constants
 //!   ([`EXIT_HEAP_MMAP_FAIL`], [`EXIT_PROFILER_OVERFLOW`],
 //!   [`EXIT_ULIMIT_TOO_LOW`], [`EXIT_EPOLL_CREATE_FAIL`]) from
 //!   `ht.inc` lines 38–41, which [`error::InitError::exit_code`]
 //!   depends on.
-//! * The [`error`] module itself.
+//! * The [`config`] module — direct port of `ht_defaults.inc`
+//!   exposing every compile-time configuration constant as
+//!   `pub const` (AAP §0.5.1.2 / §0.5.2.3).
+//! * The [`error`] module — crate-wide typed error taxonomy.
 //! * A `pub use` re-export of [`error::InitError`] for ergonomic
 //!   access from binary crates.
 //!
-//! A sibling agent will expand this file with `init()` / `init_args()`
-//! and the full subsystem module tree (`config`, `cpu`, `crypto`,
-//! `net`, `tui`, `ds`, `util`) per AAP §0.5.1.2.
+//! Sibling agents will expand this file with `init()` / `init_args()`
+//! and the remaining subsystem module tree (`cpu`, `crypto`, `net`,
+//! `tui`, `ds`, `util`) per AAP §0.5.1.2.
 
 /// Exit code when the heap allocator's underlying `mmap(2)` or
 /// `mremap(2)` syscall fails. Mirrors `ht.inc` line 38.
@@ -55,6 +57,7 @@ pub const EXIT_ULIMIT_TOO_LOW: i32 = 97;
 /// during startup. Mirrors `ht.inc` line 41.
 pub const EXIT_EPOLL_CREATE_FAIL: i32 = 96;
 
+pub mod config;
 pub mod error;
 
 pub use crate::error::InitError;
