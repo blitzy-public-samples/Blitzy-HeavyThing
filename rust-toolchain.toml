@@ -4,31 +4,17 @@
 # automatically install and select the correct Rust toolchain when any
 # cargo command is invoked from this directory.
 #
-# HeavyThing original assembly library © 2015–2018 2 Ton Digital, Jeff Marrison.
-# Rust translation preserves the GPLv3 license per AAP §0.3.10 and §0.8.6.
-#
 # See https://rust-lang.github.io/rustup/overrides.html for behavior details.
 
 [toolchain]
-
-# Channel: stable only. AAP §0.8.3 forbids nightly features and unstable
-# Cargo features. The stable channel gives us tokio + ring + rustls without
-# any nightly-only flags.
+# Channel: stable only (AAP §0.8.3 forbids nightly features).
 channel = "stable"
 
-# Components: rustfmt (code formatting; config in rustfmt.toml)
-#             clippy  (lint enforcement; config in clippy.toml)
-# These components are required by AAP §0.8.3 (code quality rules) and
-# §0.8.5 (benchmark rules expect clippy to run clean).
+# Components: rustfmt (formatting) + clippy (lints; config in clippy.toml).
 components = ["rustfmt", "clippy"]
 
-# Targets: Linux x86_64 ONLY. AAP §0.3.2.4 explicitly puts Windows and macOS
-# out of scope; cross-architecture (ARM, i686) is also out of scope. This
-# constraint means `#[cfg(target_arch = "x86_64")]` and
-# `#[cfg(target_os = "linux")]` are acceptable at module boundaries.
+# Targets: Linux x86_64 only (AAP §0.3.2.4 constrains the scope to Linux).
 targets = ["x86_64-unknown-linux-gnu"]
 
-# Profile: minimal — do not install unnecessary components like rust-docs
-# or rust-src in CI. Developers who want rust-docs locally can add them
-# via rustup; this file only sets the minimum for cargo build/test/bench.
+# Profile: minimal — no rust-docs or rust-src in CI (AAP §0.6.3.4).
 profile = "minimal"
