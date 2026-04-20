@@ -288,7 +288,15 @@ mod tests {
     fn is_enabled_is_const() {
         // Exercise the `const fn` property in a const context.
         const ENABLED: bool = is_enabled();
-        assert!(!ENABLED);
+        // `ENABLED` is a compile-time constant evaluated above — the
+        // assertion below is the runtime witness that the const-eval agreed
+        // with the feature-gated default. `#[allow]` silences clippy's
+        // complaint that the assertion's value is statically known, which is
+        // exactly the point of this regression test.
+        #[allow(clippy::assertions_on_constants)]
+        {
+            assert!(!ENABLED);
+        }
     }
 
     #[test]

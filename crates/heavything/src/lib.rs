@@ -59,5 +59,6 @@ pub const EXIT_EPOLL_CREATE_FAIL: i32 = 96;
 
 pub mod config;
 pub mod error;
+pub mod util;
 
 pub use crate::error::InitError;
