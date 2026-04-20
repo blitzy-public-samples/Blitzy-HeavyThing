@@ -1,0 +1,66 @@
+# clippy.toml — Clippy lint configuration for the HeavyThing Rust workspace
+#
+# Holds CONFIGURATION for individual Clippy lints (thresholds, allow-lists).
+# Does NOT activate or deactivate lints — that is done via #[deny(clippy::…)]
+# attributes in source code or [lints] tables in Cargo.toml.
+#
+# HeavyThing original assembly library © 2015–2018 2 Ton Digital, Jeff Marrison.
+# Rust translation preserves the GPLv3 license per AAP §0.3.10 and §0.8.6.
+
+# Cognitive complexity threshold — raised to accommodate state-machine
+# translations of TLS handshake, SSH KEX, HTTP parser, and similar
+# protocol code (default is 25).
+cognitive-complexity-threshold = 30
+
+# Too-many-arguments threshold — assembly-origin functions sometimes take
+# many arguments (register-based calling convention preserved in Rust).
+too-many-arguments-threshold = 10
+
+# Type complexity threshold — raised for IoChain nested generics and
+# protocol state machines.
+type-complexity-threshold = 300
+
+# Literal length threshold — assembly-origin protocol constants (cipher
+# block sizes, packet lengths) are naturally grouped differently than
+# idiomatic Rust numeric literals.
+literal-representation-threshold = 16384
+
+# Enum variant size threshold — protocol message enums (SSH, TLS, HTTP)
+# have naturally large variants due to embedded payload buffers.
+enum-variant-size-threshold = 512
+
+# Trivially-copy-pass-by-ref threshold — preserves assembly's register-passing
+# semantics for small structs like Fd(c_int).
+trivial-copy-size-limit = 64
+
+# Domain acronyms Clippy should accept in doc comments. Without this list
+# Clippy's doc_markdown lint flags these as style issues because they look
+# like un-backticked identifiers.
+doc-valid-idents = [
+    "HeavyThing", "FASM",
+    "TLS", "SSH", "HTTP", "HTTPS", "TCP", "UDP", "DNS", "IP", "IPv4", "IPv6",
+    "JSON", "URL", "URI", "UUID", "XML",
+    "AES", "AES-NI", "SHA", "SHA-1", "SHA-256", "SHA-512", "MD5",
+    "HMAC", "HMAC-DRBG", "DRBG", "PBKDF2", "HKDF",
+    "DHE", "ECDHE", "RSA", "DSA", "ECDSA",
+    "OCSP", "HSTS", "CBC", "GCM", "CTR", "CCM", "CHACHA20", "POLY1305",
+    "RFC", "IEEE", "NIST", "FIPS", "PEM", "DER", "ASN1", "X509", "X.509",
+    "PNG", "JPEG", "GIF", "MIME",
+    "CLI", "API", "CPU", "CPUID", "RDTSC", "AVX", "SSE", "SSE4", "SIMD",
+    "FCGI", "FastCGI",
+    "VT100", "ANSI", "TTY", "UTF", "UTF-8", "UTF-16", "UTF-32",
+    "BREACH", "CRIME", "POODLE",
+    "OpenSSH", "rustls", "webpki",
+    "mmap", "mremap", "epoll", "epoll_create", "accept4", "setuid", "setgid",
+    "sigaction", "ioctl", "tcsetattr", "tcgetattr", "cfmakeraw", "TIOCGWINSZ",
+    "vDSO", "termios",
+    "NaN", "OsStr", "OsString", "PathBuf",
+]
+
+# MSRV — tracks the stable channel pinned in rust-toolchain.toml.
+# Explicit minimum only needed if we pin a specific version below current stable.
+# msrv = "1.75.0"
+
+# Note: test files may `unwrap()` freely; this is handled via
+# #[cfg(test)] #[allow(clippy::unwrap_used)] in test modules,
+# not via clippy.toml scoping.

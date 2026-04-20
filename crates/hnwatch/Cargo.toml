@@ -1,0 +1,54 @@
+# crates/hnwatch/Cargo.toml — HeavyThing hnwatch binary crate manifest
+#
+# Binary crate translating hnwatch/hnwatch.asm + hnmodel.inc + ui.inc +
+# textify.inc + eventstream.inc — a terminal Hacker News viewer that polls
+# the public Hacker News Firebase API at https://hacker-news.firebaseio.com/
+# and renders stories in a tui_datagrid widget.
+#
+# Critical constant: `main_item_limit dq 150` → MAIN_ITEM_LIMIT = 150 in
+# src/main.rs. The default navstring is "topstories"; other views are
+# newstories, beststories, askstories, showstories, jobstories.
+#
+# Original HeavyThing assembly © 2015–2018 2 Ton Digital, Jeff Marrison.
+# Rust translation preserves GPL-3.0-or-later per AAP §0.3.10 and §0.8.6.
+
+[package]
+name                   = "hnwatch"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+description            = "Terminal Hacker News viewer — Rust port of the HeavyThing hnwatch showcase application"
+keywords               = ["hacker-news", "tui", "terminal", "heavything"]
+categories             = ["command-line-utilities"]
+readme                 = "../../README.md"
+
+[[bin]]
+name = "hnwatch"
+path = "src/main.rs"
+
+[dependencies]
+# Internal library crate (path dependency — intra-workspace only).
+heavything = { path = "../heavything" }
+
+# Async runtime — hnwatch uses heavything::net::runtime for the tokio
+# event loop plus heavything::net::http::client for HTTPS polling.
+tokio = { workspace = true }
+
+# Error handling — anyhow for main(), thiserror for typed module errors.
+anyhow    = { workspace = true }
+thiserror = { workspace = true }
+
+# JSON — Hacker News Firebase API returns JSON per item-ID list and
+# per-item detail. serde + serde_json parse these payloads into Rust
+# structs consumed by hnmodel.
+serde      = { workspace = true }
+serde_json = { workspace = true }
+
+# URL parsing — used to construct HN API endpoints of the form
+# https://hacker-news.firebaseio.com/v0/{topic}.json and
+# https://hacker-news.firebaseio.com/v0/item/{id}.json.
+url = { workspace = true }

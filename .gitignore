@@ -1,0 +1,22 @@
+# .gitignore — Rust build artifacts
+#
+# This file covers only the Rust workspace's build outputs. The pre-existing
+# assembly build artifacts (`.o` files and `.asm`-built binaries in rwasa/,
+# sshtalk/, hnwatch/, toplip/, webslap/, dhtool/, util/) ARE tracked in git
+# intentionally (reference builds for benchmark comparison) and therefore
+# are not listed here.
+#
+# `Cargo.lock` is intentionally NOT ignored per AAP §0.6.3.3 — the workspace
+# has binary crates and Cargo.lock is committed for reproducible builds.
+
+# Cargo build output — local builds only; never committed
+/target/
+
+# Cargo / rustfmt backup files
+**/*.rs.bk
+**/*.orig
+
+# Editor-generated artifacts (project-agnostic only)
+*.swp
+*.swo
+.DS_Store

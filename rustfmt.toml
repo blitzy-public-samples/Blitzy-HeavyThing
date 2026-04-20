@@ -1,0 +1,34 @@
+# rustfmt.toml — Rustfmt configuration for the HeavyThing Rust workspace
+#
+# Only STABLE rustfmt options are permitted. Unstable options (nightly-only)
+# would fail on the stable toolchain pinned in rust-toolchain.toml.
+#
+# HeavyThing original assembly library © 2015–2018 2 Ton Digital, Jeff Marrison.
+# Rust translation preserves the GPLv3 license per AAP §0.3.10 and §0.8.6.
+
+# Rust edition matches Cargo.toml's `edition = "2021"` (AAP §0.6.3.4)
+edition = "2021"
+
+# Maximum line width — default is 100; 110 accommodates protocol state-machine
+# match arms (TLS handshake, SSH KEX, HTTP parser) without forcing awkward
+# line breaks. Readability degrades sharply beyond 120.
+max_width = 110
+
+# Indentation: 4 spaces, never hard tabs (Rust community standard)
+hard_tabs = false
+tab_spaces = 4
+
+# Line endings: always Unix-style LF (workspace is Linux-only per AAP §0.3.2.4)
+newline_style = "Unix"
+
+# Sort imports alphabetically; group std / external / internal in standard order
+reorder_imports = true
+reorder_modules = true
+
+# Prefer `Foo { x, y }` over `Foo { x: x, y: y }` — idiomatic Rust
+use_field_init_shorthand = true
+
+# Note on trailing_comma: the default is `Vertical` on stable rustfmt (which is
+# what we want), but `trailing_comma` is an unstable configuration key that can
+# only be explicitly set in nightly. Leaving it unset keeps the Vertical default
+# behavior (trailing commas in multi-line lists) without a nightly dependency.

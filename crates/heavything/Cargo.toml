@@ -1,0 +1,134 @@
+# crates/heavything/Cargo.toml — HeavyThing Rust library crate manifest
+#
+# This is the core library crate that translates the 106 FASM assembly .inc
+# files into idiomatic, warning-clean Rust. It is organized into five
+# subsystems (AAP §0.4.1):
+#
+#   crypto — AES, SHA-*, HMAC, PBKDF2, scrypt, bigint, DH, X.509, RNG
+#   net    — tokio runtime, IO chain trait, HTTP, TLS, SSH, DNS, FCGI, blacklist
+#   tui    — terminal raw-mode + 32 widget types via direct termios FFI
+#   ds     — maps, lists, buffers, memfuncs (std::collections where possible)
+#   util   — strings, zlib, base64, JSON, URL, CRC, formatter, syslog, date
+#
+# The three binary crates (sshtalk, hnwatch, webserver) each depend on this
+# library via `{ path = "../heavything" }`.
+#
+# Original HeavyThing assembly library © 2015–2018 2 Ton Digital, Jeff Marrison,
+# licensed under GPL-3.0-or-later. Rust translation preserves the GPLv3
+# license per AAP §0.3.10 and §0.8.6.
+
+[package]
+name         = "heavything"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+authors      = { workspace = true }
+repository   = { workspace = true }
+homepage     = { workspace = true }
+description  = "Rust translation of the HeavyThing x86_64 FASM assembly library: crypto, async networking (HTTP/TLS/SSH), TUI framework, data structures, and utilities"
+keywords     = ["tls", "ssh", "http", "tui", "heavything"]
+categories   = ["network-programming", "cryptography", "asynchronous", "command-line-interface"]
+readme       = "../../README.md"
+
+[lib]
+name = "heavything"
+path = "src/lib.rs"
+
+# ---------------------------------------------------------------------------
+# Cargo features — replace FASM `if used` conditional compilation
+# (AAP §0.4.1.3). The default enables all five subsystems so the binary
+# crates compile out of the box; downstream consumers can disable subsystems
+# to shrink binary size.
+# ---------------------------------------------------------------------------
+[features]
+default = ["crypto", "net", "tui", "ds", "util"]
+crypto  = []
+net     = ["crypto"]
+tui     = []
+ds      = []
+util    = []
+
+# ---------------------------------------------------------------------------
+# Production dependencies — all sourced from crates.io via workspace
+# inheritance (AAP §0.6.3.3). Every dependency here is enumerated in
+# AAP §0.6.1 with a specific assembly-module replacement target.
+# ---------------------------------------------------------------------------
+[dependencies]
+# --- Async runtime (replaces epoll.inc per AAP §0.6.1) ---
+tokio      = { workspace = true }
+tokio-util = { workspace = true }
+bytes      = { workspace = true }
+
+# --- Cryptographic primitives ---
+# `ring` covers SHA-1/256/512, HMAC, PBKDF2, and AES-AEAD.
+# AAP §0.7.2.2 documents that ring does NOT expose raw AES-CBC, so we
+# additionally depend on `aes` + `cbc` (RustCrypto) for SSH transport.
+ring   = { workspace = true }
+aes    = { workspace = true }
+cbc    = { workspace = true }
+md-5   = { workspace = true }    # legacy MD5 (not for new crypto)
+scrypt = { workspace = true }    # RFC 7914 scrypt KDF
+
+# --- TLS stack (replaces tls.inc + X509.inc) ---
+rustls         = { workspace = true }
+rustls-pemfile = { workspace = true }
+webpki-roots   = { workspace = true }
+
+# --- Arbitrary-precision integers (replaces bigint.inc) ---
+num-bigint  = { workspace = true }
+num-traits  = { workspace = true }
+num-integer = { workspace = true }
+
+# --- Compression, encoding, serialization ---
+flate2     = { workspace = true }   # replaces zlib_deflate/inflate.inc
+serde      = { workspace = true }
+serde_json = { workspace = true }   # replaces json.inc
+base64     = { workspace = true }   # replaces base64_latin1.inc
+url        = { workspace = true }   # replaces url.inc
+png        = { workspace = true }   # replaces png.inc (used by tui_png)
+crc32fast  = { workspace = true }   # replaces crc.inc
+
+# --- Linux syscall / FFI primitives ---
+# `libc` for termios raw-mode (AAP §0.7.3) and other syscalls.
+# `nix` for fork, setuid, setgid, prctl, socketpair (AAP §0.7.4 minimises
+# unsafe count by preferring nix over raw libc where possible).
+# `memmap2` replaces mapped.inc / privmapped.inc / mappedheap.inc.
+libc    = { workspace = true }
+nix     = { workspace = true }
+memmap2 = { workspace = true }
+
+# --- Error handling & misc ---
+thiserror = { workspace = true }
+once_cell = { workspace = true }
+
+# ---------------------------------------------------------------------------
+# Dev-dependencies — tests (AAP §0.8.4) and benchmarks (AAP §0.8.5, Gate 3).
+# These dependencies are NOT linked into release builds.
+# ---------------------------------------------------------------------------
+[dev-dependencies]
+criterion  = { workspace = true }
+hex        = { workspace = true }
+tempfile   = { workspace = true }
+tokio-test = { workspace = true }
+
+# ---------------------------------------------------------------------------
+# Benchmark declarations — the three criterion benchmarks required by
+# AAP §0.8.5 / Gate 3 (BENCHMARK_REPORT.md delivery). Each benchmark
+# MUST set `harness = false` so criterion's own harness is used instead
+# of the default libtest harness.
+# ---------------------------------------------------------------------------
+[[bench]]
+name    = "aes_cbc"
+path    = "benches/aes_cbc.rs"
+harness = false
+
+[[bench]]
+name    = "sha256"
+path    = "benches/sha256.rs"
+harness = false
+
+[[bench]]
+name    = "http_roundtrip"
+path    = "benches/http_roundtrip.rs"
+harness = false

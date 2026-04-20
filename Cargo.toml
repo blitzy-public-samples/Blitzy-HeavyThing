@@ -1,0 +1,166 @@
+# Cargo.toml — HeavyThing Rust workspace root manifest
+#
+# This is a VIRTUAL workspace (no [package] section at the root). The four
+# member crates produce the actual build artifacts:
+#
+#   * crates/heavything — library crate: all five subsystems
+#                        (crypto, net, tui, ds, util) per AAP §0.4.1
+#   * crates/sshtalk    — binary: SSH-accessible multi-user chat server
+#   * crates/hnwatch    — binary: Terminal Hacker News viewer
+#   * crates/webserver  — binary: HTTP/HTTPS server (port of rwasa;
+#                                  named `webserver` per AAP §0.8.9)
+#
+# Original HeavyThing assembly library © 2015–2018 2 Ton Digital, Jeff Marrison,
+# licensed under the GNU General Public License v3.0. The Rust translation
+# preserves the GPLv3 license per AAP §0.3.10 and §0.8.6.
+#
+# See also:
+#   * .cargo/config.toml — warning-as-error enforcement (AAP §0.8.10 Gate 2)
+#   * rust-toolchain.toml — stable toolchain pin (AAP §0.6.3.4)
+
+[workspace]
+# Feature-resolver v2 is REQUIRED for virtual workspaces whose members mix
+# crate types (library + binary) — prevents feature unification surprises
+# and aligns tokio/ring/rustls feature flags consistently across members.
+resolver = "2"
+
+members = [
+    "crates/heavything",
+    "crates/sshtalk",
+    "crates/hnwatch",
+    "crates/webserver",
+]
+
+# Explicitly EXCLUDE the pre-existing FASM assembly showcase directories so
+# Cargo does not attempt to auto-discover packages inside them. Each of these
+# directories contains assembly sources (`.asm`, `.inc`) and/or pre-built
+# ELF64 binaries that are preserved in place per AAP §0.3.2.3 for benchmark
+# baselines and historical reference. They are NOT Rust packages and would
+# break Cargo's package-discovery if not excluded.
+exclude = [
+    "dhtool",
+    "examples",
+    "hnwatch",
+    "rwasa",
+    "sshtalk",
+    "toplip",
+    "util",
+    "webslap",
+]
+
+# ---------------------------------------------------------------------------
+# Workspace package metadata — inherited by every member crate via
+# `version = { workspace = true }` etc. (AAP §0.6.3.3).
+# ---------------------------------------------------------------------------
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+rust-version = "1.75"
+license      = "GPL-3.0-or-later"
+authors      = ["2 Ton Digital, Jeff Marrison <info@2ton.com.au>"]
+repository   = "https://github.com/2tondigital/HeavyThing"
+homepage     = "https://www.2ton.com.au/HeavyThing/"
+
+# ---------------------------------------------------------------------------
+# Shared dependency versions — member crates reference these via
+# `{ workspace = true }` to guarantee identical versions everywhere
+# (AAP §0.6.1, §0.6.3.3).
+#
+# Every crate listed here is sourced from crates.io. No git URLs. No private
+# registries. No path dependencies (those live only in member manifests for
+# the heavything library crate).
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+# --- Async runtime (AAP §0.6.1: replaces epoll.inc) ---
+tokio      = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes      = "1"
+
+# --- TLS + TLS certificate stack (AAP §0.6.1: replaces tls.inc + X509.inc) ---
+rustls         = "0.23"
+rustls-pemfile = "2"
+webpki-roots   = "0.26"
+
+# --- Cryptographic primitives (AAP §0.6.1: replaces aes/sha/hmac/pbkdf2/scrypt/md5 .inc) ---
+# `ring` covers SHA-1/256/512, HMAC, PBKDF2, and AES-AEAD.
+# `aes` + `cbc` cover raw AES-CBC, which ring does not expose (needed by SSH).
+# `md-5` covers legacy-protocol MD5 support (not for new cryptography).
+# `scrypt` provides RFC 7914 scrypt (not in ring).
+ring   = "0.17"
+aes    = "0.8"
+cbc    = "0.1"
+md-5   = "0.10"
+scrypt = "0.11"
+
+# --- Arbitrary-precision arithmetic (AAP §0.6.1: replaces bigint.inc) ---
+num-bigint  = "0.4"
+num-traits  = "0.2"
+num-integer = "0.1"
+
+# --- Compression, serialization, encoding (AAP §0.6.1) ---
+flate2     = "1"                          # zlib deflate/inflate: replaces zlib_*.inc
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"                          # JSON: replaces json.inc
+base64     = "0.22"                       # replaces base64_latin1.inc
+url        = "2"                          # replaces url.inc
+png        = "0.17"                       # PNG: replaces png.inc
+crc32fast  = "1"                          # CRC-32: replaces crc.inc
+
+# --- Linux syscall / FFI primitives (AAP §0.6.1 + §0.7.4) ---
+libc    = "0.2"
+nix     = { version = "0.29", features = ["user", "process", "fs", "socket", "signal", "mman"] }
+memmap2 = "0.9"                           # mmap helpers: replaces mapped.inc
+
+# --- Error handling & misc (AAP §0.8.3) ---
+thiserror = "1"
+anyhow    = "1"
+once_cell = "1"
+
+# --- Dev-dependency crates shared across workspace (AAP §0.8.4, §0.8.5) ---
+criterion  = "0.5"                        # Benchmarking harness (AAP §0.8.5, Gate 3)
+hex        = "0.4"                        # KAT vectors in crypto tests
+tempfile   = "3"                          # Integration test helper
+tokio-test = "0.4"                        # Async test harness
+
+# ---------------------------------------------------------------------------
+# Release profile — performance-tuned per AAP §0.8.1 (≤3× assembly baseline).
+# ---------------------------------------------------------------------------
+[profile.release]
+opt-level        = 3
+lto              = "fat"     # Whole-program inlining across crate boundaries
+codegen-units    = 1         # Maximum inlining; trade compile time for runtime
+panic            = "abort"   # Smaller binaries; panic = crash (assembly parity)
+strip            = "symbols" # Smaller binaries; keep panic messages
+debug            = false
+overflow-checks  = false     # Default release behavior
+incremental      = false     # Fully-optimized single-pass build
+
+# ---------------------------------------------------------------------------
+# Benchmark profile — like release but with debug info for flamegraphs.
+# Criterion uses this profile for `cargo bench` (AAP §0.8.5, Gate 3).
+# ---------------------------------------------------------------------------
+[profile.bench]
+opt-level        = 3
+lto              = "fat"
+codegen-units    = 1
+debug            = true      # Keep debug info for flamegraph/perf
+strip            = "none"
+overflow-checks  = false
+
+# ---------------------------------------------------------------------------
+# Dev profile — fast compile, full debug assertions for day-to-day work.
+# ---------------------------------------------------------------------------
+[profile.dev]
+opt-level       = 0
+debug           = true
+overflow-checks = true
+incremental     = true
+
+# ---------------------------------------------------------------------------
+# Test profile — slight optimization + full debug assertions.
+# Balances test-run speed against compile time.
+# ---------------------------------------------------------------------------
+[profile.test]
+opt-level       = 1
+debug           = true
+overflow-checks = true

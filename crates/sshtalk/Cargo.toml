@@ -1,0 +1,41 @@
+# crates/sshtalk/Cargo.toml — HeavyThing sshtalk binary crate manifest
+#
+# Binary crate translating sshtalk/sshtalk.asm + userdb.inc + chatroom.inc +
+# chatpanel.inc + screen.inc + statusbar.inc — an SSH-accessible multi-user
+# chat server with a TUI rendered over the SSH channel.
+#
+# The SSH protocol (SSH-2.0-HeavyThing banner, dh-group-exchange-sha256 KEX,
+# aes256-cbc + hmac-sha2-256 transport, forced zlib compression) is
+# implemented inside `heavything::net::ssh`; this binary crate provides only
+# the sshtalk-specific state machine (userdb, chat room, TUI composition).
+# OpenSSH 8.x+ interop is a gate requirement per AAP §0.8.1 and §0.8.10 Gate 4.
+#
+# Original HeavyThing assembly © 2015–2018 2 Ton Digital, Jeff Marrison.
+# Rust translation preserves GPL-3.0-or-later per AAP §0.3.10 and §0.8.6.
+
+[package]
+name         = "sshtalk"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+authors      = { workspace = true }
+description  = "HeavyThing sshtalk: SSH-accessible multi-user chat server with TUI (Rust port of sshtalk showcase application)"
+
+[[bin]]
+name = "sshtalk"
+path = "src/main.rs"
+
+[dependencies]
+# Internal library crate (path dependency — intra-workspace only).
+# AAP §0.8.7 permits exactly one path dependency per binary crate: heavything.
+heavything = { path = "../heavything" }
+
+# Async runtime — sshtalk runs the tokio runtime supplied by
+# heavything::net::runtime and spawns per-connection tasks (one per SSH session).
+tokio = { workspace = true }
+
+# Error handling — anyhow for main(), thiserror for typed module errors
+# per AAP §0.8.3.
+anyhow    = { workspace = true }
+thiserror = { workspace = true }

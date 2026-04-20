@@ -1,0 +1,29 @@
+# .cargo/config.toml — HeavyThing Rust workspace Cargo configuration
+#
+# Read by Cargo on every invocation from within this workspace. Settings here
+# apply to ALL cargo subcommands (build, test, bench, clippy, run).
+#
+# Primary purpose per AAP §0.8.3 and §0.8.10 Gate 2: promote every compiler
+# warning to an error so the workspace builds warning-clean by default.
+#
+# HeavyThing original assembly library © 2015–2018 2 Ton Digital, Jeff Marrison,
+# GPLv3. Rust translation preserves the GPLv3 license per AAP §0.3.10 and §0.8.6.
+#
+# See https://doc.rust-lang.org/cargo/reference/config.html for the full
+# reference of supported Cargo configuration keys.
+
+[build]
+# Promote ALL compiler warnings to hard errors. AAP §0.8.3 and §0.8.10 Gate 2
+# forbid warning suppressions of any kind; this flag is the mechanism that
+# makes that policy self-enforcing — any warning-producing code fails `cargo
+# build` immediately rather than silently passing CI.
+#
+# The value is a 2-element array (NOT a single string) so Cargo passes the
+# tokens as pre-split argv to rustc, which is the portable, documented form.
+rustflags = ["-D", "warnings"]
+
+# Default build target — Linux x86_64 only per AAP §0.3.2.4.
+# Aligns with rust-toolchain.toml's `targets = ["x86_64-unknown-linux-gnu"]`.
+# Explicitly pinning the target makes every cargo invocation produce output
+# under target/x86_64-unknown-linux-gnu/ — consistent across developer machines.
+target = "x86_64-unknown-linux-gnu"

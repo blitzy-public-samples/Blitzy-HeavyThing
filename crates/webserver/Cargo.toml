@@ -1,0 +1,69 @@
+# crates/webserver/Cargo.toml — HeavyThing webserver binary crate manifest
+#
+# Binary crate translating rwasa/rwasa.asm + arguments.inc + master.inc +
+# worker.inc — a flagship HTTP/HTTPS server with master-worker process model,
+# FastCGI upstream, TLS (rustls), and in-process request hooks.
+#
+# Binary name is `webserver` (NOT `rwasa` despite the source directory being
+# rwasa/) per AAP §0.8.9 — the prompt explicitly lists the three in-scope
+# binary crates as sshtalk, hnwatch, and webserver.
+#
+# Process model per AAP §0.7.1 and §0.5.1.8:
+#   1. Master process binds TCP listener(s) (possibly low ports)
+#   2. Master process drops privileges via setgid → setuid (in that order)
+#   3. Master forks N worker processes (inheriting bound listener FDs)
+#   4. Master runs IPC relay loop (log flush, TLS session cache, OCSP refresh)
+#   5. Each worker gets its own tokio runtime and its own accept loop
+#   6. prctl(PR_SET_PDEATHSIG, SIGTERM) ensures workers die if master dies
+#
+# CLI flag compatibility with the assembly build MUST be preserved byte-
+# identically per AAP §0.8.1 (observable behavior preservation):
+#   -cpu, -runas, -tls, -bind, -fastcgi, -vhost, -sandbox, -funcmatch,
+#   -background, -new (plus arguments.inc's extended flag set)
+#
+# Exit codes are part of the observable interface per AAP §0.1.1:
+#   99 = heap mmap fail, 98 = profiler overflow, 97 = ulimit < 4096,
+#   96 = epoll_create fail (producing these codes requires direct syscalls
+#   at startup which are implemented in heavything::init_args).
+#
+# Original HeavyThing assembly © 2015–2018 2 Ton Digital, Jeff Marrison.
+# Rust translation preserves GPL-3.0-or-later per AAP §0.3.10 and §0.8.6.
+
+[package]
+name         = "webserver"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+authors      = { workspace = true }
+description  = "HeavyThing webserver: HTTP/HTTPS server with master-worker process model, FastCGI upstream, TLS, in-process request hooks (Rust port of rwasa)"
+
+[[bin]]
+name = "webserver"
+path = "src/main.rs"
+
+[dependencies]
+# Internal library crate (path dependency — intra-workspace only).
+# AAP §0.8.7 permits exactly one path dependency per binary crate: heavything.
+heavything = { path = "../heavything" }
+
+# Async runtime for master/worker processes + Unix-socket IPC between them.
+# `tokio-util` + `bytes` provide length-delimited codec framing for the
+# three LinkMessage types (Log, TlsUpdate, Ocsp) sent over the socketpair.
+tokio      = { workspace = true }
+tokio-util = { workspace = true }
+bytes      = { workspace = true }
+
+# Linux process-management primitives per AAP §0.5.1.8 + §0.7.4:
+#   * nix::unistd::fork          (spawn workers)
+#   * nix::unistd::{setuid, setgid}  (privilege drop post-bind)
+#   * nix::sys::prctl::set_pdeathsig (worker cleanup on master death)
+#   * nix::sys::socket::socketpair    (master↔worker IPC)
+# `libc` handles any syscalls nix does not wrap (rlimit, etc.).
+nix  = { workspace = true }
+libc = { workspace = true }
+
+# Error handling — anyhow for main(), thiserror for typed module errors
+# per AAP §0.8.3.
+anyhow    = { workspace = true }
+thiserror = { workspace = true }
