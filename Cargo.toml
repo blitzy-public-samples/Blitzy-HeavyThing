@@ -60,6 +60,13 @@ license      = "GPL-3.0-or-later"
 authors      = ["2 Ton Digital, Jeff Marrison <info@2ton.com.au>"]
 repository   = "https://github.com/2tondigital/HeavyThing"
 homepage     = "https://www.2ton.com.au/HeavyThing/"
+# Workspace-level defaults for member-crate package metadata. Members may
+# override individually (each binary crate does so with its own specific
+# description/keywords), or opt into inheritance via `field.workspace = true`.
+description  = "Rust translation of the HeavyThing x86_64 Linux assembly library and showcase applications (sshtalk, hnwatch, webserver)"
+keywords     = ["tls", "ssh", "http", "tui", "heavything"]
+categories   = ["network-programming", "cryptography", "asynchronous", "command-line-interface"]
+readme       = "README.md"
 
 # ---------------------------------------------------------------------------
 # Shared dependency versions — member crates reference these via
