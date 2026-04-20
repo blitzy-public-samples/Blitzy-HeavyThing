@@ -178,7 +178,6 @@ Full cryptographic primitive scope, side-channel posture, and operational guidan
 - Library-wide register, stack, and label conventions: [`../docs/calling-convention.md`](../docs/calling-convention.md)
 - Security posture, RNG disclosure, cipher-suite matrix: [`../docs/security.md`](../docs/security.md)
 - How to add a module and wire it into `ht.inc`: [`../docs/contributing.md`](../docs/contributing.md)
-- Upstream project page: `https://2ton.com.au/HeavyThing/`
 
 ---
 

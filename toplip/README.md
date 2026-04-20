@@ -184,6 +184,7 @@ The on-disk output has a fixed layout that is deliberately not self-describing. 
 - **Stack-resident key material is zeroised with PRNG fill** after use, which is best-effort; other in-heap intermediate state relies on the library's heap-zero policy (Source: /toplip/toplip.asm:1113–1117).
 - **Not a drop-in replacement for GPG, age, or `openssl enc`**: `toplip` is a targeted showcase of the HeavyThing crypto stack with an explicit plausible-deniability posture, and its output format interoperates with nothing else.
 - **Passphrase prompts are read interactively from the controlling terminal** with ECHO disabled; non-interactive pipelines must use `-r` to have per-run 48-byte passphrases generated and printed to stderr.
+- **Embedded banner is v1.12.** The `cleartext banner` string predates the `ChangeLog`'s last entry (v1.13). Newer version numbers mentioned elsewhere in the repository do not apply to this tool's embedded banner (Source: /toplip/toplip.asm:3457).
 
 ## See Also
 
