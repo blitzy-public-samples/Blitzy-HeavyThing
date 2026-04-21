@@ -32,10 +32,11 @@
 //! without any intermediate allocation.
 //!
 //! The companion [`rgb_to_256`] function approximates a 24-bit RGB
-//! triple in the xterm 256-color palette, matching the intent (though
-//! not the exact integer arithmetic) of the FASM `ansi_wci_rgbi` macro.
-//! The xterm-compatible quantization is preferred because real-world
-//! terminal emulators consistently implement that scheme.
+//! triple as a 256-color palette index using the exact two-branch
+//! arithmetic of the FASM `ansi_wci_rgbi` macro from `tui_ansi.inc`,
+//! ported verbatim per AAP §0.4.4 (TUI tables and arithmetic ported
+//! verbatim to preserve identical behavior across translations). See
+//! the function's doc comment for the full algorithm.
 
 use bytes::BufMut;
 
@@ -57,12 +58,12 @@ pub const ESC: &[u8] = b"\x1b";
 // =====================================================================
 
 /// Enter the alternate screen buffer (`ESC[?1049h`). Paired with
-/// [`EXIT_ALT_SCREEN`] on shutdown so the user's scrollback is preserved.
-pub const ENTER_ALT_SCREEN: &[u8] = b"\x1b[?1049h";
+/// [`ALT_SCREEN_EXIT`] on shutdown so the user's scrollback is preserved.
+pub const ALT_SCREEN_ENTER: &[u8] = b"\x1b[?1049h";
 
 /// Exit the alternate screen buffer (`ESC[?1049l`). Restores the
 /// user's prior screen contents.
-pub const EXIT_ALT_SCREEN: &[u8] = b"\x1b[?1049l";
+pub const ALT_SCREEN_EXIT: &[u8] = b"\x1b[?1049l";
 
 // =====================================================================
 // Cursor visibility and position
@@ -338,64 +339,68 @@ pub fn set_bg_rgb(out: &mut dyn BufMut, r: u8, g: u8, b: u8) {
 }
 
 // =====================================================================
-// 24-bit RGB → xterm 256-color palette approximation
+// 24-bit RGB → 256-color palette (FASM `ansi_wci_rgbi` verbatim port)
 // =====================================================================
 
-/// Approximate a 24-bit RGB color `(r, g, b)` in the xterm 256-color
-/// palette.
+/// Approximate a 24-bit RGB color `(r, g, b)` as an xterm 256-color
+/// palette index using the exact arithmetic of the FASM `ansi_wci_rgbi`
+/// macro from `tui_ansi.inc`.
 ///
-/// This function preserves the *intent* of the FASM `ansi_wci_rgbi`
-/// macro — mapping true-color input to a 256-palette index — but uses
-/// the xterm-compatible quantization scheme rather than the FASM's
-/// integer divide-by-43 approach, because every mainstream terminal
-/// emulator (xterm, gnome-terminal, kitty, alacritty, iTerm2, Windows
-/// Terminal) renders the 256-palette per the xterm definition.
+/// This port is byte-for-byte faithful to the assembly implementation
+/// per AAP §0.4.4 ("TUI tables and arithmetic ported verbatim to
+/// preserve identical behavior across translations"). The FASM source
+/// reads:
 ///
-/// Palette layout:
-/// - `0..=15`    — the 16 system colors (not produced by this function)
-/// - `16..=231`  — a 6×6×6 color cube: `16 + 36·R' + 6·G' + B'`
-///   where each `R'/G'/B'` is quantized from the input byte to the
-///   integer range `0..=5` using the xterm step function
-///   (`< 48 → 0`, `< 115 → 1`, else `(v − 35) / 40`).
-/// - `232..=255` — a 24-step grayscale ramp from near-black to
-///   near-white.
+/// ```text
+/// macro ansi_wci_rgbi {
+///     if ansi_wcr = ansi_wcg & ansi_wcg = ansi_wcb
+///         if ansi_wcr = 0
+///             ansi_wci_val = 0xe8                      ; 232
+///         else if ansi_wcr = 255
+///             ansi_wci_val = 255
+///         else
+///             ansi_wci_val = (ansi_wcr / 11) + 232
+///         end if
+///     else
+///         ansi_wcr = ansi_wcr / 43
+///         ansi_wcg = ansi_wcg / 43
+///         ansi_wcb = ansi_wcb / 43
+///         ansi_wci_val = ansi_wcb + (ansi_wcg * 6) + (ansi_wcr * 36) + 16
+///     end if
+/// }
+/// ```
 ///
-/// The grayscale ramp is preferred when `r == g == b` because it gives
-/// finer lightness resolution than the cube.
+/// Two branches:
+/// - **Grayscale branch** (`r == g == b`):
+///   - `0` → `0xe8` (232, base of grayscale ramp)
+///   - `255` → `255` (top of grayscale ramp)
+///   - otherwise → `(r / 11) + 232` (maps `1..=254` into the 24-step
+///     grayscale ramp from `232` upward)
+/// - **Color-cube branch** (otherwise): each channel is quantized by
+///   integer-divide-by-43 into `0..=5` (since `255 / 43 == 5`), then
+///   combined as `b' + 6·g' + 36·r' + 16` to produce a `16..=231`
+///   index within the 6×6×6 cube.
+///
+/// Note that FASM's grayscale branch deliberately returns a value in
+/// the cube-cell range (`232` at `r=0`, not `16`) and the ramp top
+/// (`255`, not `231`); these choices are preserved verbatim even where
+/// they differ from the xterm-suggested quantization, because AAP
+/// §0.8.1 mandates byte-identical behavior preservation.
 #[must_use]
 pub const fn rgb_to_256(r: u8, g: u8, b: u8) -> u8 {
-    // xterm's 6-level quantization of a single byte channel. Implemented
-    // as a `const fn` so the whole function can be evaluated at compile
-    // time when its arguments are constant.
-    #[inline]
-    const fn quantize(v: u8) -> u8 {
-        if v < 48 {
-            0
-        } else if v < 115 {
-            1
-        } else {
-            (v - 35) / 40
-        }
-    }
-
     if r == g && g == b {
-        // Pure grayscale — map through the 24-step 232..=255 ramp,
-        // clamping both ends of the range. The thresholds `r < 8`
-        // (→ cube-origin black 16) and `r >= 248` (→ near-white 231)
-        // match xterm's observed behavior for pure-black and
-        // pure-white inputs.
-        if r < 8 {
-            16
-        } else if r >= 248 {
-            231
+        if r == 0 {
+            0xe8 // 232 — FASM base of grayscale ramp (matches `ansi_wci_val = 0xe8`)
+        } else if r == 255 {
+            255 // top of grayscale ramp (matches FASM `ansi_wci_val = 255`)
         } else {
-            232 + (r - 8) / 10
+            (r / 11) + 232
         }
     } else {
-        let rq = quantize(r);
-        let gq = quantize(g);
-        let bq = quantize(b);
-        16 + 36 * rq + 6 * gq + bq
+        let rq = r / 43;
+        let gq = g / 43;
+        let bq = b / 43;
+        bq + (gq * 6) + (rq * 36) + 16
     }
 }
 
@@ -415,8 +420,8 @@ mod tests {
 
     #[test]
     fn alt_screen_constants() {
-        assert_eq!(ENTER_ALT_SCREEN, b"\x1b[?1049h");
-        assert_eq!(EXIT_ALT_SCREEN, b"\x1b[?1049l");
+        assert_eq!(ALT_SCREEN_ENTER, b"\x1b[?1049h");
+        assert_eq!(ALT_SCREEN_EXIT, b"\x1b[?1049l");
     }
 
     #[test]
@@ -482,22 +487,28 @@ mod tests {
     }
 
     #[test]
-    fn rgb_to_256_black_is_16() {
-        // Pure black hits the `r < 8` grayscale early-return, which
-        // maps into the 6×6×6 cube origin (16) rather than a
-        // grayscale-ramp entry.
-        assert_eq!(rgb_to_256(0, 0, 0), 16);
+    fn rgb_to_256_black_is_232() {
+        // FASM `ansi_wci_rgbi` grayscale branch: r == g == b == 0 → 0xe8 (232).
+        // This is the BASE of the 24-step grayscale ramp per the FASM
+        // verbatim arithmetic (not the cube-origin 16 of the xterm
+        // convention).
+        assert_eq!(rgb_to_256(0, 0, 0), 232);
     }
 
     #[test]
-    fn rgb_to_256_white_approximation() {
-        // 255,255,255 is pure gray ≥ 248 → 231 (top of grayscale ramp).
-        assert_eq!(rgb_to_256(255, 255, 255), 231);
+    fn rgb_to_256_white_is_255() {
+        // FASM `ansi_wci_rgbi` grayscale branch: r == g == b == 255 → 255.
+        // The FASM macro returns the TOP of the grayscale ramp (255)
+        // rather than the xterm-convention 231.
+        assert_eq!(rgb_to_256(255, 255, 255), 255);
     }
 
     #[test]
     fn rgb_to_256_pure_red_in_cube() {
-        // 16 + 36*5 + 6*0 + 0 = 196 (the canonical "bright red" cube cell).
+        // FASM `ansi_wci_rgbi` color-cube branch: (255,0,0) → r/43=5,
+        // g/43=0, b/43=0 → 0 + (0*6) + (5*36) + 16 = 196. The canonical
+        // "bright red" cube cell, unchanged between xterm and FASM
+        // conventions because the cube arithmetic is identical.
         assert_eq!(rgb_to_256(255, 0, 0), 196);
     }
 
@@ -577,5 +588,33 @@ mod tests {
         assert_eq!(CURSOR_SAVE, b"\x1b7");
         assert_eq!(CURSOR_RESTORE, b"\x1b8");
         assert_eq!(CURSOR_HOME, b"\x1b[H");
+    }
+
+    // ---- FASM-verbatim rgb_to_256 sanity tests (supplemental) ----
+
+    #[test]
+    fn rgb_to_256_grayscale_middle_uses_divide_by_11() {
+        // FASM: (r / 11) + 232 for r != 0 && r != 255.
+        // r=11   → (11/11)+232  = 233.
+        // r=22   → (22/11)+232  = 234.
+        // r=128  → (128/11)+232 = 11+232 = 243.
+        // r=254  → (254/11)+232 = 23+232 = 255.
+        assert_eq!(rgb_to_256(11, 11, 11), 233);
+        assert_eq!(rgb_to_256(22, 22, 22), 234);
+        assert_eq!(rgb_to_256(128, 128, 128), 243);
+        assert_eq!(rgb_to_256(254, 254, 254), 255);
+    }
+
+    #[test]
+    fn rgb_to_256_color_cube_covers_full_range() {
+        // FASM cube: b/43 + (g/43)*6 + (r/43)*36 + 16.
+        // Min non-grayscale cube index: r=0,g=0,b=43 → 1 + 0 + 0 + 16 = 17.
+        // Max cube index: r=255,g=255,b=254 → rq=5, gq=5, bq=5
+        //   → 5 + 30 + 180 + 16 = 231.
+        // Mid-range: r=128, g=64, b=0 → rq=2, gq=1, bq=0
+        //   → 0 + 6 + 72 + 16 = 94.
+        assert_eq!(rgb_to_256(0, 0, 43), 17);
+        assert_eq!(rgb_to_256(255, 255, 254), 231);
+        assert_eq!(rgb_to_256(128, 64, 0), 94);
     }
 }
