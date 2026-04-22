@@ -30,13 +30,15 @@
 //! * The [`config`] module — direct port of `ht_defaults.inc`
 //!   exposing every compile-time configuration constant as
 //!   `pub const` (AAP §0.5.1.2 / §0.5.2.3).
+//! * The [`ds`] module — data-structures subsystem (buffer, list,
+//!   maps, memfuncs) per AAP §0.5.1.6.
 //! * The [`error`] module — crate-wide typed error taxonomy.
 //! * A `pub use` re-export of [`error::InitError`] for ergonomic
 //!   access from binary crates.
 //!
 //! Sibling agents will expand this file with `init()` / `init_args()`
 //! and the remaining subsystem module tree (`cpu`, `crypto`, `net`,
-//! `tui`, `ds`, `util`) per AAP §0.5.1.2.
+//! `tui`) per AAP §0.5.1.2.
 
 /// Exit code when the heap allocator's underlying `mmap(2)` or
 /// `mremap(2)` syscall fails. Mirrors `ht.inc` line 38.
@@ -58,6 +60,7 @@ pub const EXIT_ULIMIT_TOO_LOW: i32 = 97;
 pub const EXIT_EPOLL_CREATE_FAIL: i32 = 96;
 
 pub mod config;
+pub mod ds;
 pub mod error;
 pub mod util;
 
