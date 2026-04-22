@@ -29,14 +29,14 @@
 //!
 //! The `util/` port is delivered across several checkpoints. This file
 //! declares only the submodules that have already landed source files in
-//! this repository; declarations for the remaining 15 planned modules
+//! this repository; declarations for the remaining 14 planned modules
 //! (`base64`, `crc`, `date`, `dir`, `file`, `formatter`, `json`, `mapped`,
-//! `mappedheap`, `png`, `privmapped`, `string`, `sysinfo`, `syslog`,
-//! `zlib`) will be added by later checkpoints alongside their
-//! implementations. Declaring a `pub mod foo;` without a backing source
-//! file is a hard compile error (rustc E0583), so premature declarations
-//! would break the whole workspace build — see AAP §0.8.3 and Gate 2's
-//! `RUSTFLAGS="-D warnings"` discipline.
+//! `mappedheap`, `png`, `privmapped`, `string`, `syslog`, `zlib`) will be
+//! added by later checkpoints alongside their implementations. Declaring
+//! a `pub mod foo;` without a backing source file is a hard compile error
+//! (rustc E0583), so premature declarations would break the whole
+//! workspace build — see AAP §0.8.3 and Gate 2's `RUSTFLAGS="-D warnings"`
+//! discipline.
 
 /// Basic math helpers — port of `math.inc`.
 pub mod math;
@@ -49,6 +49,9 @@ pub mod sleeps;
 
 /// Arbitrary-precision decimal string arithmetic — port of `string_math.inc`.
 pub mod string_math;
+
+/// System information helpers (`uname(2)`, CPU count) — port of `sysinfo.inc`.
+pub mod sysinfo;
 
 /// Unicode case-mapping helpers — port of `unicodecase.inc`.
 pub mod unicodecase;
