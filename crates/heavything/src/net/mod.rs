@@ -49,9 +49,12 @@
 //!   parent/child state, [`IoBase`](io::IoBase) no-op layer, the
 //!   [`link`](io::link) helper, and the six `default_*` behavioural
 //!   helpers (port of `io.inc`; AAP §0.5.1.4).
+//! * [`url`] — RFC 3986 URL parser/encoder/decoder with the FASM-style
+//!   10-field accessor surface used by `webclient` and `webserver`
+//!   (port of `url.inc`; AAP §0.5.1.7). Wraps the `url` crate.
 //!
 //! Additional networking submodules (`runtime`, `dns`, `child`, `http`,
-//! `fcgi`, `tls`, `ssh`, `url`) are scheduled in subsequent translation
+//! `fcgi`, `tls`, `ssh`) are scheduled in subsequent translation
 //! checkpoints per AAP §0.5.1.4 and are not yet declared here.
 //! Declaring a `pub mod foo;` without a backing source file is a hard
 //! compile error (rustc E0583), so premature declarations would break
@@ -70,10 +73,12 @@
 //!
 //! # `unsafe` audit
 //!
-//! The [`io`] and [`blacklist`] submodules contribute **zero** `unsafe`
-//! blocks to the crate's [`UNSAFE_AUDIT.md`](../../../../UNSAFE_AUDIT.md)
-//! tally (AAP §0.7.4.1). Correctness derives entirely from `Arc`,
-//! `Weak`, `Mutex`, and the standard collections.
+//! The [`io`], [`blacklist`], and [`url`] submodules contribute **zero**
+//! `unsafe` blocks to the crate's
+//! [`UNSAFE_AUDIT.md`](../../../../UNSAFE_AUDIT.md) tally
+//! (AAP §0.7.4.1). Correctness derives entirely from `Arc`, `Weak`,
+//! `Mutex`, the standard collections, and safe-Rust wrappers around
+//! the `url` crate.
 
 /// IP blacklist with time-based expiry — port of `blacklist.inc`.
 pub mod blacklist;
@@ -81,3 +86,7 @@ pub mod blacklist;
 /// IO chain trait, parent/child link state, no-op base layer, and the
 /// six directional-dispatch default helpers — port of `io.inc`.
 pub mod io;
+
+/// RFC 3986 URL parser/encoder/decoder with FASM-style accessors —
+/// port of `url.inc`.
+pub mod url;
