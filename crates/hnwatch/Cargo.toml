@@ -48,6 +48,18 @@ thiserror = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 
+# Ordered map — used by hnmodel (file 131, Checkpoint 8) to preserve
+# JSON object key insertion order when consuming Hacker News Firebase
+# API responses. We choose the direct `indexmap` dependency over
+# `serde_json`'s `preserve_order` feature because: (1) the workspace
+# already declares `indexmap = "2"` at workspace Cargo.toml line 118
+# per AAP §0.8.7 (proactive workspace declaration already made);
+# (2) it is more explicit about consumer intent; (3) it decouples our
+# ordering need from serde_json's internal map implementation choice.
+# Resolves checkpoint Phase 2 CD6: "hnmodel.rs indexmap wiring —
+# confirm choice and flag if ambiguous".
+indexmap = { workspace = true }
+
 # URL parsing — used to construct HN API endpoints of the form
 # https://hacker-news.firebaseio.com/v0/{topic}.json and
 # https://hacker-news.firebaseio.com/v0/item/{id}.json.

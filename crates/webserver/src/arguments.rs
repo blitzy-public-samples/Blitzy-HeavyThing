@@ -31,9 +31,11 @@
 //! The public surface is [`parse`] and [`print_usage`]; both are consumed
 //! by `crate::main::main`. On argument-parse failure, `parse` returns an
 //! [`ArgError`] whose [`std::fmt::Display`] implementation produces the
-//! exact stderr message emitted by the assembly build. The caller is
-//! responsible for printing the error, printing the usage banner, and
-//! exiting with status `1`.
+//! exact stdout message emitted by the assembly build (the assembly
+//! routes error strings through `string$to_stdoutln`, which issues a
+//! `sys_write` with `fd=1`; see `string32.inc` lines 2229–2260). The
+//! caller is responsible for printing the error, printing the usage
+//! banner, and exiting with status `1`.
 //!
 //! # CLI flag contract (19 flags)
 //!
@@ -309,13 +311,16 @@ pub struct RedirectMapping {
 /// Every failure mode of [`parse`].
 ///
 /// The [`std::fmt::Display`] implementation produced by `#[error(...)]`
-/// attributes yields byte-identical stderr messages to the assembly build
+/// attributes yields byte-identical stdout messages to the assembly build
 /// (see `arguments.inc` `.err_*` string table at lines 731–757 plus the
-/// inline error strings at lines 384, 393, 402, 701, 709, 717). Any
-/// deviation breaks AAP §0.8.10 Gate 5 ("CLI flag contract preserved").
+/// inline error strings at lines 384, 393, 402, 701, 709, 717). The
+/// assembly routes every error message through `string$to_stdoutln`,
+/// which issues a `sys_write` with `fd=1` (STDOUT) — see `string32.inc`
+/// lines 2229–2260. Byte-identical preservation is mandated by AAP §0.8.1
+/// ("preserve all observable behavior").
 ///
 /// Callers (i.e. `crate::main::main`) are expected to render the error
-/// with `eprintln!("{e}")`, call [`print_usage`] to emit the usage banner,
+/// with `println!("{e}")`, call [`print_usage`] to emit the usage banner,
 /// and exit with status `1` — matching the assembly's behaviour at every
 /// error site in `arguments.inc`.
 #[derive(Debug, Error)]
@@ -420,18 +425,23 @@ pub const USAGE_TEXT: &str = concat!(
     "    -funcmatch endswith         Function map ends with match (default: .asmcall)\n",
 );
 
-/// Print the CLI usage banner to stderr.
+/// Print the CLI usage banner to stdout.
 ///
 /// Translated from the `.usage` block in `arguments.inc` lines 765–790.
-/// The banner is byte-identical to the assembly's output. The assembly
-/// writes the banner to stdout (fd=1) via a direct `syscall 1`; the Rust
-/// port routes it through stderr to match the AAP §0.8.10 Gate 5
-/// contract (errors + usage on stderr, program output on stdout).
+/// The banner is byte-identical to the assembly's output, and is emitted
+/// on the same file descriptor: the assembly writes the banner to stdout
+/// (fd=1) via a direct `syscall_write` (`mov edi, 1; syscall` — see
+/// `arguments.inc` line 763), so the Rust port also writes to stdout to
+/// preserve the observable behaviour mandated by AAP §0.8.1
+/// ("preserve all observable behavior"). Error messages likewise go to
+/// stdout because the assembly routes them through `string$to_stdoutln`
+/// (`string32.inc` lines 2229–2260), which ends with `mov edi, 1;
+/// syscall_write`.
 ///
-/// Uses [`eprint!`] — NOT [`eprintln!`] — because [`USAGE_TEXT`] already
+/// Uses [`print!`] — NOT [`println!`] — because [`USAGE_TEXT`] already
 /// ends with a newline.
 pub fn print_usage() {
-    eprint!("{}", USAGE_TEXT);
+    print!("{}", USAGE_TEXT);
 }
 
 // ============================================================================
@@ -537,9 +547,14 @@ fn num_cpus_2x() -> u32 {
 /// table).
 ///
 /// On argument-parse failure, returns [`ArgError`]. The caller is
-/// responsible for printing the error message (via `eprintln!("{e}")`)
-/// and the usage banner (via [`print_usage`]) to stderr, then exiting
-/// with status `1`.
+/// responsible for printing the error message (via `println!("{e}")`)
+/// and the usage banner (via [`print_usage`]) to stdout, then exiting
+/// with status `1`. Both outputs go to stdout (fd=1) to match the
+/// assembly `rwasa`: errors via `string$to_stdoutln` (`string32.inc`
+/// lines 2229–2260, which ends with `mov edi, 1; syscall_write`) and
+/// the banner via the `.usage` block's direct `syscall_write` with
+/// `edi = 1` (`arguments.inc` line 763). See [`print_usage`] for the
+/// full derivation.
 ///
 /// # Register-to-local discipline
 ///
@@ -1176,8 +1191,12 @@ mod tests {
     }
 
     /// Each of the 11 [`ArgError`] variants must produce a Display
-    /// string that is byte-identical to the assembly's stderr message.
-    /// A single byte difference here breaks Gate 5 (CLI flag contract).
+    /// string that is byte-identical to the assembly's stdout message
+    /// (the assembly emits all error text via `string$to_stdoutln`
+    /// which routes to fd=1 — see `string32.inc` lines 2229–2260 and
+    /// the per-error call sites in `arguments.inc` around lines
+    /// 380–410). A single byte difference here breaks the AAP §0.8.1
+    /// "preserve all observable behavior" contract for the CLI.
     #[test]
     fn error_display_byte_identical_to_assembly() {
         assert_eq!(

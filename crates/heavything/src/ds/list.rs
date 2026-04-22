@@ -71,7 +71,7 @@ use crate::error::DsError;
 ///
 /// `List<T>` is `Send + Sync` iff `T: Send + Sync` via the auto traits
 /// on [`VecDeque`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct List<T> {
     inner: VecDeque<T>,
 }
@@ -338,6 +338,25 @@ impl<T> List<T> {
     /// this directly via [`VecDeque::retain`].
     pub fn retain<F: FnMut(&T) -> bool>(&mut self, f: F) {
         self.inner.retain(f);
+    }
+
+    /// Returns `true` if the list contains a value equal to `value`.
+    ///
+    /// Equivalent to the FASM `list$contains` helper, which walks the
+    /// doubly-linked list comparing each node's payload to the search
+    /// value and returns early on first match. This wrapper delegates
+    /// to [`VecDeque::contains`], which performs the same linear scan
+    /// front-to-back.
+    ///
+    /// Requires `T: PartialEq`. Runs in O(n) in the worst case and
+    /// O(1) when the match is at the front. Returns `false` for an
+    /// empty list without performing any comparisons.
+    #[must_use]
+    pub fn contains(&self, value: &T) -> bool
+    where
+        T: PartialEq,
+    {
+        self.inner.contains(value)
     }
 }
 
@@ -797,5 +816,106 @@ mod tests {
         let l: List<i32> = vec![1, 2, 3].into_iter().collect();
         let s = format!("{l:?}");
         assert!(s.contains('1') && s.contains('2') && s.contains('3'));
+    }
+
+    // -- contains / PartialEq -------------------------------------------------
+
+    #[test]
+    fn test_contains_hit_middle() {
+        let l: List<i32> = (0..10).collect();
+        assert!(l.contains(&5));
+    }
+
+    #[test]
+    fn test_contains_hit_front() {
+        let l: List<i32> = (0..10).collect();
+        assert!(l.contains(&0));
+    }
+
+    #[test]
+    fn test_contains_hit_back() {
+        let l: List<i32> = (0..10).collect();
+        assert!(l.contains(&9));
+    }
+
+    #[test]
+    fn test_contains_miss() {
+        let l: List<i32> = (0..10).collect();
+        assert!(!l.contains(&42));
+    }
+
+    #[test]
+    fn test_contains_empty_is_false() {
+        // Must not panic and must return false without performing any
+        // comparisons.
+        let l: List<i32> = List::new();
+        assert!(!l.contains(&0));
+    }
+
+    #[test]
+    fn test_contains_after_remove() {
+        let mut l: List<i32> = (0..5).collect();
+        assert!(l.contains(&2));
+        l.retain(|&x| x != 2);
+        assert!(!l.contains(&2));
+    }
+
+    #[test]
+    fn test_contains_string_type() {
+        // Confirms the `T: PartialEq` bound permits heap-allocated types
+        // and not just primitives.
+        let mut l: List<String> = List::new();
+        l.push_back(String::from("alpha"));
+        l.push_back(String::from("beta"));
+        assert!(l.contains(&String::from("alpha")));
+        assert!(!l.contains(&String::from("gamma")));
+    }
+
+    #[test]
+    fn test_partial_eq_equal_lists() {
+        let a: List<i32> = (0..5).collect();
+        let b: List<i32> = (0..5).collect();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_partial_eq_empty_lists() {
+        let a: List<i32> = List::new();
+        let b: List<i32> = List::new();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_partial_eq_different_contents() {
+        let a: List<i32> = vec![1, 2, 3].into_iter().collect();
+        let b: List<i32> = vec![1, 2, 4].into_iter().collect();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_partial_eq_different_lengths() {
+        let a: List<i32> = vec![1, 2, 3].into_iter().collect();
+        let b: List<i32> = vec![1, 2, 3, 4].into_iter().collect();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_partial_eq_same_contents_different_capacity() {
+        // Capacity must not affect equality — only element-wise compare.
+        let a: List<i32> = List::with_capacity(4);
+        let mut b: List<i32> = List::with_capacity(1024);
+        let mut a_mut = a;
+        for v in 0..3 {
+            a_mut.push_back(v);
+            b.push_back(v);
+        }
+        assert_eq!(a_mut, b);
+    }
+
+    #[test]
+    fn test_partial_eq_order_matters() {
+        let a: List<i32> = vec![1, 2, 3].into_iter().collect();
+        let b: List<i32> = vec![3, 2, 1].into_iter().collect();
+        assert_ne!(a, b);
     }
 }

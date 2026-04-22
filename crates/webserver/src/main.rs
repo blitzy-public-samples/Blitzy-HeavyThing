@@ -36,12 +36,22 @@
 //! [`arguments::parse`] end-to-end:
 //!
 //! 1. Parse CLI args via [`arguments::parse`].
-//! 2. On failure, print the error message + usage banner to stderr and
+//! 2. On failure, print the error message + usage banner to stdout and
 //!    exit with status `1` (matching the assembly `rwasa`'s failure
-//!    behavior verbatim per `arguments.inc` lines 731–767).
+//!    behavior verbatim per `arguments.inc` lines 731–767). Both the
+//!    error text and the banner go to stdout (fd=1): errors route
+//!    through `string$to_stdoutln` (`string32.inc` lines 2229–2260,
+//!    which ends with `mov edi, 1; syscall_write`) and the banner
+//!    uses a direct `syscall_write` with `edi = 1` at `arguments.inc`
+//!    line 763. This matches the AAP §0.8.1 "preserve all observable
+//!    behavior" contract.
 //! 3. On success, print a one-line-per-field dry-run summary to stderr
-//!    and exit with status `0`. The summary legitimately reads every
-//!    field of every exported struct so that the strict `-D warnings`
+//!    and exit with status `0`. The summary is placeholder-only
+//!    scaffolding with no FASM analog (the assembly `rwasa` has no
+//!    dry-run mode); stderr is used here purely so the summary does
+//!    not interleave with any stdout output the downstream real
+//!    main.rs may produce. The summary legitimately reads every field
+//!    of every exported struct so that the strict `-D warnings`
 //!    `dead_code` lint is satisfied without any `#[allow(...)]`
 //!    suppressions (AAP §0.8.3).
 //!
@@ -62,13 +72,16 @@ fn main() -> ExitCode {
     let args = std::env::args_os();
 
     // Parse arguments. On failure: print the error followed by the
-    // usage banner (both to stderr, byte-identical to the assembly
-    // `rwasa`'s output path per `arguments.inc` lines 731–767) and
-    // exit with status 1.
+    // usage banner (both to stdout, byte-identical to the assembly
+    // `rwasa`'s output path: errors go through `string$to_stdoutln`
+    // which ends with `mov edi, 1; syscall_write` (`string32.inc`
+    // lines 2229–2260) and the banner is emitted via a direct
+    // `syscall_write` with `edi = 1` at `arguments.inc` line 763)
+    // and exit with status 1.
     let cfg = match arguments::parse(args) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("{e}");
+            println!("{e}");
             arguments::print_usage();
             return ExitCode::from(1);
         }

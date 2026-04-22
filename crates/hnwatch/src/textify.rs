@@ -285,6 +285,17 @@ pub fn textify(input: &str) -> String {
     // `&gt;`, then `&amp;`, then `&quot;`. Reordering would cause
     // double-decoding of nested forms such as `&amp;lt;` (which must
     // remain `&lt;` after the pass, NOT collapse to `<`).
+    //
+    // SCOPE — by design, EXACTLY FOUR named entities are decoded:
+    // `&lt;`, `&gt;`, `&amp;`, `&quot;`. This matches the assembly's
+    // `string$replace` call sites at `textify.inc:117-148` precisely;
+    // no broader named-entity table (e.g. `&nbsp;`, `&ldquo;`,
+    // `&rdquo;`, `&hellip;`, `&mdash;`) is consulted. Any other
+    // `&name;` sequence passes through verbatim — this preserves the
+    // FASM baseline behavior per AAP §0.1.1 (byte-for-byte output
+    // parity) and AAP §0.5.1.10 / §0.8.2 (minimal-change discipline:
+    // the Rust port MUST NOT add transformations not present in the
+    // assembly). See `test_unsupported_named_entity_passes_through`.
     // ------------------------------------------------------------------
     s = s.replace(LT_ENT, LESS_THAN);
     s = s.replace(GT_ENT, GREATER_THAN);
@@ -298,9 +309,25 @@ pub fn textify(input: &str) -> String {
     // The assembly:
     //   1. Find "<a href=\"" (indexof). If -1, goto return.
     //   2. Find the closing `"` starting at idx+10 (NOT idx+9 — the
-    //      offset skips past the opening `"` itself, which is a
-    //      preserved quirk that means single-character URLs are not
-    //      extracted).
+    //      offset is `AHREF.len() + 1` = 9 + 1, which advances ONE
+    //      byte PAST the opening `"`). This offset is load-bearing:
+    //      it means the search for the closing `"` cannot match the
+    //      opening `"` itself even when the URL is empty. Worked
+    //      examples:
+    //        - `<a href="/">X</a>`  → URL `/` IS extracted (the
+    //          closing `"` is at position 10, which is exactly the
+    //          search_start, and Rust's `str::find` includes that
+    //          starting byte in the search range).
+    //        - `<a href="">X</a>` (empty URL) → the search cannot
+    //          find a closing `"` at position 10 (that byte is `>`),
+    //          so it proceeds to the NEXT `"` in the input. If no
+    //          later `"` exists, the algorithm bails cleanly; if a
+    //          later `"` exists (e.g. `<a href="">X</a>"more"`), the
+    //          algorithm misinterprets the intervening `">X</a>` as
+    //          the URL. This is a preserved FASM quirk per AAP §0.1.1
+    //          (byte-for-byte output parity). See the tests
+    //          `test_empty_url_pathological` and
+    //          `test_single_char_url_extracted` for coverage.
     //   3. If the closing `"` is missing, goto `.nohrefs` (bail out).
     //   4. Extract the URL as s[idx+9..close_quote].
     //   5. Find "</a>" starting at idx+10.
@@ -314,9 +341,14 @@ pub fn textify(input: &str) -> String {
     while let Some(idx) = s.find(AHREF) {
         // `search_start = idx + 10` matches the assembly's
         // `[r12d+10]` literal offset at `textify.inc:162` and `:173`.
-        // The +10 (not +9) is a preserved quirk: it skips past the
-        // opening `"` so that a URL of length zero or one character
-        // cannot be extracted.
+        // The +10 (not +9) is a preserved quirk: it advances ONE byte
+        // past the opening `"`. A URL of length 1 (e.g. `/`) is still
+        // extracted because the closing `"` lands at exactly
+        // `search_start` and `str::find` includes that byte. A URL of
+        // length 0 cannot be extracted from a self-contained anchor:
+        // the search skips the opening+closing `"` pair entirely and
+        // either bails (no later `"`) or misinterprets subsequent
+        // text as the URL (see the module-level worked examples).
         let search_start = idx + 10;
         // `str::get(search_start..)` returns None when the offset is
         // out of bounds OR not at a UTF-8 boundary (the latter is
@@ -535,6 +567,78 @@ mod tests {
         // code-block stripping, matching the assembly's fixed order.
         let input = "<code><pre>&#x27;quoted&#x27;</code></pre>";
         let expected = "'quoted'";
+        assert_eq!(textify(input), expected);
+    }
+
+    #[test]
+    fn test_unsupported_named_entity_passes_through() {
+        // Step 4: the assembly decodes EXACTLY four named entities
+        // (`&lt;`, `&gt;`, `&amp;`, `&quot;`) at textify.inc:117-148.
+        // Any other named entity — e.g. `&nbsp;`, `&ldquo;`,
+        // `&rdquo;`, `&hellip;`, `&mdash;` — is NOT decoded. It must
+        // pass through verbatim to preserve byte-for-byte FASM output
+        // parity per AAP §0.1.1. Adding a broader entity table would
+        // violate AAP §0.5.1.10 / §0.8.2 minimal-change discipline.
+        let input = "Hello&nbsp;world &mdash; &ldquo;quoted&rdquo;";
+        assert_eq!(textify(input), input);
+    }
+
+    #[test]
+    fn test_hex_entity_target_slice_oob() {
+        // Step 2: the input ends exactly after the two hex digits,
+        // with NO trailing `;`. The first `s.get(idx+3..idx+5)` call
+        // succeeds (two hex chars at positions 10..12 of a 12-byte
+        // string), `u8::from_str_radix` succeeds, but then the second
+        // `s.get(idx..idx+6)` call at textify.rs step-2 bailout fails
+        // because `idx+6 = 13` exceeds the 12-byte length. The let-
+        // else branch breaks the loop cleanly and the input passes
+        // through unchanged. This exercises the ordering-sensitive
+        // bailout that distinguishes `test_hex_entity_truncated` (hex
+        // digits absent) from this case (hex digits present but no
+        // closing `;` or trailing bytes).
+        let input = "prefix &#x41";
+        assert_eq!(textify(input), input);
+    }
+
+    #[test]
+    fn test_empty_url_pathological() {
+        // Step 5: an empty URL `<a href="">X</a>` is NOT cleanly
+        // extracted because the `search_start = idx + 10` offset
+        // skips past both the opening `"` AND the adjacent closing
+        // `"`. When a later `"` exists in the input, the algorithm
+        // misinterprets the intervening text (including the stray
+        // `"` between `</a>` and the next token) as the URL. This
+        // is a preserved FASM quirk per AAP §0.1.1 (byte-for-byte
+        // output parity) — documented in the Step 5 rustdoc. The
+        // Rust port MUST NOT "fix" this behavior, as it would
+        // diverge from the assembly baseline.
+        //
+        // Trace for input `<a href="">X</a>"more"` (22 bytes):
+        //   - idx = 0, search_start = 10
+        //   - tail = `">X</a>"more"` (positions 10..22)
+        //   - tail.find(`"`) = 6 → close_quote = 16
+        //   - url_slice = s[9..16] = `">X</a>` (7 bytes incl. lead `"`)
+        //   - tail.find(`</a>`) = 2 → close_a = 12
+        //   - full_slice = s[0..16] = `<a href="">X</a>`
+        //   - replace full_slice with url_slice
+        //   - result: `">X</a>"more"` (13 bytes)
+        let input = "<a href=\"\">X</a>\"more\"";
+        let expected = "\">X</a>\"more\"";
+        assert_eq!(textify(input), expected);
+    }
+
+    #[test]
+    fn test_single_char_url_extracted() {
+        // Step 5: a single-character URL (e.g. `/`) IS extracted
+        // successfully. The closing `"` lands at exactly
+        // `search_start = idx + 10`, and Rust's `str::find` includes
+        // that starting byte in the search range. This test
+        // empirically confirms the corrected Step 5 rustdoc claim:
+        // 1-character URLs work; only 0-character URLs are
+        // pathological. See `test_empty_url_pathological` for the
+        // 0-character contrast case.
+        let input = "Click <a href=\"/\">here</a>.";
+        let expected = "Click /.";
         assert_eq!(textify(input), expected);
     }
 }

@@ -575,6 +575,47 @@ impl<K: Ord, V> OrderedMap<K, V> {
         self.inner.range((Bound::Included(key), Bound::Unbounded)).next()
     }
 
+    /// Returns an iterator over `(&K, &V)` pairs whose keys lie within
+    /// the supplied range, in ascending key order.
+    ///
+    /// Equivalent to a windowed FASM `{int,unsigned,double}map$foreach`
+    /// that begins at `lower_bound(start)` and terminates when a key
+    /// crosses `end`. This affordance is required by downstream
+    /// consumers such as the TLS session cache expiry sweep (AAP
+    /// §0.7.2.4) and the HTTP file-cache recheck loop (AAP §0.7.1.1),
+    /// both of which need to iterate only over keys whose deadline
+    /// timestamps fall within a specific window. Delegates to
+    /// [`BTreeMap::range`], preserving its panic semantics.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the range bounds are `(Included(lo), Included(hi))`
+    /// or similar with `lo > hi`. This mirrors the panic behaviour of
+    /// [`BTreeMap::range`] and matches the FASM baseline's undefined
+    /// behaviour under the same misuse (the AVL walk would return an
+    /// empty iterator).
+    pub fn range<R>(&self, range: R) -> std::collections::btree_map::Range<'_, K, V>
+    where
+        R: std::ops::RangeBounds<K>,
+    {
+        self.inner.range(range)
+    }
+
+    /// Mutable variant of [`OrderedMap::range`], yielding
+    /// `(&K, &mut V)` pairs in ascending key order within the
+    /// supplied bounds.
+    ///
+    /// Useful for in-place updates during an ordered window walk —
+    /// for example, re-scheduling TLS session cache entries whose
+    /// expiry has been extended in-flight. Delegates to
+    /// [`BTreeMap::range_mut`] and preserves its panic semantics.
+    pub fn range_mut<R>(&mut self, range: R) -> std::collections::btree_map::RangeMut<'_, K, V>
+    where
+        R: std::ops::RangeBounds<K>,
+    {
+        self.inner.range_mut(range)
+    }
+
     /// Returns an iterator over all `(&K, &V)` pairs in ascending key
     /// order.
     ///
@@ -1136,6 +1177,153 @@ mod tests {
     fn test_orderedmap_lower_bound_empty() {
         let m: OrderedMap<u64, &'static str> = OrderedMap::new();
         assert_eq!(m.lower_bound(&42), None);
+    }
+
+    #[test]
+    fn test_orderedmap_range_inclusive_both_ends() {
+        let mut m: OrderedMap<u64, &'static str> = OrderedMap::new();
+        m.insert(10, "ten");
+        m.insert(20, "twenty");
+        m.insert(30, "thirty");
+        m.insert(40, "forty");
+        m.insert(50, "fifty");
+        // Inclusive range [20, 40] should yield exactly 20, 30, 40.
+        let collected: Vec<(u64, &'static str)> =
+            m.range(20..=40).map(|(k, v)| (*k, *v)).collect();
+        assert_eq!(
+            collected,
+            vec![(20, "twenty"), (30, "thirty"), (40, "forty")]
+        );
+    }
+
+    #[test]
+    fn test_orderedmap_range_half_open_excludes_end() {
+        let mut m: OrderedMap<u64, &'static str> = OrderedMap::new();
+        m.insert(10, "ten");
+        m.insert(20, "twenty");
+        m.insert(30, "thirty");
+        // Half-open range [10, 30) should yield 10 and 20 but NOT 30.
+        let keys: Vec<u64> = m.range(10..30).map(|(k, _)| *k).collect();
+        assert_eq!(keys, vec![10, 20]);
+    }
+
+    #[test]
+    fn test_orderedmap_range_unbounded_start() {
+        let mut m: OrderedMap<u64, &'static str> = OrderedMap::new();
+        m.insert(10, "ten");
+        m.insert(20, "twenty");
+        m.insert(30, "thirty");
+        // (..25) should yield 10 and 20 but NOT 30.
+        let keys: Vec<u64> = m.range(..25).map(|(k, _)| *k).collect();
+        assert_eq!(keys, vec![10, 20]);
+    }
+
+    #[test]
+    fn test_orderedmap_range_unbounded_end() {
+        let mut m: OrderedMap<u64, &'static str> = OrderedMap::new();
+        m.insert(10, "ten");
+        m.insert(20, "twenty");
+        m.insert(30, "thirty");
+        // (15..) should yield 20 and 30 but NOT 10.
+        let keys: Vec<u64> = m.range(15..).map(|(k, _)| *k).collect();
+        assert_eq!(keys, vec![20, 30]);
+    }
+
+    #[test]
+    fn test_orderedmap_range_fully_unbounded_walks_all() {
+        let mut m: OrderedMap<u64, &'static str> = OrderedMap::new();
+        m.insert(10, "ten");
+        m.insert(20, "twenty");
+        m.insert(30, "thirty");
+        // `..` (RangeFull) should visit every entry in ascending order.
+        let keys: Vec<u64> = m.range(..).map(|(k, _)| *k).collect();
+        assert_eq!(keys, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn test_orderedmap_range_empty_when_outside() {
+        let mut m: OrderedMap<u64, &'static str> = OrderedMap::new();
+        m.insert(10, "ten");
+        m.insert(20, "twenty");
+        m.insert(30, "thirty");
+        // Window entirely above the max key yields an empty iterator.
+        let collected: Vec<u64> = m.range(100..200).map(|(k, _)| *k).collect();
+        assert!(collected.is_empty());
+    }
+
+    #[test]
+    fn test_orderedmap_range_on_empty_map() {
+        let m: OrderedMap<u64, &'static str> = OrderedMap::new();
+        let collected: Vec<u64> = m.range(..).map(|(k, _)| *k).collect();
+        assert!(collected.is_empty());
+    }
+
+    #[test]
+    fn test_orderedmap_range_timer_window_simulation() {
+        // Mirrors AAP §0.7.2.4 use case: walk TLS session cache entries
+        // whose expiry falls within a given window.
+        let mut m: OrderedMap<u64, &'static str> = OrderedMap::new();
+        m.insert(1_000, "expired-a");
+        m.insert(2_000, "expired-b");
+        m.insert(3_000, "live-a");
+        m.insert(4_000, "live-b");
+        m.insert(5_000, "future-a");
+
+        // "Now" is 3_500 — everything with deadline <= now has expired.
+        let expired_keys: Vec<u64> = m.range(..=3_500).map(|(k, _)| *k).collect();
+        assert_eq!(expired_keys, vec![1_000, 2_000, 3_000]);
+    }
+
+    #[test]
+    fn test_orderedmap_range_mut_updates_in_place() {
+        let mut m: OrderedMap<u64, i64> = OrderedMap::new();
+        m.insert(1, 10);
+        m.insert(2, 20);
+        m.insert(3, 30);
+        m.insert(4, 40);
+        m.insert(5, 50);
+
+        // Negate values in the window [2, 4] in place.
+        for (_k, v) in m.range_mut(2..=4) {
+            *v = -*v;
+        }
+
+        let snapshot: Vec<(u64, i64)> = m.iter().map(|(k, v)| (*k, *v)).collect();
+        assert_eq!(
+            snapshot,
+            vec![(1, 10), (2, -20), (3, -30), (4, -40), (5, 50)]
+        );
+    }
+
+    #[test]
+    fn test_orderedmap_range_mut_empty_window_is_no_op() {
+        let mut m: OrderedMap<u64, i64> = OrderedMap::new();
+        m.insert(1, 10);
+        m.insert(2, 20);
+
+        // Window above all keys — no mutations should occur.
+        for (_k, v) in m.range_mut(100..200) {
+            *v = -1;
+        }
+
+        let snapshot: Vec<(u64, i64)> = m.iter().map(|(k, v)| (*k, *v)).collect();
+        assert_eq!(snapshot, vec![(1, 10), (2, 20)]);
+    }
+
+    #[test]
+    fn test_orderedmap_range_with_string_keys() {
+        let mut m: OrderedMap<String, u32> = OrderedMap::new();
+        m.insert("apple".to_string(), 1);
+        m.insert("banana".to_string(), 2);
+        m.insert("cherry".to_string(), 3);
+        m.insert("date".to_string(), 4);
+
+        // Inclusive range ["banana", "cherry"].
+        let keys: Vec<String> = m
+            .range("banana".to_string()..="cherry".to_string())
+            .map(|(k, _)| k.clone())
+            .collect();
+        assert_eq!(keys, vec!["banana".to_string(), "cherry".to_string()]);
     }
 
     #[test]

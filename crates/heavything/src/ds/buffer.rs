@@ -83,13 +83,14 @@
 //! `ds`-folder scope rule; ports live in `crate::util`:
 //!
 //! - `buffer$append_string` — in `util::string`; Rust callers use
-//!   `push_slice(s.as_bytes())`.
+//!   `extend_from_slice(s.as_bytes())`.
 //! - `buffer$append_hexdecode` / `buffer$append_hexencode` — belong in
 //!   `util::string` (or the `hex` dev-dep in test code).
 //! - `buffer$append_base64decode` / `buffer$append_bintobase64_latin1`
 //!   — belong in `util::base64`.
 //! - `buffer$append_nocopy` — FASM-specific raw-pointer optimisation;
-//!   Rust callers use `push_slice` or `reserve` + `extend_from_slice`.
+//!   Rust callers use `extend_from_slice`, optionally preceded by
+//!   `reserve(n)` for explicit pre-allocation.
 //! - `buffer$cdebug` — callers use `println!("{:?}", buf.as_slice())`
 //!   or structured logging in the showcase apps.
 
@@ -236,7 +237,7 @@ impl Buffer {
     ///
     /// The length of the returned slice equals [`Buffer::len`];
     /// callers cannot use this slice to grow the buffer (use
-    /// [`Buffer::push`] / [`Buffer::push_slice`] instead).
+    /// [`Buffer::push`] / [`Buffer::extend_from_slice`] instead).
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         &mut self.inner
@@ -366,7 +367,7 @@ impl Buffer {
     /// Equivalent to FASM `buffer$append` (`buffer.inc` line 263),
     /// which performed `reserve` + `memcpy` in sequence.
     #[inline]
-    pub fn push_slice(&mut self, slice: &[u8]) {
+    pub fn extend_from_slice(&mut self, slice: &[u8]) {
         self.inner.extend_from_slice(slice);
     }
 
@@ -667,10 +668,10 @@ mod tests {
     // -- basic append ---------------------------------------------------------
 
     #[test]
-    fn test_push_and_push_slice() {
+    fn test_push_and_extend_from_slice() {
         let mut buf = Buffer::new();
         buf.push(0xAB);
-        buf.push_slice(&[1, 2, 3]);
+        buf.extend_from_slice(&[1, 2, 3]);
         assert_eq!(buf.as_slice(), &[0xAB, 1, 2, 3]);
         assert_eq!(buf.len(), 4);
     }
@@ -728,7 +729,7 @@ mod tests {
     #[test]
     fn test_clear_preserves_capacity() {
         let mut buf = Buffer::new();
-        buf.push_slice(&[0; 200]);
+        buf.extend_from_slice(&[0; 200]);
         let cap_before = buf.capacity();
         buf.clear();
         assert_eq!(buf.len(), 0);
@@ -740,7 +741,7 @@ mod tests {
         // Start with a buffer smaller than DEFAULT_CAPACITY and grow
         // it back up.
         let mut buf = Buffer::with_capacity(16);
-        buf.push_slice(&[0xFF; 8]);
+        buf.extend_from_slice(&[0xFF; 8]);
         buf.clear_and_reserve_default();
         assert_eq!(buf.len(), 0);
         assert!(buf.capacity() >= DEFAULT_CAPACITY);
@@ -756,7 +757,7 @@ mod tests {
     #[test]
     fn test_truncate_ok() {
         let mut buf = Buffer::new();
-        buf.push_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        buf.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         assert!(buf.truncate(4).is_ok());
         assert_eq!(buf.as_slice(), &[1, 2, 3, 4, 5, 6]);
     }
@@ -764,7 +765,7 @@ mod tests {
     #[test]
     fn test_truncate_zero_is_noop() {
         let mut buf = Buffer::new();
-        buf.push_slice(&[7, 7, 7]);
+        buf.extend_from_slice(&[7, 7, 7]);
         assert!(buf.truncate(0).is_ok());
         assert_eq!(buf.as_slice(), &[7, 7, 7]);
     }
@@ -772,7 +773,7 @@ mod tests {
     #[test]
     fn test_truncate_overflow_returns_error() {
         let mut buf = Buffer::new();
-        buf.push_slice(&[1, 2, 3, 4, 5]);
+        buf.extend_from_slice(&[1, 2, 3, 4, 5]);
         match buf.truncate(10) {
             Err(DsError::BufferOverflow { requested, capacity }) => {
                 assert_eq!(requested, 10);
@@ -787,7 +788,7 @@ mod tests {
     #[test]
     fn test_consume_ok() {
         let mut buf = Buffer::new();
-        buf.push_slice(&[1, 2, 3, 4, 5]);
+        buf.extend_from_slice(&[1, 2, 3, 4, 5]);
         assert!(buf.consume(2).is_ok());
         assert_eq!(buf.as_slice(), &[3, 4, 5]);
     }
@@ -795,7 +796,7 @@ mod tests {
     #[test]
     fn test_consume_overflow_returns_error() {
         let mut buf = Buffer::new();
-        buf.push_slice(&[1, 2, 3, 4, 5]);
+        buf.extend_from_slice(&[1, 2, 3, 4, 5]);
         match buf.consume(10) {
             Err(DsError::BufferOverflow { requested, capacity }) => {
                 assert_eq!(requested, 10);
@@ -811,7 +812,7 @@ mod tests {
     #[test]
     fn test_insert_slice_ok() {
         let mut buf = Buffer::new();
-        buf.push_slice(&[1, 2, 5]);
+        buf.extend_from_slice(&[1, 2, 5]);
         assert!(buf.insert_slice(2, &[3, 4]).is_ok());
         assert_eq!(buf.as_slice(), &[1, 2, 3, 4, 5]);
     }
@@ -819,7 +820,7 @@ mod tests {
     #[test]
     fn test_insert_slice_at_head_and_tail() {
         let mut buf = Buffer::new();
-        buf.push_slice(&[2, 3]);
+        buf.extend_from_slice(&[2, 3]);
         assert!(buf.insert_slice(0, &[1]).is_ok());
         assert!(buf.insert_slice(buf.len(), &[4]).is_ok());
         assert_eq!(buf.as_slice(), &[1, 2, 3, 4]);
@@ -828,7 +829,7 @@ mod tests {
     #[test]
     fn test_insert_slice_overflow_returns_error() {
         let mut buf = Buffer::new();
-        buf.push_slice(&[1, 2, 3]);
+        buf.extend_from_slice(&[1, 2, 3]);
         match buf.insert_slice(100, &[9]) {
             Err(DsError::BufferOverflow { requested, capacity }) => {
                 assert_eq!(requested, 100);
@@ -842,7 +843,7 @@ mod tests {
     #[test]
     fn test_remove_range_ok() {
         let mut buf = Buffer::new();
-        buf.push_slice(&[1, 2, 3, 4, 5]);
+        buf.extend_from_slice(&[1, 2, 3, 4, 5]);
         assert!(buf.remove_range(1, 2).is_ok());
         assert_eq!(buf.as_slice(), &[1, 4, 5]);
     }
@@ -850,7 +851,7 @@ mod tests {
     #[test]
     fn test_remove_range_zero_is_noop() {
         let mut buf = Buffer::new();
-        buf.push_slice(&[1, 2, 3]);
+        buf.extend_from_slice(&[1, 2, 3]);
         assert!(buf.remove_range(1, 0).is_ok());
         assert_eq!(buf.as_slice(), &[1, 2, 3]);
     }
@@ -858,7 +859,7 @@ mod tests {
     #[test]
     fn test_remove_range_overflow_returns_error() {
         let mut buf = Buffer::new();
-        buf.push_slice(&[1, 2, 3]);
+        buf.extend_from_slice(&[1, 2, 3]);
         match buf.remove_range(0, 100) {
             Err(DsError::BufferOverflow { requested, capacity }) => {
                 assert_eq!(requested, 100);
@@ -872,7 +873,7 @@ mod tests {
     #[test]
     fn test_remove_range_checked_add_overflow() {
         let mut buf = Buffer::new();
-        buf.push_slice(&[1, 2, 3]);
+        buf.extend_from_slice(&[1, 2, 3]);
         // offset + count overflows usize -> the `checked_add` branch
         // reports `usize::MAX` in the `requested` field.
         match buf.remove_range(usize::MAX, 2) {
@@ -891,7 +892,7 @@ mod tests {
     fn test_has_more_lines_true_and_false() {
         let mut buf = Buffer::new();
         assert!(!buf.has_more_lines());
-        buf.push_slice(b"no newline here");
+        buf.extend_from_slice(b"no newline here");
         assert!(!buf.has_more_lines());
         buf.push(b'\n');
         assert!(buf.has_more_lines());
@@ -901,7 +902,7 @@ mod tests {
     fn test_ends_with_lf() {
         let mut buf = Buffer::new();
         assert!(!buf.ends_with_lf());
-        buf.push_slice(b"abc");
+        buf.extend_from_slice(b"abc");
         assert!(!buf.ends_with_lf());
         buf.push(b'\n');
         assert!(buf.ends_with_lf());
@@ -910,7 +911,7 @@ mod tests {
     #[test]
     fn test_next_line_basic() {
         let mut buf = Buffer::new();
-        buf.push_slice(b"line1\nline2\nline3");
+        buf.extend_from_slice(b"line1\nline2\nline3");
         assert_eq!(buf.next_line().as_deref(), Some(b"line1\n".as_ref()));
         assert_eq!(buf.next_line().as_deref(), Some(b"line2\n".as_ref()));
         // Tail has no terminator -> None, buffer unchanged.
@@ -921,7 +922,7 @@ mod tests {
     #[test]
     fn test_next_line_preserves_cr() {
         let mut buf = Buffer::new();
-        buf.push_slice(b"crlf-line\r\nafter");
+        buf.extend_from_slice(b"crlf-line\r\nafter");
         assert_eq!(buf.next_line().as_deref(), Some(b"crlf-line\r\n".as_ref()));
         assert_eq!(buf.as_slice(), b"after");
     }
@@ -929,7 +930,7 @@ mod tests {
     #[test]
     fn test_next_line_without_newline_is_none() {
         let mut buf = Buffer::new();
-        buf.push_slice(b"no newline");
+        buf.extend_from_slice(b"no newline");
         assert_eq!(buf.next_line(), None);
         assert_eq!(buf.as_slice(), b"no newline");
     }
@@ -947,7 +948,7 @@ mod tests {
         // Create a populated buffer, persist it, then reload into a
         // fresh buffer and verify byte-for-byte equality.
         let mut src = Buffer::new();
-        src.push_slice(b"HeavyThing buffer round-trip payload\x00\x01\x02\xFF");
+        src.extend_from_slice(b"HeavyThing buffer round-trip payload\x00\x01\x02\xFF");
 
         let tmp = NamedTempFile::new().expect("create tempfile");
         src.write_to_file(tmp.path()).expect("write_to_file");
@@ -982,7 +983,7 @@ mod tests {
             .expect("write_to_file");
 
         let mut buf = Buffer::new();
-        buf.push_slice(b"prefix:");
+        buf.extend_from_slice(b"prefix:");
         buf.read_from_file(tmp.path()).expect("read_from_file");
         assert_eq!(buf.as_slice(), b"prefix:file-bytes");
     }

@@ -19,13 +19,34 @@
 
 //! IP blacklist with time-based expiry — Rust port of `blacklist.inc`.
 //!
+//! # Checkpoint 3 API (post-review revisions)
+//!
+//! The public API was realigned with the Checkpoint 3 specification per
+//! code-review findings:
+//!
+//! * Keys are [`u128`] (not `u64`) — widening removes the IPv6 lossy
+//!   hashing vulnerability (CWE-345 / CWE-346): a 128-bit IPv6 address
+//!   cannot be injectively represented in a 64-bit key, which enabled
+//!   forged blacklist-bypass collisions. The lossless encoding maps
+//!   IPv4 into the `::ffff:a.b.c.d` subspace of [`u128`] (RFC 4291
+//!   §2.5.5.2 *IPv4-Mapped IPv6 Address*) and IPv6 directly via
+//!   `u128::from_be_bytes`.
+//! * Insertion uses [`Blacklist::insert`] (not `add`) and takes a
+//!   per-call `ttl: Duration` that supplements the instance-default
+//!   TTL set at construction time. Instance-default is retained for
+//!   FASM fidelity and Debug display.
+//! * The socket-addr helper is [`key_from_socket_addr`] and accepts
+//!   [`std::net::SocketAddr`] directly (extracting `.ip()` internally)
+//!   so TLS / SSH consumers that already hold a `TcpStream::peer_addr`
+//!   result can feed it straight in.
+//!
 //! The FASM source (`blacklist.inc`, © 2015 2 Ton Digital) describes
 //! itself as *"a convenience object to deal with unsigned keys + time
 //! delay"* and is shared between the TLS server (`net::tls`) and the SSH
 //! server (`net::ssh`) for throttling misbehaving peers (AAP §0.7.1.1,
 //! §0.7.4.4, §0.8.10 Gate 4). Both consumers hold an
 //! `Arc<Blacklist>` cloned into per-connection handler state and call
-//! [`Blacklist::add`] on crypto / auth failures.
+//! [`Blacklist::insert`] on crypto / auth failures.
 //!
 //! # Design summary
 //!
@@ -33,8 +54,12 @@
 //! doubly-linked list in insertion order (O(1) push-tail, O(1) pop-head).
 //! The Rust port preserves this pairing with:
 //!
-//! * [`std::collections::HashMap`]`<u64, Instant>` for O(1) containment
-//! * [`std::collections::VecDeque`]`<u64>` for O(1) push-back / pop-front
+//! * [`std::collections::HashMap`]`<u128, Instant>` for O(1) containment
+//! * [`std::collections::VecDeque`]`<u128>` for O(1) push-back / pop-front
+//!   in insertion order (per-call TTLs mean the FIFO is no longer
+//!   strictly sorted by expiry, so sweeps scan the whole deque; the
+//!   pairing still matches the FASM doubly-linked-list semantics of
+//!   `blacklist_first_ofs` / `blacklist_last_ofs` exactly).
 //!
 //! per AAP §0.8.1 *"MUST use std collections where semantically
 //! equivalent"*. The interior is protected by a single
@@ -54,16 +79,21 @@
 //!
 //! This Rust port deliberately replaces that with a fixed-TTL policy:
 //! [`Blacklist::contains`] never refreshes the timeout; entries always
-//! expire at `add-time + expiry`. The trade-off is explicit — Rust
+//! expire at `insert-time + ttl`. The trade-off is explicit — Rust
 //! consumers get predictable per-entry lifetime at the cost of losing
 //! the FASM's implicit "ban permanence for active attackers" feature.
 //! This divergence is explicitly captured in the AAP §0.7.1.1
 //! behavioural-preservation table and the agent prompt for this file.
 //!
-//! Lazy expiry is still performed on every [`add`], [`contains`], and
-//! [`len`] call by sweeping the front of the FIFO. This matches the FASM
-//! `.weed` loop (line 189 of `blacklist.inc`) and keeps memory bounded
-//! under sustained probing without needing a background task.
+//! Lazy expiry is still performed on every [`insert`], [`contains`], and
+//! [`len`] call. Unlike the FASM — which could rely on a strictly
+//! expiry-sorted FIFO — per-call TTLs mean that an entry inserted later
+//! with a shorter TTL can expire before an older entry with a longer
+//! one; the sweep therefore performs a full scan of the deque rather
+//! than an early break on the first live entry. This matches the
+//! *intent* of the FASM `.weed` loop (line 189 of `blacklist.inc`) —
+//! "drop anything already expired" — while preserving correctness
+//! under heterogeneous TTLs.
 //!
 //! # Optional periodic sweep
 //!
@@ -81,20 +111,28 @@
 //!
 //! # Key encoding helpers
 //!
-//! The blacklist stores opaque [`u64`] keys; the three free functions
-//! [`key_from_ipv4`], [`key_from_ipv6`], and [`key_from_ip`] provide a
-//! canonical encoding that both TLS and SSH consumers share so peer
-//! addresses from either subsystem never collide.
+//! The blacklist stores opaque [`u128`] keys; the three free functions
+//! [`key_from_ipv4`], [`key_from_ipv6`], and [`key_from_socket_addr`]
+//! provide a canonical **injective** encoding that both TLS and SSH
+//! consumers share so peer addresses from either family never collide:
 //!
-//! [`add`]: Blacklist::add
+//! * IPv4 `a.b.c.d` maps into the `::ffff:a.b.c.d` subspace of
+//!   [`u128`] per RFC 4291 §2.5.5.2 (*IPv4-Mapped IPv6 Address*), i.e.
+//!   the low 48 bits carry `0xFFFF` || the four IPv4 octets and the
+//!   upper 80 bits are zero.
+//! * IPv6 addresses are packed directly via
+//!   `u128::from_be_bytes(ip.octets())` — lossless and deterministic.
+//! * [`key_from_socket_addr`] dispatches to the appropriate family,
+//!   taking a [`std::net::SocketAddr`] so callers that already hold a
+//!   `TcpStream::peer_addr` result can feed it in without unwrapping.
+//!
+//! [`insert`]: Blacklist::insert
 //! [`contains`]: Blacklist::contains
 //! [`len`]: Blacklist::len
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use std::hash::{Hash, Hasher};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -102,7 +140,7 @@ use std::time::{Duration, Instant};
 // Blacklist — shared between net::tls and net::ssh via Arc<Blacklist>.
 // ---------------------------------------------------------------------------
 
-/// Time-delayed blacklist of opaque [`u64`] keys.
+/// Time-delayed blacklist of opaque [`u128`] keys.
 ///
 /// Constructed via [`Blacklist::new`] and shared as `Arc<Blacklist>`
 /// across async tasks — the struct is internally synchronised so
@@ -114,14 +152,24 @@ use std::time::{Duration, Instant};
 /// to locate the `VecDeque` index of the removed key. This matches the
 /// FASM baseline, which performs an equivalent doubly-linked-list walk.
 ///
-/// Keys are opaque [`u64`] values; callers working with IP addresses
+/// Keys are opaque [`u128`] values; callers working with IP addresses
 /// should use the [`key_from_ipv4`], [`key_from_ipv6`], and
-/// [`key_from_ip`] helper functions for a consistent encoding.
+/// [`key_from_socket_addr`] helper functions for a consistent,
+/// **injective** encoding that never collides across IPv4 and IPv6
+/// address families (IPv4 is embedded in the IPv4-mapped IPv6 subspace
+/// `::ffff:a.b.c.d` per RFC 4291 §2.5.5.2).
 ///
 /// [`remove`]: Blacklist::remove
 pub struct Blacklist {
-    /// Seconds-to-live for newly-added entries. Copied from the FASM
-    /// `blacklist_expiry_ofs` field.
+    /// Default seconds-to-live applied by [`Blacklist::new`] consumers
+    /// that construct a long-lived blacklist instance. Copied from the
+    /// FASM `blacklist_expiry_ofs` field and retained here for Debug
+    /// output and as documentation of the instance's intended lifetime.
+    ///
+    /// Note: the per-call [`Blacklist::insert`] API takes an explicit
+    /// `ttl: Duration` argument that overrides this default on a
+    /// per-entry basis (see the module-level *"Deliberate behavioural
+    /// divergence"* section).
     expiry: Duration,
     /// Interior state — the map/order pair is protected by a single
     /// [`std::sync::Mutex`] rather than split across `RwLock<HashMap>` +
@@ -136,26 +184,32 @@ pub struct Blacklist {
 struct Inner {
     /// O(1) containment. Value is the monotonic [`Instant`] at which the
     /// entry expires (equivalent of FASM `blacklist_item_timeout_ofs`).
-    map: HashMap<u64, Instant>,
-    /// Insertion order for O(1) oldest-first expiry. This is the Rust
-    /// analogue of the FASM doubly-linked list pinned by
-    /// `blacklist_first_ofs` / `blacklist_last_ofs`.
+    map: HashMap<u128, Instant>,
+    /// Insertion order for the FASM doubly-linked-list analogue pinned
+    /// by `blacklist_first_ofs` / `blacklist_last_ofs`. With per-call
+    /// TTLs, this FIFO is no longer strictly sorted by expiry, so
+    /// [`sweep_expired`] performs a full scan rather than an
+    /// expiry-sorted early break.
     ///
     /// Invariant: `order.len() == map.len()` after every public method
     /// call. The interior `sweep_expired` helper transiently reduces
     /// `order` before removing the matching entry from `map`, but every
     /// iteration restores parity before yielding.
-    order: VecDeque<u64>,
+    order: VecDeque<u128>,
 }
 
 impl Blacklist {
-    /// Create a new blacklist with the given per-entry TTL.
+    /// Create a new blacklist with the given default per-entry TTL.
     ///
-    /// The TTL is applied at `add` time: an entry inserted at instant
-    /// `t` expires at `t + expiry`. Callers typically pass
-    /// [`Duration::from_secs`] with values such as `config::TLS_BLACKLIST`
-    /// (86 400 s = one day) or `config::SSH_BLACKLIST` (86 400 s) per
-    /// AAP §0.7.1.1.
+    /// `expiry` records the instance's intended per-entry lifetime (for
+    /// Debug output and as documentation); the actual lifetime applied
+    /// to each blacklisted key is the `ttl` argument passed to
+    /// [`Blacklist::insert`] on a per-call basis, so callers may choose
+    /// to pass `expiry` verbatim to every `insert` call for FASM-style
+    /// uniform-TTL behaviour, or vary it per peer. Callers typically
+    /// pass [`Duration::from_secs`] with values such as
+    /// `config::TLS_BLACKLIST` (86 400 s = one day) or
+    /// `config::SSH_BLACKLIST` (86 400 s) per AAP §0.7.1.1.
     ///
     /// Returns an [`Arc`] rather than an owned value so the returned
     /// instance can be cheaply cloned into connection-handler state —
@@ -171,17 +225,27 @@ impl Blacklist {
         })
     }
 
-    /// Add `key` to the blacklist.
+    /// Insert `key` into the blacklist with the given `ttl`.
     ///
     /// * If `key` is already present this is a no-op — matching the
     ///   FASM `blacklist$add .alreadyhere` short-circuit (line 101 of
-    ///   `blacklist.inc`).
+    ///   `blacklist.inc`). The existing entry's expiry is **not**
+    ///   refreshed; see the module-level *"Deliberate behavioural
+    ///   divergence"* section.
     /// * If `key` is not present it is inserted with expiry
-    ///   `Instant::now() + self.expiry` and appended to the FIFO tail
-    ///   (matching FASM lines 87–97).
+    ///   `Instant::now() + ttl` and appended to the FIFO tail (matching
+    ///   FASM lines 87–97).
+    ///
+    /// `ttl` is applied on a per-call basis and overrides the instance
+    /// default supplied to [`Blacklist::new`]; callers that want FASM
+    /// uniform-TTL semantics should pass the same `Duration` value to
+    /// every `insert` call.
     ///
     /// This call incidentally sweeps already-expired entries from the
-    /// front of the FIFO (AAP §0.7.1.1 lazy-expiry convention).
+    /// FIFO (AAP §0.7.1.1 lazy-expiry convention). Unlike the FASM —
+    /// which could rely on a strictly expiry-sorted FIFO — per-call
+    /// TTLs mean the sweep must scan the whole deque rather than
+    /// early-breaking on the first live entry.
     ///
     /// Poison handling: if another thread panicked while holding the
     /// internal mutex this call silently no-ops rather than propagating
@@ -190,13 +254,13 @@ impl Blacklist {
     /// blacklist is still functional from the caller's perspective
     /// (subsequent `contains` returns `false` by default, which is the
     /// safe failure mode for a rate-limiter).
-    pub fn add(&self, key: u64) {
+    pub fn insert(&self, key: u128, ttl: Duration) {
         let Ok(mut g) = self.inner.lock() else { return };
         sweep_expired(&mut g);
         if g.map.contains_key(&key) {
             return;
         }
-        let expires_at = Instant::now() + self.expiry;
+        let expires_at = Instant::now() + ttl;
         g.map.insert(key, expires_at);
         g.order.push_back(key);
     }
@@ -205,13 +269,17 @@ impl Blacklist {
     /// expired.
     ///
     /// This call incidentally sweeps already-expired entries from the
-    /// front of the FIFO (matching the FASM `.weed` loop at line 189 of
-    /// `blacklist.inc`).
+    /// FIFO (matching the intent of the FASM `.weed` loop at line 189
+    /// of `blacklist.inc`). After the sweep, a defensive per-entry
+    /// expiry check is performed so that any residual entry whose
+    /// per-call TTL already elapsed is treated as not-present even if
+    /// the lazy sweep did not reach it (this matters only under
+    /// heterogeneous TTLs, which the FASM baseline did not support).
     ///
     /// Note: unlike the FASM `blacklist$check`, this function does
     /// **not** reset the entry's timeout nor move it to the tail of the
     /// FIFO (see the module-level *"Deliberate behavioural divergence"*
-    /// section). Entries expire at `add-time + expiry` regardless of
+    /// section). Entries expire at `insert-time + ttl` regardless of
     /// how often they are probed.
     ///
     /// Poison handling: on a poisoned mutex the call returns `false`
@@ -219,12 +287,15 @@ impl Blacklist {
     /// letting through a peer that would otherwise be blocked, but
     /// never fabricates a block for a legitimate peer).
     #[must_use]
-    pub fn contains(&self, key: u64) -> bool {
+    pub fn contains(&self, key: u128) -> bool {
         let Ok(mut g) = self.inner.lock() else {
             return false;
         };
         sweep_expired(&mut g);
-        g.map.contains_key(&key)
+        match g.map.get(&key) {
+            Some(&expires_at) => Instant::now() < expires_at,
+            None => false,
+        }
     }
 
     /// Remove `key` from the blacklist. No-op if the key is not present.
@@ -234,7 +305,7 @@ impl Blacklist {
     /// practice — administrator-driven de-banning only.
     ///
     /// Poison handling: silent no-op on a poisoned mutex.
-    pub fn remove(&self, key: u64) {
+    pub fn remove(&self, key: u128) {
         let Ok(mut g) = self.inner.lock() else { return };
         if g.map.remove(&key).is_some() {
             // Linear scan to locate the removed key in the FIFO. The FASM
@@ -318,43 +389,55 @@ impl Blacklist {
 }
 
 // ---------------------------------------------------------------------------
-// Internal helper — front-of-queue lazy expiry.
+// Internal helper — lazy expiry sweep.
 //
 // This is a free function (rather than an associated `Self::` method)
-// so it can be called from `add`, `contains`, `len`, and
+// so it can be called from `insert`, `contains`, `len`, and
 // `spawn_sweeper` without re-locking — each caller passes its
 // already-locked `MutexGuard` by mutable reference. The FASM
 // equivalent is the `.weed` loop at line 189 of `blacklist.inc`.
+//
+// Full-scan semantics (not early-break): because the checkpoint-3 API
+// accepts a per-call `ttl` in `insert`, insertion order is NO LONGER
+// a monotonic proxy for expiry order. A long-TTL entry inserted early
+// can outlive a short-TTL entry inserted later. Consequently this
+// sweeper walks the ENTIRE `order` FIFO, removing every expired key
+// from both `map` and `order` while preserving the surviving FIFO
+// ordering. For the typical case where `net::tls` and `net::ssh`
+// both use the default `expiry` TTL (fixed-TTL policy), this reduces
+// to the same behavior as the FASM early-break loop; for the
+// heterogeneous-TTL case, it remains correct.
 // ---------------------------------------------------------------------------
 
 fn sweep_expired(g: &mut MutexGuard<'_, Inner>) {
     let now = Instant::now();
-    while let Some(&head) = g.order.front() {
-        match g.map.get(&head) {
-            Some(&expires_at) if expires_at <= now => {
-                // Front entry has expired — pop from the FIFO and remove
-                // from the map. Mirrors FASM lines 190–197 calling
-                // `blacklist$remove` on the head item.
-                g.order.pop_front();
-                g.map.remove(&head);
-            }
-            Some(_) => {
-                // FIFO is ordered by insertion time; the first non-expired
-                // entry implies every later entry is also non-expired
-                // (their expiry times are monotonically ≥ the head's).
-                break;
-            }
-            None => {
-                // Map/order desync — key absent from the map but present
-                // in the FIFO. Recover gracefully by popping the orphan.
-                // This branch is defensive: the public API upholds the
-                // `order.len() == map.len()` invariant, so this is
-                // unreachable in well-behaved flows. Kept to avoid an
-                // infinite loop in the presence of a subtle future bug.
-                g.order.pop_front();
-            }
+    // Destructure the guard into disjoint mutable references to `map`
+    // and `order` so the borrow checker permits calling `map.remove`
+    // from inside `order.retain`'s closure (the two fields are
+    // independent, but we cannot re-borrow `g` twice).
+    let Inner { map, order, .. } = &mut **g;
+    order.retain(|key| match map.get(key) {
+        Some(&expires_at) if expires_at <= now => {
+            // Key has expired — remove it from the map as well, and
+            // drop it from the FIFO (`retain` closure returns `false`).
+            // Mirrors FASM lines 190–197 calling `blacklist$remove` on
+            // each expired item.
+            map.remove(key);
+            false
         }
-    }
+        Some(_) => {
+            // Key is still live — keep it in the FIFO.
+            true
+        }
+        None => {
+            // Map/order desync — key absent from the map but present
+            // in the FIFO. Recover gracefully by dropping the orphan.
+            // This branch is defensive: the public API upholds the
+            // `order.len() == map.len()` invariant, so this is
+            // unreachable in well-behaved flows.
+            false
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -380,51 +463,99 @@ impl fmt::Debug for Blacklist {
 // ---------------------------------------------------------------------------
 // Key encoding helpers for IP addresses.
 //
-// The FASM-level blacklist treats keys as opaque `u64` values — what
+// The FASM-level blacklist treated keys as opaque 64-bit values — what
 // the caller chose to encode there was its concern. For the Rust port
-// we provide a canonical encoding so `net::tls` and `net::ssh` (which
-// both feed peer IP addresses into the blacklist) agree on the key
-// space and never collide on overlapping spans of IPv6.
+// the key width is widened to `u128` so the full 128-bit IPv6 address
+// space fits losslessly into the key, closing a collision-based
+// blacklist-bypass risk (CWE-345/CWE-346) that would otherwise arise
+// from hashing IPv6 down to 64 bits.
+//
+// The encoding is injective across both address families:
+//
+//   * IPv4 addresses are embedded in the IPv4-mapped IPv6 subspace
+//     `::ffff:a.b.c.d` (RFC 4291 §2.5.5.2). The four IPv4 octets
+//     occupy the low 32 bits, with `0x0000_FFFF_0000_0000` set in the
+//     middle 32 bits to mark the mapping. This means a banned IPv4
+//     host at `127.0.0.1` encodes to `0x0000_FFFF_7F00_0001` and can
+//     never collide with any real IPv6 address (the globally routable
+//     IPv6 prefixes all lie outside `::ffff:0:0/96`).
+//
+//   * IPv6 addresses are stored as the big-endian 128-bit integer of
+//     their 16 octets — `u128::from_be_bytes(ip.octets())`. This is
+//     lossless; every distinct IPv6 address yields a distinct key.
+//
+// `net::tls` and `net::ssh` both feed peer IP addresses into the
+// blacklist, so they share this encoding and agree on the key space.
+// The `SocketAddr` helper below extracts the `.ip()` component and
+// dispatches to the appropriate per-family encoder, matching the
+// fact that the FASM baseline blacklists by IP address, not by
+// socket (the peer port is not part of the ban identity).
 // ---------------------------------------------------------------------------
 
-/// Encode an IPv4 address as the `u64` key used by [`Blacklist`].
+/// Encode an IPv4 address as the `u128` key used by [`Blacklist`].
 ///
-/// The encoding places the four octets in the low 32 bits of the `u64`
-/// in big-endian order — that is, `127.0.0.1` maps to `0x7F00_0001`.
-/// This matches the byte order produced by the FASM `syscall_inet_pton`
-/// helper, which the assembly sources use as their canonical IPv4
-/// encoding.
+/// IPv4 addresses are embedded in the IPv4-mapped IPv6 subspace
+/// `::ffff:a.b.c.d` (RFC 4291 §2.5.5.2) so that a single 128-bit key
+/// space accommodates both address families without risk of
+/// cross-family collision. The four IPv4 octets occupy the low 32
+/// bits in big-endian order; the middle 32 bits hold the
+/// `0x0000_FFFF` marker; the high 64 bits are zero.
+///
+/// Worked example: `127.0.0.1` encodes to
+/// `0x0000_0000_0000_0000_0000_FFFF_7F00_0001` — i.e. the `u128`
+/// whose low 64 bits are `0x0000_FFFF_7F00_0001` and whose high 64
+/// bits are zero. The low-32-bit octet order `7F 00 00 01` matches
+/// the byte order produced by the FASM `syscall_inet_pton` helper,
+/// which the assembly sources use as their canonical IPv4 encoding.
+///
+/// This helper is implemented via [`Ipv4Addr::to_ipv6_mapped`] — a
+/// single call that yields the canonical mapped address — followed
+/// by [`u128::from_be_bytes`] on the resulting octets.
 #[must_use]
-pub fn key_from_ipv4(ip: Ipv4Addr) -> u64 {
-    u64::from(u32::from(ip))
+pub fn key_from_ipv4(ip: Ipv4Addr) -> u128 {
+    u128::from_be_bytes(ip.to_ipv6_mapped().octets())
 }
 
-/// Encode an IPv6 address as a `u64` key by hashing the 128-bit
-/// octets.
+/// Encode an IPv6 address as the `u128` key used by [`Blacklist`].
 ///
-/// The full 16-byte representation is fed through
-/// [`std::collections::hash_map::DefaultHasher`] and the resulting
-/// 64-bit digest is used as the key. This lossy encoding is acceptable
-/// for a rate-limiting / rejection cache — the hashing layer has a
-/// random seed per process, so collisions between IPv6 addresses are
-/// probabilistically negligible (~ 2⁻⁶⁴) and the impact of a collision
-/// is at worst a spurious blacklist hit, never a missed one.
+/// The 16 octets of the address are interpreted as a single
+/// big-endian 128-bit integer via [`u128::from_be_bytes`]. This is
+/// the natural lossless embedding of an IPv6 address into a `u128`:
+/// every distinct IPv6 address yields a distinct key, so the
+/// blacklist cannot be bypassed by forging a colliding address.
+///
+/// Worked example: `2001:db8::1` encodes to
+/// `0x2001_0DB8_0000_0000_0000_0000_0000_0001_u128`.
+///
+/// The injective property is important for security — an earlier
+/// iteration of this helper hashed the octets down to a `u64` via
+/// [`std::collections::hash_map::DefaultHasher`], which gave a
+/// collision probability of roughly 2⁻⁶⁴ per address pair. That was
+/// deemed an unacceptable bypass vector for a blacklist consulted by
+/// both `net::tls` and `net::ssh` on live internet traffic
+/// (CWE-345/CWE-346). The `u128` encoding removes the risk entirely.
 #[must_use]
-pub fn key_from_ipv6(ip: Ipv6Addr) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    ip.octets().hash(&mut hasher);
-    hasher.finish()
+pub fn key_from_ipv6(ip: Ipv6Addr) -> u128 {
+    u128::from_be_bytes(ip.octets())
 }
 
-/// Encode an [`IpAddr`] (either IPv4 or IPv6) as a `u64` key.
+/// Encode the IP component of a [`SocketAddr`] as a `u128` key.
 ///
-/// Dispatches to [`key_from_ipv4`] or [`key_from_ipv6`] depending on
-/// the variant. Consumers such as `net::tls` and `net::ssh` call this
-/// helper directly when handing the remote peer address to the
-/// blacklist.
+/// Extracts [`SocketAddr::ip`] and dispatches to [`key_from_ipv4`] or
+/// [`key_from_ipv6`] depending on the variant. The peer port is
+/// intentionally discarded — the FASM baseline blacklists by IP
+/// address, not by socket, so a banned host remains banned across
+/// subsequent connections regardless of ephemeral source port.
+///
+/// Consumers such as `net::tls` and `net::ssh` call this helper
+/// directly after accepting an inbound connection, passing the
+/// peer's [`SocketAddr`] straight through. Both address families
+/// land in the same `u128` key space (with IPv4 addresses embedded
+/// in the `::ffff:0:0/96` subspace per [`key_from_ipv4`]), so a
+/// single [`Blacklist`] instance serves TLS and SSH equivalently.
 #[must_use]
-pub fn key_from_ip(ip: IpAddr) -> u64 {
-    match ip {
+pub fn key_from_socket_addr(addr: SocketAddr) -> u128 {
+    match addr.ip() {
         IpAddr::V4(v4) => key_from_ipv4(v4),
         IpAddr::V6(v6) => key_from_ipv6(v6),
     }
@@ -442,73 +573,75 @@ mod tests {
     // -- The eight tests specified in the agent prompt -----------------
 
     #[test]
-    fn test_add_contains() {
+    fn test_insert_contains() {
         let bl = Blacklist::new(Duration::from_secs(3600));
-        bl.add(0xCAFE_BABE);
-        assert!(bl.contains(0xCAFE_BABE));
-        assert!(!bl.contains(0xDEAD_BEEF));
+        bl.insert(0xCAFE_BABE_u128, Duration::from_secs(3600));
+        assert!(bl.contains(0xCAFE_BABE_u128));
+        assert!(!bl.contains(0xDEAD_BEEF_u128));
     }
 
     #[test]
-    fn test_add_duplicate_noop() {
+    fn test_insert_duplicate_noop() {
         let bl = Blacklist::new(Duration::from_secs(3600));
-        bl.add(42);
-        bl.add(42);
-        bl.add(42);
+        bl.insert(42_u128, Duration::from_secs(3600));
+        bl.insert(42_u128, Duration::from_secs(3600));
+        bl.insert(42_u128, Duration::from_secs(3600));
         assert_eq!(bl.len(), 1);
     }
 
     #[test]
     fn test_remove() {
         let bl = Blacklist::new(Duration::from_secs(3600));
-        bl.add(1);
-        bl.add(2);
-        bl.remove(1);
-        assert!(!bl.contains(1));
-        assert!(bl.contains(2));
+        bl.insert(1_u128, Duration::from_secs(3600));
+        bl.insert(2_u128, Duration::from_secs(3600));
+        bl.remove(1_u128);
+        assert!(!bl.contains(1_u128));
+        assert!(bl.contains(2_u128));
         assert_eq!(bl.len(), 1);
     }
 
     #[test]
     fn test_expiry() {
         let bl = Blacklist::new(Duration::from_millis(50));
-        bl.add(7);
-        assert!(bl.contains(7));
+        bl.insert(7_u128, Duration::from_millis(50));
+        assert!(bl.contains(7_u128));
         std::thread::sleep(Duration::from_millis(100));
-        assert!(!bl.contains(7));
+        assert!(!bl.contains(7_u128));
         assert_eq!(bl.len(), 0);
     }
 
     #[test]
     fn test_ipv4_key() {
-        // 127.0.0.1 == Ipv4Addr::LOCALHOST; encode into the u64 key and
-        // verify the expected big-endian-octet packing.
+        // 127.0.0.1 == Ipv4Addr::LOCALHOST; encode into the u128 key via
+        // IPv4-mapped IPv6 (::ffff:7f00:0001) and verify that the IPv4
+        // octets land in the low 32 bits with 0xFFFF in the next 16 bits,
+        // per RFC 4291 §2.5.5.2.
         let ip = Ipv4Addr::LOCALHOST;
         let k = key_from_ipv4(ip);
-        assert_eq!(k, 0x7F00_0001);
+        assert_eq!(k, 0x0000_0000_0000_0000_0000_FFFF_7F00_0001_u128);
     }
 
     #[test]
     fn test_fifo_eviction_order() {
         let bl = Blacklist::new(Duration::from_millis(50));
-        bl.add(1);
+        bl.insert(1_u128, Duration::from_millis(50));
         std::thread::sleep(Duration::from_millis(20));
-        bl.add(2);
-        // Item 1 was added at t≈0 with expiry 50 ms  → expires at ≈50 ms.
-        // Item 2 was added at t≈20 ms with expiry 50 ms → expires at ≈70 ms.
-        // After sleeping another 40 ms (total ≈60 ms from item 1's add),
+        bl.insert(2_u128, Duration::from_millis(50));
+        // Item 1 was inserted at t≈0 with expiry 50 ms  → expires at ≈50 ms.
+        // Item 2 was inserted at t≈20 ms with expiry 50 ms → expires at ≈70 ms.
+        // After sleeping another 40 ms (total ≈60 ms from item 1's insert),
         // item 1 is expired and item 2 is not.
         std::thread::sleep(Duration::from_millis(40));
-        assert!(!bl.contains(1));
-        assert!(bl.contains(2));
+        assert!(!bl.contains(1_u128));
+        assert!(bl.contains(2_u128));
     }
 
     #[test]
     fn test_clear() {
         let bl = Blacklist::new(Duration::from_secs(60));
-        bl.add(1);
-        bl.add(2);
-        bl.add(3);
+        bl.insert(1_u128, Duration::from_secs(60));
+        bl.insert(2_u128, Duration::from_secs(60));
+        bl.insert(3_u128, Duration::from_secs(60));
         bl.clear();
         assert_eq!(bl.len(), 0);
     }
@@ -517,8 +650,8 @@ mod tests {
     fn test_arc_shared() {
         let bl = Blacklist::new(Duration::from_secs(60));
         let bl2 = Arc::clone(&bl);
-        bl.add(99);
-        assert!(bl2.contains(99));
+        bl.insert(99_u128, Duration::from_secs(60));
+        assert!(bl2.contains(99_u128));
     }
 
     // -- Additional hardening tests beyond the specified eight --------
@@ -527,60 +660,91 @@ mod tests {
     fn test_is_empty() {
         let bl = Blacklist::new(Duration::from_secs(60));
         assert!(bl.is_empty());
-        bl.add(1);
+        bl.insert(1_u128, Duration::from_secs(60));
         assert!(!bl.is_empty());
-        bl.remove(1);
+        bl.remove(1_u128);
         assert!(bl.is_empty());
     }
 
     #[test]
     fn test_remove_missing_noop() {
         let bl = Blacklist::new(Duration::from_secs(60));
-        // Removing a key that was never added is a no-op.
-        bl.remove(999);
+        // Removing a key that was never inserted is a no-op.
+        bl.remove(999_u128);
         assert_eq!(bl.len(), 0);
-        bl.add(1);
-        bl.remove(2); // different key
+        bl.insert(1_u128, Duration::from_secs(60));
+        bl.remove(2_u128); // different key
         assert_eq!(bl.len(), 1);
-        assert!(bl.contains(1));
+        assert!(bl.contains(1_u128));
     }
 
     #[test]
     fn test_ipv4_edge_values() {
-        assert_eq!(key_from_ipv4(Ipv4Addr::UNSPECIFIED), 0);
-        assert_eq!(key_from_ipv4(Ipv4Addr::BROADCAST), 0xFFFF_FFFF);
-        assert_eq!(key_from_ipv4(Ipv4Addr::new(192, 168, 1, 1)), 0xC0A8_0101);
+        // IPv4 addresses are mapped into the ::ffff:0:0/96 subspace of u128
+        // per RFC 4291 §2.5.5.2 to guarantee injective encoding across the
+        // IPv4 and IPv6 families. The low 32 bits hold the IPv4 octets in
+        // big-endian order; bits 32-47 hold 0xFFFF; bits 48-127 are zero.
+        assert_eq!(
+            key_from_ipv4(Ipv4Addr::UNSPECIFIED),
+            0x0000_0000_0000_0000_0000_FFFF_0000_0000_u128
+        );
+        assert_eq!(
+            key_from_ipv4(Ipv4Addr::BROADCAST),
+            0x0000_0000_0000_0000_0000_FFFF_FFFF_FFFF_u128
+        );
+        assert_eq!(
+            key_from_ipv4(Ipv4Addr::new(192, 168, 1, 1)),
+            0x0000_0000_0000_0000_0000_FFFF_C0A8_0101_u128
+        );
     }
 
     #[test]
-    fn test_ipv6_hash_deterministic_within_process() {
-        // DefaultHasher uses RandomState which is process-global; within
-        // a single process, hashing the same IPv6 address yields the
-        // same u64.
+    fn test_ipv6_encoding_is_injective() {
+        // IPv6 addresses are encoded losslessly into the full 128-bit key
+        // space via big-endian octet packing (u128::from_be_bytes). Unlike
+        // the prior DefaultHasher-based u64 scheme (which was lossy and
+        // enabled collision-based blacklist bypass — see CWE-345/CWE-346),
+        // this encoding is bijective: distinct IPv6 addresses always map
+        // to distinct u128 keys, and the same IPv6 address always maps
+        // to the same u128 key both within and across processes.
         let ip = Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
         let k1 = key_from_ipv6(ip);
         let k2 = key_from_ipv6(ip);
-        assert_eq!(k1, k2);
+        assert_eq!(k1, 0x2001_0DB8_0000_0000_0000_0000_0000_0001_u128);
+        assert_eq!(k2, 0x2001_0DB8_0000_0000_0000_0000_0000_0001_u128);
     }
 
     #[test]
-    fn test_key_from_ip_dispatches() {
-        let v4 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
-        let v6 = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
-        assert_eq!(key_from_ip(v4), 0x0A00_0001);
-        // The IPv6 path produces a hash whose exact value depends on the
-        // process-local RandomState of DefaultHasher, so we assert only
-        // that it dispatches without panicking and is stable.
-        let hash_once = key_from_ip(v6);
-        let hash_twice = key_from_ip(v6);
-        assert_eq!(hash_once, hash_twice);
+    fn test_key_from_socket_addr_dispatches() {
+        // Exercise the dispatch path: key_from_socket_addr extracts the
+        // IpAddr via addr.ip() and then delegates to key_from_ipv4 or
+        // key_from_ipv6. Verify both families produce the expected
+        // injective u128 encodings regardless of the port component.
+        let sa_v4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 0);
+        let sa_v6 = SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+            0,
+        );
+        assert_eq!(
+            key_from_socket_addr(sa_v4),
+            0x0000_0000_0000_0000_0000_FFFF_0A00_0001_u128
+        );
+        assert_eq!(
+            key_from_socket_addr(sa_v6),
+            0xFE80_0000_0000_0000_0000_0000_0000_0001_u128
+        );
+        // Port is not part of the key — same IP with a different port
+        // must produce the same key (blacklist is per-IP, not per-socket).
+        let sa_v4_other_port =
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443);
+        assert_eq!(key_from_socket_addr(sa_v4), key_from_socket_addr(sa_v4_other_port));
     }
 
     #[test]
     fn test_debug_impl_mentions_fields() {
         let bl = Blacklist::new(Duration::from_secs(42));
-        bl.add(1);
-        bl.add(2);
+        bl.insert(1_u128, Duration::from_secs(42));
+        bl.insert(2_u128, Duration::from_secs(42));
         let s = format!("{bl:?}");
         // The Debug output should name both struct fields.
         assert!(s.contains("expiry"));
@@ -590,23 +754,23 @@ mod tests {
 
     #[test]
     fn test_sweep_on_add_removes_stale_head() {
-        // Verify sweep_expired fires on `add` as well as `contains`.
+        // Verify sweep_expired fires on `insert` as well as `contains`.
         let bl = Blacklist::new(Duration::from_millis(30));
-        bl.add(1);
+        bl.insert(1_u128, Duration::from_millis(30));
         std::thread::sleep(Duration::from_millis(50));
         // At this point item 1 has expired but is still in the FIFO.
-        // Adding a new item must trigger a sweep that removes item 1.
-        bl.add(2);
-        assert!(!bl.contains(1));
-        assert!(bl.contains(2));
+        // Inserting a new item must trigger a sweep that removes item 1.
+        bl.insert(2_u128, Duration::from_millis(30));
+        assert!(!bl.contains(1_u128));
+        assert!(bl.contains(2_u128));
         assert_eq!(bl.len(), 1);
     }
 
     #[tokio::test]
     async fn test_spawn_sweeper_expires_entries() {
         let bl = Blacklist::new(Duration::from_millis(50));
-        bl.add(100);
-        bl.add(200);
+        bl.insert(100_u128, Duration::from_millis(50));
+        bl.insert(200_u128, Duration::from_millis(50));
         assert_eq!(bl.len(), 2);
 
         let handle = bl.spawn_sweeper(Duration::from_millis(30));
