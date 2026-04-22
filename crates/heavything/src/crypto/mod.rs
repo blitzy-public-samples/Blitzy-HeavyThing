@@ -38,11 +38,15 @@
 //! * [`hmac_drbg`] — NIST SP 800-90A HMAC-DRBG over `ring::hmac`,
 //!   with 64-bit-per-3072-bit discard policy preserved per
 //!   AAP §0.5.1.3; port of `hmac_drbg.inc`.
+//! * [`pbkdf2`] — PBKDF2 (PKCS #5 v2.0 / RFC 8018 §5.2) key
+//!   derivation over `ring::pbkdf2`, supporting HMAC-SHA-1,
+//!   HMAC-SHA-256, HMAC-SHA-384, and HMAC-SHA-512 per AAP §0.5.1.3;
+//!   port of `pbkdf2.inc`.
 //!
-//! Additional crypto submodules (`aes`, `hmac`, `pbkdf2`, `scrypt`,
-//! `bigint`, `dh`, `x509`, `rng`) are scheduled in subsequent
-//! translation phases per AAP §0.5.1.3 and are not yet wired here.
-//! The aggregator exposes only the submodules that exist as source
+//! Additional crypto submodules (`aes`, `hmac`, `scrypt`, `bigint`,
+//! `dh`, `x509`, `rng`) are scheduled in subsequent translation
+//! phases per AAP §0.5.1.3 and are not yet wired here. The
+//! aggregator exposes only the submodules that exist as source
 //! files today so that `cargo check` succeeds on the currently
 //! committed sub-set.
 //!
@@ -81,6 +85,10 @@ pub mod sha2;
 
 /// NIST SP 800-90A HMAC-DRBG — port of `hmac_drbg.inc`.
 pub mod hmac_drbg;
+
+/// PBKDF2 (PKCS #5 v2.0 / RFC 8018 §5.2) key derivation — port of
+/// `pbkdf2.inc`.
+pub mod pbkdf2;
 
 // Flat re-export of the primary DRBG type so consumers can write
 // `use heavything::crypto::HmacDrbg;` rather than the longer
