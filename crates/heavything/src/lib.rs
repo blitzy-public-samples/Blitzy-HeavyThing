@@ -63,6 +63,7 @@ pub mod config;
 pub mod crypto;
 pub mod ds;
 pub mod error;
+pub mod net;
 pub mod util;
 
 pub use crate::error::InitError;
