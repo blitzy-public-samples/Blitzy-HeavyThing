@@ -60,6 +60,7 @@ pub const EXIT_ULIMIT_TOO_LOW: i32 = 97;
 pub const EXIT_EPOLL_CREATE_FAIL: i32 = 96;
 
 pub mod config;
+pub mod crypto;
 pub mod ds;
 pub mod error;
 pub mod util;

@@ -1188,12 +1188,8 @@ mod tests {
         m.insert(40, "forty");
         m.insert(50, "fifty");
         // Inclusive range [20, 40] should yield exactly 20, 30, 40.
-        let collected: Vec<(u64, &'static str)> =
-            m.range(20..=40).map(|(k, v)| (*k, *v)).collect();
-        assert_eq!(
-            collected,
-            vec![(20, "twenty"), (30, "thirty"), (40, "forty")]
-        );
+        let collected: Vec<(u64, &'static str)> = m.range(20..=40).map(|(k, v)| (*k, *v)).collect();
+        assert_eq!(collected, vec![(20, "twenty"), (30, "thirty"), (40, "forty")]);
     }
 
     #[test]
@@ -1289,10 +1285,7 @@ mod tests {
         }
 
         let snapshot: Vec<(u64, i64)> = m.iter().map(|(k, v)| (*k, *v)).collect();
-        assert_eq!(
-            snapshot,
-            vec![(1, 10), (2, -20), (3, -30), (4, -40), (5, 50)]
-        );
+        assert_eq!(snapshot, vec![(1, 10), (2, -20), (3, -30), (4, -40), (5, 50)]);
     }
 
     #[test]
