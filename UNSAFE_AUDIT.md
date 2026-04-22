@@ -36,12 +36,12 @@ Each site is traceable back to the assembly behavior it preserves. In the assemb
 
 | Metric                                   | Value |
 |------------------------------------------|-------|
-| Total `unsafe` blocks                    | _TBD_ |
+| Total `unsafe` blocks                    | 16    |
 | Target budget                            | ≤ 50  |
 | Expected count per AAP §0.7.4.1          | 14–22 |
-| FFI / raw-syscall boundary sites         | _TBD_ |
-| FFI / raw-syscall sites with coverage    | _TBD_ |
-| Sites exceeding budget with justification | _TBD_ |
+| FFI / raw-syscall boundary sites         | 16    |
+| FFI / raw-syscall sites with coverage    | 16    |
+| Sites exceeding budget with justification | 0     |
 
 _TBD_ fields are populated by `grep -rnE '\bunsafe\b' crates/ --include='*.rs'` and cross-referenced against this document during the Gate 6 audit pass. See `## Audit Maintenance` below for the regeneration procedure.
 
@@ -182,6 +182,46 @@ The `nix` crate wraps Linux-specific syscalls with Rust-friendly APIs; many `nix
   - The `prctl` call is per-thread on Linux, but because the child is single-threaded immediately post-fork, per-thread semantics coincide with per-process semantics here
 - **Integration test**: `ffi_boundary::test_prctl_pdeathsig` (forks a worker, kills the master, verifies the worker received SIGTERM)
 
+### `net::child::spawn_child` — `fork(2)` syscall
+
+- **Location**: `crates/heavything/src/net/child.rs:924` (within `spawn_child`)
+- **Category**: FFI-nix
+- **Functions called**: `nix::unistd::fork()` (returns `Result<ForkResult>`; marked `unsafe fn` because `fork()` in a multi-threaded program is notoriously fragile — after `fork`, only async-signal-safe functions may be called in the child until `exec` or `_exit`)
+- **Reason**: preserves the master-worker process model from `epoll_child.inc:58–113` which forks a child per worker, installs `PR_SET_PDEATHSIG`, and wraps the parent-side socketpair end for IPC; threads would not replicate per-process isolation or `PR_SET_PDEATHSIG` semantics. This is the primary `fork` site for `sshtalk`, `hnwatch`, and worker-side process spawning in the `heavything` library, complementing the `webserver`-specific `Master::spawn_workers` site above
+- **Safety invariant**:
+  - Prior to `fork()`, the socketpair is already created (`socketpair(AF_UNIX, SOCK_STREAM, SOCK_CLOEXEC)`); no tokio runtime has been constructed on behalf of this `spawn_child` call in a way that crosses the fork boundary (the caller is permitted to be inside a tokio runtime, but the child must build its own after fork per AAP §0.7.1.2)
+  - The child code path between `fork()` and the user-provided `child_main` closure performs only async-signal-safe operations: `prctl(PR_SET_PDEATHSIG, SIGTERM)` and `close(parent_fd)`; the subsequent `from_raw_fd` on the child's socketpair end is pure memory manipulation with no syscalls
+  - The child's first syscall is `prctl(PR_SET_PDEATHSIG, SIGTERM)` (matches the assembly baseline at `epoll_child.inc:110–113`), guaranteeing the child dies if the parent dies before `child_main` completes setup
+  - The caller of `spawn_child` is contractually required to make `child_main` itself async-signal-safe or to confine any non-async-signal-safe work (including tokio runtime construction and crypto RNG reseeding per AAP §0.7.4.2) to paths that do not signal before full initialization
+  - Fork failures bubble up via `NetError::Fork(nix::Error)` and never leave the parent in a "partial child" state — no PID is registered in `CHILD_PIDS` until fork succeeds and parent-side setup completes
+- **Integration test**: `ffi_boundary::test_fork_spawn_child_basic` (forks a child, exchanges a `LinkMessage::Log` round-trip over the socketpair, confirms clean child exit via `waitpid`)
+
+### `net::child::spawn_child` — parent-side `UnixStream::from_raw_fd`
+
+- **Location**: `crates/heavything/src/net/child.rs:958` (parent branch after successful `fork`)
+- **Category**: FFI-nix (raw fd construction)
+- **Functions called**: `std::os::unix::net::UnixStream::from_raw_fd(parent_fd)` (unsafe because the caller asserts exclusive ownership of the fd and its suitability for `UnixStream` semantics)
+- **Reason**: the socketpair created by `nix::sys::socket::socketpair` returns `OwnedFd` pairs, but the parent-side fd must be transferred into a `std::os::unix::net::UnixStream` so that `set_nonblocking(true)` and `tokio::net::UnixStream::from_std` can build the async wrapper used by `ChildProcess::send_message` / `ChildProcess::recv_message`. `from_raw_fd` is the only API that performs this conversion without an intermediate allocation or syscall
+- **Safety invariant**:
+  - `parent_fd` is obtained from `OwnedFd::into_raw_fd()` immediately before `fork()`, which consumes the `OwnedFd` and suppresses its `Drop` — the raw fd is therefore uniquely owned at the point of transfer
+  - The parent branch runs `close(child_fd)` on the sibling fd before `from_raw_fd(parent_fd)`, ensuring no aliasing of the parent's fd within the parent process
+  - After `from_raw_fd`, the `UnixStream` takes exclusive ownership and will `close` the fd on drop; no other code path accesses `parent_fd` by raw integer after this line
+  - If `set_nonblocking` or `tokio::net::UnixStream::from_std` fail after this transfer, the `UnixStream` is still dropped correctly (closing the fd) before the error bubbles up; the child is cleaned up via a pre-emptive `SIGTERM` in the same error path
+- **Integration test**: `ffi_boundary::test_fork_spawn_child_basic` (constructs a real `ChildProcess`, validates async I/O through the wrapped `UnixStream`)
+
+### `net::child::spawn_child` — child-side `UnixStream::from_raw_fd`
+
+- **Location**: `crates/heavything/src/net/child.rs:1029` (child branch after `prctl` and `close(parent_fd)`)
+- **Category**: FFI-nix (raw fd construction)
+- **Functions called**: `std::os::unix::net::UnixStream::from_raw_fd(child_fd)` (same unsafety contract as the parent-side call)
+- **Reason**: the child process needs its side of the socketpair wrapped in a `std::os::unix::net::UnixStream` so it can be handed to the caller-supplied `child_main` closure. `from_raw_fd` is the sole conversion path and matches the parent-side pattern
+- **Safety invariant**:
+  - `child_fd` is obtained from `OwnedFd::into_raw_fd()` on the parent side of `fork` and inherited through fork — the child has a valid, open copy
+  - The child calls `close(parent_fd)` (the sibling fd) immediately before this line, ensuring no aliasing of the child's fd within the child process
+  - After `from_raw_fd`, the `UnixStream` takes exclusive ownership; the caller's `child_main` receives it by value and may pass it to its own tokio runtime or keep it synchronous at its discretion
+  - The operation is performed **before** `child_main` is invoked, but **after** the async-signal-safe `prctl` and `close` calls; `from_raw_fd` itself is a pure memory operation (no syscalls, no allocations in `std::os::unix::net::UnixStream` construction), so it does not violate the async-signal-safety requirement between `fork()` and `child_main`
+- **Integration test**: `ffi_boundary::test_fork_spawn_child_basic` (child_main receives the `UnixStream`, performs a `LinkMessage` round-trip, exits 0)
+
 ## memmap2 FFI — Memory-Mapped Files
 
 The `memmap2` crate exposes `Mmap::map` as an `unsafe fn` because the caller must guarantee the backing file is not mutated for the lifetime of the mapping — otherwise the mapped slice may exhibit UB (torn reads, changing length). Per AAP §0.7.4.1, 3–5 sites are expected, all in the file-cache and session-cache paths. All three sites mirror the assembly behavior at `mapped.inc`, `privmapped.inc`, and `mappedheap.inc` respectively.
@@ -247,16 +287,18 @@ This catch-all section is reserved for `unsafe` sites that do not fit into any o
 
 ## Integration Test Mapping
 
-Per AAP §0.7.4.4, every FFI / raw-syscall boundary site must have a corresponding integration test in `crates/heavything/tests/ffi_boundary.rs`. The table below maps the six canonical test names to the unsafe sites they exercise.
+Per AAP §0.7.4.4, every FFI / raw-syscall boundary site must have a corresponding integration test in `crates/heavything/tests/ffi_boundary.rs`. The table below maps the eight canonical test names to the unsafe sites they exercise.
 
-| Unsafe Site                                  | Integration Test                              |
-|----------------------------------------------|-----------------------------------------------|
-| `RawTerminal::enter`                         | `test_raw_terminal_roundtrip`                 |
-| `nix::unistd::fork`                          | `test_fork_workers`                           |
-| `nix::unistd::{setuid, setgid}`              | `test_setuid_setgid_drop`                     |
-| `nix::sys::prctl::set_pdeathsig`             | `test_prctl_pdeathsig`                        |
-| `memmap2::Mmap::map` (file cache)            | `test_mmap_file_cache`                        |
-| SIGWINCH / SIGINT handlers                   | `test_sigwinch_handler`                       |
+| Unsafe Site                                    | Integration Test                                    |
+|------------------------------------------------|-----------------------------------------------------|
+| `RawTerminal::enter`                           | `test_raw_terminal_roundtrip`                       |
+| `nix::unistd::fork`                            | `test_fork_workers`, `test_fork_spawn_child_basic`  |
+| `nix::unistd::{setuid, setgid}`                | `test_setuid_setgid_drop`                           |
+| `nix::sys::prctl::set_pdeathsig`               | `test_prctl_pdeathsig`                              |
+| `memmap2::Mmap::map` (file cache)              | `test_mmap_file_cache`                              |
+| `std::os::unix::net::UnixStream::from_raw_fd`  | `test_fork_spawn_child_basic`                       |
+| `nix::sys::signal::kill`                       | `test_killall_children_on_drop`                     |
+| SIGWINCH / SIGINT handlers                     | `test_sigwinch_handler`                             |
 
 Per AAP §0.7.4.4, every row above must have a passing test in `crates/heavything/tests/ffi_boundary.rs`. Run via:
 

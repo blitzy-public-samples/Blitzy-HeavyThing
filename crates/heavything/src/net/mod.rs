@@ -45,6 +45,10 @@
 //!
 //! * [`blacklist`] — IP blacklist with time-based expiry for throttling
 //!   misbehaving TLS / SSH peers (port of `blacklist.inc`; AAP §0.5.1.4).
+//! * [`child`] — Fork-and-socketpair helpers for master↔worker IPC
+//!   channels, typed [`LinkMessage`](child::LinkMessage) records, global
+//!   child-PID registry, and `SIGTERM`-on-exit cleanup (port of
+//!   `epoll_child.inc`; AAP §0.5.1.4, §0.7.4.2).
 //! * [`io`] — [`IoChain`](io::IoChain) trait, [`IoLinks`](io::IoLinks)
 //!   parent/child state, [`IoBase`](io::IoBase) no-op layer, the
 //!   [`link`](io::link) helper, and the six `default_*` behavioural
@@ -53,12 +57,12 @@
 //!   10-field accessor surface used by `webclient` and `webserver`
 //!   (port of `url.inc`; AAP §0.5.1.7). Wraps the `url` crate.
 //!
-//! Additional networking submodules (`runtime`, `dns`, `child`, `http`,
-//! `fcgi`, `tls`, `ssh`) are scheduled in subsequent translation
-//! checkpoints per AAP §0.5.1.4 and are not yet declared here.
-//! Declaring a `pub mod foo;` without a backing source file is a hard
-//! compile error (rustc E0583), so premature declarations would break
-//! the whole workspace build under the Gate 2 `RUSTFLAGS="-D warnings"`
+//! Additional networking submodules (`runtime`, `dns`, `http`, `fcgi`,
+//! `tls`, `ssh`) are scheduled in subsequent translation checkpoints
+//! per AAP §0.5.1.4 and are not yet declared here. Declaring a
+//! `pub mod foo;` without a backing source file is a hard compile
+//! error (rustc E0583), so premature declarations would break the
+//! whole workspace build under the Gate 2 `RUSTFLAGS="-D warnings"`
 //! discipline (AAP §0.8.3).
 //!
 //! # Error handling
@@ -79,9 +83,22 @@
 //! (AAP §0.7.4.1). Correctness derives entirely from `Arc`, `Weak`,
 //! `Mutex`, the standard collections, and safe-Rust wrappers around
 //! the `url` crate.
+//!
+//! The [`child`] submodule contributes **three** `unsafe` sites to the
+//! crate tally, all FFI-nix / raw-fd boundaries per AAP §0.7.4.2:
+//! `nix::unistd::fork` in [`spawn_child`](child::spawn_child) plus two
+//! `std::os::unix::net::UnixStream::from_raw_fd` calls that take
+//! ownership of the two halves of the `socketpair(2)` return value.
+//! Each site has a matching `// SAFETY:` rationale comment, an entry
+//! in [`UNSAFE_AUDIT.md`](../../../../UNSAFE_AUDIT.md), and a
+//! corresponding integration test in `tests/ffi_boundary.rs`.
 
 /// IP blacklist with time-based expiry — port of `blacklist.inc`.
 pub mod blacklist;
+
+/// Fork-and-socketpair helpers for master↔worker IPC channels — port of
+/// `epoll_child.inc`.
+pub mod child;
 
 /// IO chain trait, parent/child link state, no-op base layer, and the
 /// six directional-dispatch default helpers — port of `io.inc`.
@@ -90,3 +107,10 @@ pub mod io;
 /// RFC 3986 URL parser/encoder/decoder with FASM-style accessors —
 /// port of `url.inc`.
 pub mod url;
+
+/// Re-export of the most commonly used items from the [`child`] module so
+/// that callers (notably `crates/webserver/src/master.rs`) can write
+/// `use heavything::net::{ChildProcess, LinkMessage};` without an extra
+/// module hop. Matches the export surface declared in AAP §0.3.1.2 for
+/// `crates/heavything/src/net/child.rs`.
+pub use self::child::{ChildProcess, LinkMessage};
