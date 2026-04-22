@@ -212,17 +212,20 @@ The `memmap2` crate exposes `Mmap::map` as an `unsafe fn` because the caller mus
   - `MmapMut::flush` is called at shutdown to ensure durable persistence
 - **Integration test**: `ffi_boundary::test_mmap_file_cache` (parameterized for read-only and read-write paths)
 
-### `MappedHeap::grow` — mmap-backed allocator grow path
+### `MappedHeap::new_file` — file-backed mmap heap constructor
 
-- **Location**: `crates/heavything/src/util/mappedheap.rs` (approx. line 80–120; awaiting implementation confirmation)
+- **Location**: `crates/heavything/src/util/mappedheap.rs` lines 305–310 (the `unsafe { … }` expression inside `MappedHeap::new_file`; the accompanying `// SAFETY:` documentation block spans lines 281–304)
 - **Category**: FFI-memmap2
-- **Functions called**: `memmap2::MmapMut::map_mut` and file `set_len`; `memmap2` does not expose `mremap` so grow is implemented as (a) flush current mapping, (b) `ftruncate` larger, (c) re-map from offset 0. This matches the behavior of the assembly `mappedheap.inc` when the heap needs to grow beyond its current page count
-- **Reason**: the TLS session cache and other mapped-heap consumers need a resizable mmap surface. Using a plain `Vec<u8>` would not persist to disk (the assembly's mappedheap _is_ persistent) and would not survive worker restart
+- **Functions called**: `memmap2::MmapOptions::new().len(size as usize).map_mut(&file)` (wraps `mmap(PROT_READ|PROT_WRITE, MAP_SHARED)` against a freshly `set_len`'d regular file — matches the FASM `mappedheap.inc` line 45 invariant "file based mapped goods do MAP_SHARED")
+- **Reason**: the TLS session cache (AAP §0.5.1.7) and any other mapped-heap consumer needs a persistent, read/write, disk-backed mmap surface. Using a plain `Vec<u8>` would not persist across worker restarts, and `memmap2`'s `map_mut` is the sole path to obtain a writable file-backed mapping. The Rust port establishes the mapping once at construction; the heap does not grow at runtime in this port (the free-list is sized at construction from the requested `size` parameter), so there is no `ftruncate`+remap path to audit
 - **Safety invariant**:
-  - Grow is serialized: an `async_mutex::Mutex` (or a single-writer design) guarantees no reads happen during truncate+remap
-  - Old `MmapMut` is explicitly dropped before `ftruncate` to avoid UB from reading a region the kernel has decided to shrink (relevant only for shrink paths; grow is normally safe)
-  - The filename, open-flags, and permissions (0o600) preserve the assembly baseline at `mapped.inc:150–154`
-- **Integration test**: `ffi_boundary::test_mmap_file_cache` (covers the grow path by writing sessions beyond initial capacity)
+  - The `std::fs::File` passed to `map_mut(&file)` is a locally-owned handle created on the immediately preceding lines via `OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?`; memmap2 internally dupes the descriptor it needs, so dropping `file` at end-of-function is sound
+  - `file.set_len(size)?` is invoked immediately before `map_mut`, ensuring the kernel's view of the file length matches the length requested in `MmapOptions::len(size as usize)`
+  - The constructor runs single-threaded (callers receive a fresh `MappedHeap` and have no aliases yet), so no concurrent truncation or `map_mut` race is possible during this call window
+  - The resulting `MmapMut` is moved into `MappedHeapInner` which lives behind a `std::sync::Mutex`, so all subsequent read/write access through `slice_mut` and `write` is serialized — no writer-writer races, no torn reads through the `&mut [u8]` view
+  - Callers only receive owned `Vec<u8>` copies from `slice_mut`; the raw mapping is never exposed directly, so any UB from external truncation would be confined to the `MappedHeap`'s own methods, not leak into the caller's memory
+  - Residual risk: another process with write access to `path` could truncate or replace the backing file and cause SIGBUS on subsequent `copy_from_slice` through the mapping. This is the same residual risk present in the FASM `mappedheap.inc` baseline and is documented in the file's module-level doc comment. Callers are expected to use a path that only the process owns (e.g., a `runas`-owned directory under the webserver sandbox)
+- **Integration test**: `ffi_boundary::test_mmap_file_cache` (AAP §0.7.4.4 — exercises the memmap2 file-backed cache path)
 
 ## Raw Syscall — libc::syscall Paths
 

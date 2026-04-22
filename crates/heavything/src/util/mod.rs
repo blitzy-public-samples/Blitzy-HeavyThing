@@ -29,8 +29,8 @@
 //!
 //! The `util/` port is delivered across several checkpoints. This file
 //! declares only the submodules that have already landed source files in
-//! this repository; declarations for the remaining 11 planned modules
-//! (`base64`, `crc`, `file`, `formatter`, `json`, `mappedheap`, `png`,
+//! this repository; declarations for the remaining 10 planned modules
+//! (`base64`, `crc`, `file`, `formatter`, `json`, `png`,
 //! `privmapped`, `string`, `syslog`, `zlib`) will be added by later
 //! checkpoints alongside their implementations. Declaring a
 //! `pub mod foo;` without a backing source file is a hard compile error
@@ -46,6 +46,9 @@ pub mod dir;
 
 /// mmap-backed file access — port of `mapped.inc`.
 pub mod mapped;
+
+/// Heap-over-mmap allocator used by TLS session cache; port of `mappedheap.inc`.
+pub mod mappedheap;
 
 /// Basic math helpers — port of `math.inc`.
 pub mod math;
