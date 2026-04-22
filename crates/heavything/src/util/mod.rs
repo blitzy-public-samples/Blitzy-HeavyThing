@@ -29,14 +29,17 @@
 //!
 //! The `util/` port is delivered across several checkpoints. This file
 //! declares only the submodules that have already landed source files in
-//! this repository; declarations for the remaining 12 planned modules
-//! (`base64`, `crc`, `date`, `file`, `formatter`, `json`,
-//! `mappedheap`, `png`, `privmapped`, `string`, `syslog`, `zlib`) will be
-//! added by later checkpoints alongside their implementations. Declaring
-//! a `pub mod foo;` without a backing source file is a hard compile error
+//! this repository; declarations for the remaining 11 planned modules
+//! (`base64`, `crc`, `file`, `formatter`, `json`, `mappedheap`, `png`,
+//! `privmapped`, `string`, `syslog`, `zlib`) will be added by later
+//! checkpoints alongside their implementations. Declaring a
+//! `pub mod foo;` without a backing source file is a hard compile error
 //! (rustc E0583), so premature declarations would break the whole
 //! workspace build — see AAP §0.8.3 and Gate 2's `RUSTFLAGS="-D warnings"`
 //! discipline.
+
+/// RFC 1123 / RFC 3164 date/time formatting — port of `date.inc`.
+pub mod date;
 
 /// Directory enumeration helpers — port of `dir.inc`.
 pub mod dir;
