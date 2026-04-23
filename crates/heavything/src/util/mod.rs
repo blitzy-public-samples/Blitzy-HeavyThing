@@ -29,13 +29,13 @@
 //!
 //! The `util/` port is delivered across several checkpoints. This file
 //! declares only the submodules that have already landed source files in
-//! this repository; declarations for the remaining 8 planned modules
-//! (`crc`, `file`, `json`, `png`, `privmapped`, `string`, `syslog`,
-//! `zlib`) will be added by later checkpoints alongside their
-//! implementations. Declaring a `pub mod foo;` without a backing source
-//! file is a hard compile error (rustc E0583), so premature declarations
-//! would break the whole workspace build — see AAP §0.8.3 and Gate 2's
-//! `RUSTFLAGS="-D warnings"` discipline.
+//! this repository; declarations for the remaining 7 planned modules
+//! (`crc`, `file`, `json`, `png`, `privmapped`, `syslog`, `zlib`) will be
+//! added by later checkpoints alongside their implementations. Declaring
+//! a `pub mod foo;` without a backing source file is a hard compile error
+//! (rustc E0583), so premature declarations would break the whole
+//! workspace build — see AAP §0.8.3 and Gate 2's `RUSTFLAGS="-D warnings"`
+//! discipline.
 
 /// Base64 (RFC 4648) encode/decode — port of `base64_latin1.inc`.
 pub mod base64;
@@ -63,6 +63,10 @@ pub mod profiler;
 
 /// Synchronous and asynchronous sleep helpers — port of `sleeps.inc`.
 pub mod sleeps;
+
+/// String utilities wrapping Rust `String`/`&str` — consolidates
+/// `string32.inc` and `string16.inc`.
+pub mod string;
 
 /// Arbitrary-precision decimal string arithmetic — port of `string_math.inc`.
 pub mod string_math;
