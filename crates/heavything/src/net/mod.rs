@@ -49,6 +49,12 @@
 //!   channels, typed [`LinkMessage`](child::LinkMessage) records, global
 //!   child-PID registry, and `SIGTERM`-on-exit cleanup (port of
 //!   `epoll_child.inc`; AAP §0.5.1.4, §0.7.4.2).
+//! * [`http`] — HTTP/1.1 and HTTP/2 header containers, HPACK codec,
+//!   and line-oriented wire-format parser/serializer (port of
+//!   `httpheaders.inc`, with `http1.inc`, `mimelike.inc`,
+//!   `webserver.inc`, `webclient.inc`, `fcgiclient.inc`, `cookiejar.inc`
+//!   scheduled as sibling files within the same `http` submodule;
+//!   AAP §0.5.1.4).
 //! * [`io`] — [`IoChain`](io::IoChain) trait, [`IoLinks`](io::IoLinks)
 //!   parent/child state, [`IoBase`](io::IoBase) no-op layer, the
 //!   [`link`](io::link) helper, and the six `default_*` behavioural
@@ -57,13 +63,12 @@
 //!   10-field accessor surface used by `webclient` and `webserver`
 //!   (port of `url.inc`; AAP §0.5.1.7). Wraps the `url` crate.
 //!
-//! Additional networking submodules (`runtime`, `dns`, `http`, `fcgi`,
-//! `tls`, `ssh`) are scheduled in subsequent translation checkpoints
-//! per AAP §0.5.1.4 and are not yet declared here. Declaring a
-//! `pub mod foo;` without a backing source file is a hard compile
-//! error (rustc E0583), so premature declarations would break the
-//! whole workspace build under the Gate 2 `RUSTFLAGS="-D warnings"`
-//! discipline (AAP §0.8.3).
+//! Additional networking submodules (`runtime`, `dns`, `fcgi`, `tls`,
+//! `ssh`) are scheduled in subsequent translation checkpoints per AAP
+//! §0.5.1.4 and are not yet declared here. Declaring a `pub mod foo;`
+//! without a backing source file is a hard compile error (rustc E0583),
+//! so premature declarations would break the whole workspace build
+//! under the Gate 2 `RUSTFLAGS="-D warnings"` discipline (AAP §0.8.3).
 //!
 //! # Error handling
 //!
@@ -77,8 +82,8 @@
 //!
 //! # `unsafe` audit
 //!
-//! The [`io`], [`blacklist`], and [`url`] submodules contribute **zero**
-//! `unsafe` blocks to the crate's
+//! The [`blacklist`], [`http`], [`io`], and [`url`] submodules contribute
+//! **zero** `unsafe` blocks to the crate's
 //! [`UNSAFE_AUDIT.md`](../../../../UNSAFE_AUDIT.md) tally
 //! (AAP §0.7.4.1). Correctness derives entirely from `Arc`, `Weak`,
 //! `Mutex`, the standard collections, and safe-Rust wrappers around
@@ -99,6 +104,12 @@ pub mod blacklist;
 /// Fork-and-socketpair helpers for master↔worker IPC channels — port of
 /// `epoll_child.inc`.
 pub mod child;
+
+/// HTTP/1.1 and HTTP/2 aggregator module — contains the header container,
+/// HPACK codec, and sibling submodules for MIME-like parsing, HTTP/1.x
+/// state machines, and server/client request handling. Ports the
+/// `httpheaders.inc` family of FASM files.
+pub mod http;
 
 /// IO chain trait, parent/child link state, no-op base layer, and the
 /// six directional-dispatch default helpers — port of `io.inc`.
