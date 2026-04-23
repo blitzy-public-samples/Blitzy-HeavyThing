@@ -29,8 +29,8 @@
 //!
 //! The `util/` port is delivered across several checkpoints. This file
 //! declares only the submodules that have already landed source files in
-//! this repository; declarations for the remaining 7 planned modules
-//! (`crc`, `file`, `json`, `png`, `privmapped`, `syslog`, `zlib`) will be
+//! this repository; declarations for the remaining 6 planned modules
+//! (`file`, `json`, `png`, `privmapped`, `syslog`, `zlib`) will be
 //! added by later checkpoints alongside their implementations. Declaring
 //! a `pub mod foo;` without a backing source file is a hard compile error
 //! (rustc E0583), so premature declarations would break the whole
@@ -39,6 +39,9 @@
 
 /// Base64 (RFC 4648) encode/decode — port of `base64_latin1.inc`.
 pub mod base64;
+
+/// CRC-32 IEEE 802.3 (gzip/PNG polynomial) — port of `crc.inc`.
+pub mod crc;
 
 /// RFC 1123 / RFC 3164 date/time formatting — port of `date.inc`.
 pub mod date;
