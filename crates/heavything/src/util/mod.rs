@@ -29,10 +29,10 @@
 //!
 //! The `util/` port is delivered across several checkpoints. This file
 //! declares only the submodules that have already landed source files in
-//! this repository; declarations for the remaining 6 planned modules
-//! (`file`, `json`, `png`, `privmapped`, `syslog`, `zlib`) will be
-//! added by later checkpoints alongside their implementations. Declaring
-//! a `pub mod foo;` without a backing source file is a hard compile error
+//! this repository; declarations for the remaining 5 planned modules
+//! (`file`, `json`, `png`, `privmapped`, `syslog`) will be added by
+//! later checkpoints alongside their implementations. Declaring a
+//! `pub mod foo;` without a backing source file is a hard compile error
 //! (rustc E0583), so premature declarations would break the whole
 //! workspace build — see AAP §0.8.3 and Gate 2's `RUSTFLAGS="-D warnings"`
 //! discipline.
@@ -82,3 +82,7 @@ pub mod unicodecase;
 
 /// vDSO fast-time API-parity wrapper — port of `vdso.inc`.
 pub mod vdso;
+
+/// zlib / gzip / raw-deflate encoding and decoding via `flate2` —
+/// port of `zlib_deflate.inc` + `zlib_inflate.inc`.
+pub mod zlib;

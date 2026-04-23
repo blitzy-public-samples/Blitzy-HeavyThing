@@ -721,10 +721,7 @@ mod tests {
         // key_from_ipv6. Verify both families produce the expected
         // injective u128 encodings regardless of the port component.
         let sa_v4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 0);
-        let sa_v6 = SocketAddr::new(
-            IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
-            0,
-        );
+        let sa_v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)), 0);
         assert_eq!(
             key_from_socket_addr(sa_v4),
             0x0000_0000_0000_0000_0000_FFFF_0A00_0001_u128
@@ -735,9 +732,11 @@ mod tests {
         );
         // Port is not part of the key — same IP with a different port
         // must produce the same key (blacklist is per-IP, not per-socket).
-        let sa_v4_other_port =
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443);
-        assert_eq!(key_from_socket_addr(sa_v4), key_from_socket_addr(sa_v4_other_port));
+        let sa_v4_other_port = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443);
+        assert_eq!(
+            key_from_socket_addr(sa_v4),
+            key_from_socket_addr(sa_v4_other_port)
+        );
     }
 
     #[test]
