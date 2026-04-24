@@ -29,12 +29,12 @@
 //!
 //! The `util/` port is delivered across several checkpoints. This file
 //! declares only the submodules that have already landed source files in
-//! this repository; declarations for any remaining planned modules
-//! (e.g. `privmapped`) will be added by later checkpoints alongside
-//! their implementations. Declaring a `pub mod foo;` without a
-//! backing source file is a hard compile error (rustc E0583), so
-//! premature declarations would break the whole workspace build — see
-//! AAP §0.8.3 and Gate 2's `RUSTFLAGS="-D warnings"` discipline.
+//! this repository; declarations for any remaining planned modules will
+//! be added by later checkpoints alongside their implementations.
+//! Declaring a `pub mod foo;` without a backing source file is a hard
+//! compile error (rustc E0583), so premature declarations would break
+//! the whole workspace build — see AAP §0.8.3 and Gate 2's
+//! `RUSTFLAGS="-D warnings"` discipline.
 
 /// Base64 (RFC 4648) encode/decode — port of `base64_latin1.inc`.
 pub mod base64;
@@ -69,6 +69,10 @@ pub mod math;
 
 /// PNG image decoding (wraps the `png` crate) — port of `png.inc`.
 pub mod png;
+
+/// Private (`MAP_PRIVATE`) mmap variant with filename/mtime/ETag —
+/// port of `privmapped.inc`.
+pub mod privmapped;
 
 /// Lightweight timing wrapper over `std::time::Instant` — port of `profiler.inc`.
 pub mod profiler;
