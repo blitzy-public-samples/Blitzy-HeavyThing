@@ -47,15 +47,20 @@
 //!   derivation over `ring::pbkdf2`, supporting HMAC-SHA-1,
 //!   HMAC-SHA-256, HMAC-SHA-384, and HMAC-SHA-512 per AAP §0.5.1.3;
 //!   port of `pbkdf2.inc`.
+//! * [`scrypt`] — RFC 7914 memory-hard password-based KDF over the
+//!   RustCrypto [`scrypt`](::scrypt) crate (v0.11), with an
+//!   optional PBKDF2-HMAC-SHA-512 compatibility path for the FASM
+//!   `scrypt_sha512 = 1` default per AAP §0.5.1.3; port of
+//!   `scrypt.inc`.
 //! * [`rng`] — Cryptographic random number generator with
 //!   `/dev/urandom` + `rdtsc` + `gettimeofday` entropy gathering
 //!   and HMAC-DRBG bit expansion per AAP §0.5.1.3; port of
 //!   `rng.inc`. Called from `lib::init_args` Stage 9.
 //!
-//! Additional crypto submodules (`aes`, `scrypt`, `bigint`, `dh`,
-//! `x509`) are scheduled in subsequent translation phases per
-//! AAP §0.5.1.3 and are not yet wired here. The aggregator exposes
-//! only the submodules that exist as source files today so that
+//! Additional crypto submodules (`aes`, `bigint`, `dh`, `x509`) are
+//! scheduled in subsequent translation phases per AAP §0.5.1.3 and
+//! are not yet wired here. The aggregator exposes only the
+//! submodules that exist as source files today so that
 //! `cargo check` succeeds on the currently committed sub-set.
 //!
 //! # Error handling
@@ -110,6 +115,12 @@ pub mod hmac_drbg;
 /// PBKDF2 (PKCS #5 v2.0 / RFC 8018 §5.2) key derivation — port of
 /// `pbkdf2.inc`.
 pub mod pbkdf2;
+
+/// RFC 7914 scrypt memory-hard password-based KDF — port of
+/// `scrypt.inc`. Wraps the RustCrypto [`scrypt`](::scrypt) crate and
+/// exposes an optional PBKDF2-HMAC-SHA-512 compatibility path for
+/// the FASM `scrypt_sha512 = 1` default per AAP §0.5.1.3.
+pub mod scrypt;
 
 /// Cryptographic random number generator — port of `rng.inc`.
 /// Called from `lib::init_args` Stage 9 via [`rng::init`]; workers
