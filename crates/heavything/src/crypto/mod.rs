@@ -47,9 +47,13 @@
 //!   derivation over `ring::pbkdf2`, supporting HMAC-SHA-1,
 //!   HMAC-SHA-256, HMAC-SHA-384, and HMAC-SHA-512 per AAP §0.5.1.3;
 //!   port of `pbkdf2.inc`.
+//! * [`rng`] — Cryptographic random number generator with
+//!   `/dev/urandom` + `rdtsc` + `gettimeofday` entropy gathering
+//!   and HMAC-DRBG bit expansion per AAP §0.5.1.3; port of
+//!   `rng.inc`. Called from `lib::init_args` Stage 9.
 //!
 //! Additional crypto submodules (`aes`, `scrypt`, `bigint`, `dh`,
-//! `x509`, `rng`) are scheduled in subsequent translation phases per
+//! `x509`) are scheduled in subsequent translation phases per
 //! AAP §0.5.1.3 and are not yet wired here. The aggregator exposes
 //! only the submodules that exist as source files today so that
 //! `cargo check` succeeds on the currently committed sub-set.
@@ -74,9 +78,16 @@
 //!
 //! # `unsafe` audit
 //!
-//! Per AAP §0.7.4.1 this subsystem contains **zero** `unsafe` blocks;
-//! correctness derives entirely from `ring`, the RustCrypto stack, and
-//! the safe `Vec`/slice APIs.
+//! Per AAP §0.7.4.1 this subsystem contains **exactly one** `unsafe`
+//! block, located in [`rng::read_tsc`] (private helper) wrapping the
+//! [`std::arch::x86_64::_rdtsc`] intrinsic for jitter-entropy
+//! contribution during seed gathering. The instruction is
+//! architecturally required on x86_64 and cannot trigger undefined
+//! behaviour on the `x86_64-unknown-linux-gnu` target; see the
+//! [`rng`] module documentation for the full safety invariant and
+//! `UNSAFE_AUDIT.md` for the corresponding audit entry. All other
+//! crypto primitives derive correctness from `ring`, the RustCrypto
+//! stack, and the safe `Vec`/slice APIs.
 
 /// MD5 hash wrapper — port of `md5.inc`.
 pub mod md5;
@@ -99,6 +110,11 @@ pub mod hmac_drbg;
 /// PBKDF2 (PKCS #5 v2.0 / RFC 8018 §5.2) key derivation — port of
 /// `pbkdf2.inc`.
 pub mod pbkdf2;
+
+/// Cryptographic random number generator — port of `rng.inc`.
+/// Called from `lib::init_args` Stage 9 via [`rng::init`]; workers
+/// call [`rng::reseed`] post-fork per AAP §0.7.4.2.
+pub mod rng;
 
 // Flat re-export of the primary DRBG type so consumers can write
 // `use heavything::crypto::HmacDrbg;` rather than the longer
