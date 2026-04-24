@@ -29,9 +29,9 @@
 //!
 //! The `util/` port is delivered across several checkpoints. This file
 //! declares only the submodules that have already landed source files in
-//! this repository; declarations for the remaining 5 planned modules
-//! (`file`, `json`, `png`, `privmapped`, `syslog`) will be added by
-//! later checkpoints alongside their implementations. Declaring a
+//! this repository; declarations for the remaining 4 planned modules
+//! (`file`, `png`, `privmapped`, `syslog`) will be added by later
+//! checkpoints alongside their implementations. Declaring a
 //! `pub mod foo;` without a backing source file is a hard compile error
 //! (rustc E0583), so premature declarations would break the whole
 //! workspace build — see AAP §0.8.3 and Gate 2's `RUSTFLAGS="-D warnings"`
@@ -51,6 +51,9 @@ pub mod dir;
 
 /// Printf-like reusable output formatter — port of `formatter.inc`.
 pub mod formatter;
+
+/// JSON parsing/serialization via `serde_json` — port of `json.inc`.
+pub mod json;
 
 /// mmap-backed file access — port of `mapped.inc`.
 pub mod mapped;
