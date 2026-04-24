@@ -16,14 +16,18 @@
 //! - [`ansi`] — ANSI escape constants and formatters (`tui_ansi.inc`).
 //! - [`geometry`] — `Point`, `Rect`, alignment math (`tui_geometry.inc`).
 //! - [`lock`] — render-lock primitive (`tui_lock.inc`).
+//! - [`render`] — [`render::Renderer`] trait and supporting types that
+//!   mediate between widget `draw` calls and the concrete terminal /
+//!   SSH sinks (`tui_render.inc`).
 //! - [`terminal`] — raw-mode terminal singleton + signal handlers
 //!   (`tui_terminal.inc`, AAP §0.7.3).
 //!
-//! The remaining submodules (`object`, `render`, `gridguts`, and the
-//! `widgets/` tree) are added by subsequent translation agents per the
-//! AAP file-by-file transformation plan.
+//! The remaining submodules (`object`, `gridguts`, and the `widgets/`
+//! tree) are added by subsequent translation agents per the AAP
+//! file-by-file transformation plan.
 
 pub mod ansi;
 pub mod geometry;
 pub mod lock;
+pub mod render;
 pub mod terminal;
