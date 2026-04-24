@@ -56,12 +56,18 @@
 //!   `/dev/urandom` + `rdtsc` + `gettimeofday` entropy gathering
 //!   and HMAC-DRBG bit expansion per AAP §0.5.1.3; port of
 //!   `rng.inc`. Called from `lib::init_args` Stage 9.
+//! * [`bigint`] — arbitrary-precision integer arithmetic with
+//!   Miller–Rabin primality testing, DH/DSA parameter generation,
+//!   RSA private-key CRT derivation, and Jacobi-symbol support;
+//!   port of `bigint.inc` (the largest `.inc` file at 10,923
+//!   lines). Wraps `num-bigint`/`num-traits`/`num-integer` per
+//!   AAP §0.5.1.3 and §0.6.1.
 //!
-//! Additional crypto submodules (`aes`, `bigint`, `dh`, `x509`) are
-//! scheduled in subsequent translation phases per AAP §0.5.1.3 and
-//! are not yet wired here. The aggregator exposes only the
-//! submodules that exist as source files today so that
-//! `cargo check` succeeds on the currently committed sub-set.
+//! Additional crypto submodules (`aes`, `dh`, `x509`) are scheduled
+//! in subsequent translation phases per AAP §0.5.1.3 and are not yet
+//! wired here. The aggregator exposes only the submodules that
+//! exist as source files today so that `cargo check` succeeds on
+//! the currently committed sub-set.
 //!
 //! # Error handling
 //!
@@ -126,6 +132,15 @@ pub mod scrypt;
 /// Called from `lib::init_args` Stage 9 via [`rng::init`]; workers
 /// call [`rng::reseed`] post-fork per AAP §0.7.4.2.
 pub mod rng;
+
+/// Arbitrary-precision integer arithmetic — port of `bigint.inc`
+/// (the LARGEST source file in the HeavyThing repository at 10,923
+/// lines). Wraps the `num-bigint` / `num-traits` / `num-integer`
+/// crate trio per AAP §0.6.1 and supplies Miller–Rabin primality
+/// testing, safe-prime / DSA / RSA parameter generation, modular
+/// inverse, and Jacobi-symbol helpers used by `crate::net::tls`,
+/// `crate::net::ssh::kex`, and `crate::crypto::x509`.
+pub mod bigint;
 
 // Flat re-export of the primary DRBG type so consumers can write
 // `use heavything::crypto::HmacDrbg;` rather than the longer
