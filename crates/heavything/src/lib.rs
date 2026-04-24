@@ -64,6 +64,7 @@ pub mod crypto;
 pub mod ds;
 pub mod error;
 pub mod net;
+pub mod tui;
 pub mod util;
 
 pub use crate::error::InitError;
