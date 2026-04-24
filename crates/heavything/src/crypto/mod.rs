@@ -29,6 +29,16 @@
 //!
 //! # Submodules present
 //!
+//! * [`aes`] — AES-128 / AES-192 / AES-256 block-cipher wrappers
+//!   for CBC, single-block ECB, and AES-256-GCM (AEAD); port of
+//!   `aes.inc`. CBC paths use the RustCrypto `aes` + `cbc` crates
+//!   (because `ring` does NOT expose raw AES-CBC per AAP §0.6.1);
+//!   GCM uses `ring::aead`. AES-NI is detected at runtime via
+//!   [`crate::cpu::features`] and reported by
+//!   [`aes::aesni_available`]; both backing crates do their own
+//!   internal `std::is_x86_feature_detected!` dispatch so this
+//!   module never gates code paths on compile-time features per
+//!   AAP §0.1.1.
 //! * [`md5`] — MD5 hash wrapper (legacy protocol support only);
 //!   port of `md5.inc`.
 //! * [`sha1`] — SHA-1 hash wrapper (legacy, via
@@ -63,8 +73,8 @@
 //!   lines). Wraps `num-bigint`/`num-traits`/`num-integer` per
 //!   AAP §0.5.1.3 and §0.6.1.
 //!
-//! Additional crypto submodules (`aes`, `dh`, `x509`) are scheduled
-//! in subsequent translation phases per AAP §0.5.1.3 and are not yet
+//! Additional crypto submodules (`dh`, `x509`) are scheduled in
+//! subsequent translation phases per AAP §0.5.1.3 and are not yet
 //! wired here. The aggregator exposes only the submodules that
 //! exist as source files today so that `cargo check` succeeds on
 //! the currently committed sub-set.
@@ -96,9 +106,20 @@
 //! architecturally required on x86_64 and cannot trigger undefined
 //! behaviour on the `x86_64-unknown-linux-gnu` target; see the
 //! [`rng`] module documentation for the full safety invariant and
-//! `UNSAFE_AUDIT.md` for the corresponding audit entry. All other
-//! crypto primitives derive correctness from `ring`, the RustCrypto
-//! stack, and the safe `Vec`/slice APIs.
+//! `UNSAFE_AUDIT.md` for the corresponding audit entry. The [`aes`]
+//! submodule explicitly contributes zero `unsafe` sites — both
+//! `ring::aead` and the RustCrypto `aes` / `cbc` crates expose
+//! safe-only public APIs. All other crypto primitives derive
+//! correctness from `ring`, the RustCrypto stack, and the safe
+//! `Vec`/slice APIs.
+
+/// AES-128 / AES-192 / AES-256 block-cipher wrappers (CBC, single
+/// -block ECB, and AES-256-GCM AEAD) — port of `aes.inc`. The CBC
+/// paths use the RustCrypto `aes` + `cbc` crates because `ring`
+/// does not expose raw AES-CBC per AAP §0.6.1; the AEAD path uses
+/// `ring::aead::AES_256_GCM`. AES-NI detection is runtime-only
+/// (AAP §0.1.1) and reported via [`aes::aesni_available`].
+pub mod aes;
 
 /// MD5 hash wrapper — port of `md5.inc`.
 pub mod md5;
