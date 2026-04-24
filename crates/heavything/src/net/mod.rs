@@ -157,6 +157,14 @@ pub mod io;
 /// integration-point `Duration` constants.
 pub mod runtime;
 
+/// SSH 2.0 transport-layer subsystem — port of `ssh.inc`.
+///
+/// Currently exposes only the [`ssh::cipher`] submodule for AES-256-CBC
+/// encryption and HMAC-SHA-256 MAC per AAP §0.5.1.4. Other SSH
+/// submodules (`auth`, `compression`, `kex`, `server`) are wired in
+/// from `ssh/mod.rs` by their owning translation agents.
+pub mod ssh;
+
 /// RFC 3986 URL parser/encoder/decoder with FASM-style accessors —
 /// port of `url.inc`.
 pub mod url;
