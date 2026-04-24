@@ -36,11 +36,11 @@ Each site is traceable back to the assembly behavior it preserves. In the assemb
 
 | Metric                                   | Value |
 |------------------------------------------|-------|
-| Total `unsafe` blocks                    | 16    |
+| Total `unsafe` blocks                    | 18    |
 | Target budget                            | ≤ 50  |
 | Expected count per AAP §0.7.4.1          | 14–22 |
-| FFI / raw-syscall boundary sites         | 16    |
-| FFI / raw-syscall sites with coverage    | 16    |
+| FFI / raw-syscall boundary sites         | 18    |
+| FFI / raw-syscall sites with coverage    | 18    |
 | Sites exceeding budget with justification | 0     |
 
 _TBD_ fields are populated by `grep -rnE '\bunsafe\b' crates/ --include='*.rs'` and cross-referenced against this document during the Gate 6 audit pass. See `## Audit Maintenance` below for the regeneration procedure.
@@ -126,6 +126,40 @@ This category encapsulates the direct signal-handler registration required for T
   - Does not race with any other signal registration because `init()` runs single-threaded at program start
   - The library contract documents that callers should not re-register SIGPIPE after `init()`; doing so invokes undefined behavior per the `nix`/`libc` contract but is user error
 - **Integration test**: indirectly verified by the `net_integration` test suite (any HTTP write to a closed TCP peer returns `Err(io::ErrorKind::BrokenPipe)` instead of aborting the process)
+
+## libc FFI — Runtime (epoll.inc port)
+
+This category encapsulates the two `unsafe` blocks required by the `net::runtime` module — the Rust port of the 3,512-line FASM `epoll.inc`. Per AAP §0.7.4.1, exactly two sites are expected in this category: one for the ulimit check, one for the socket-option application on freshly accepted streams. Both sites are confined to `crates/heavything/src/net/runtime.rs` and are exercised by dedicated integration tests in `crates/heavything/tests/ffi_boundary.rs`.
+
+### `runtime::check_ulimit` — `getrlimit(RLIMIT_NOFILE)` + optional `setrlimit`
+
+- **Location**: `crates/heavything/src/net/runtime.rs:509` (the `unsafe { … }` expression spanning the body of [`check_ulimit`]; the accompanying `// SAFETY:` documentation block spans lines 489–508)
+- **Category**: FFI-libc
+- **Functions called**: `libc::getrlimit(libc::RLIMIT_NOFILE, *mut libc::rlimit)` (called twice — before and after the raise attempt), `libc::setrlimit(libc::RLIMIT_NOFILE, *const libc::rlimit)` (called once, return value discarded)
+- **Reason**: the Stage 10 init check in `lib::init()` must verify `RLIMIT_NOFILE ≥ EPOLL_MINFDS` (4096) and attempt to raise the soft limit up to the hard limit when below threshold — preserving the FASM `epoll.inc:1160–1250` behaviour that exits with code 97 when the limit cannot be satisfied. Neither `std::process` nor `nix::sys::resource` in the workspace's pinned dependency set (`nix = "0.29"` with features `user`, `process`, `fs`, `socket`, `signal`, `mman` per AAP §0.6.1) exposes `getrlimit`/`setrlimit` wrappers, leaving direct `libc` FFI as the sole path
+- **Safety invariant**:
+  - `libc::RLIMIT_NOFILE` is a standard POSIX resource identifier (`c_int` constant exposed by libc); no runtime validation is required
+  - `libc::rlimit` is a plain-old-data struct with two `rlim_t` (unsigned integer — `u64` on Linux x86_64) fields `rlim_cur` and `rlim_max`; it has no niche requirements, making `std::mem::zeroed::<rlimit>()` a valid initial state that is fully overwritten by the first `getrlimit` call before any read
+  - All three syscalls pass pointers to local stack variables (`rl` and `rl2`) whose lifetimes extend through the `unsafe` block and whose alignment matches the C struct layout
+  - The `setrlimit` return value is intentionally discarded via `let _ = …`: if the process lacks `CAP_SYS_RESOURCE` the syscall fails silently and the subsequent second `getrlimit` observes the shortfall, producing a clean `InitError::UlimitTooLow` rather than a bespoke error variant. This matches the FASM baseline which likewise treats `setrlimit` as best-effort
+  - The `getrlimit` comparison uses `rl.rlim_cur >= min` where `min` is `crate::config::EPOLL_MINFDS as libc::rlim_t`; on Linux x86_64 the cast is a no-op (both sides are `u64`) but documents intent and guards against libc definitions where `rlim_t` might be a different width
+  - The three calls are consolidated into one `unsafe { … }` block per the minimization principle (§0.7.4.2), reducing the block count below what three separate blocks would produce
+- **Integration test**: `ffi_boundary::test_check_ulimit` (invokes `check_ulimit` in a forked child so the per-process limit can be mutated without affecting the test harness; verifies both the success and `InitError::UlimitTooLow` paths)
+
+### `runtime::apply_stream_defaults` — `setsockopt(SO_LINGER, SO_KEEPALIVE)`
+
+- **Location**: `crates/heavything/src/net/runtime.rs:619` (the `unsafe { … }` expression spanning the body of [`apply_stream_defaults`]; the accompanying `// SAFETY:` documentation block spans lines 596–618)
+- **Category**: FFI-libc
+- **Functions called**: `libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_LINGER, *const libc::linger, libc::socklen_t)` (unconditional), `libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_KEEPALIVE, *const libc::c_int, libc::socklen_t)` (gated on `EPOLL_KEEPALIVE`)
+- **Reason**: every freshly accepted [`tokio::net::TcpStream`] must have `SO_LINGER=(l_onoff=1, l_linger=0)` and `SO_KEEPALIVE=1` applied to preserve the FASM behaviour at `epoll.inc:1438–1490` (force RST-on-close to avoid TIME_WAIT accumulation under sustained load; enable TCP keepalive probing on idle connections). `TCP_NODELAY=1` is applied via the safe [`TcpStream::set_nodelay`] wrapper OUTSIDE the unsafe block. The remaining two options cannot be set via any safe wrapper in the pinned dependency set: `std::net` / `tokio` do not expose `SO_LINGER` configuration on `TcpStream`, and AAP §0.6.1 forbids adding `socket2` to the workspace inventory. Direct `libc::setsockopt` is the sole available path
+- **Safety invariant**:
+  - `stream` is borrowed for the duration of the function; its underlying fd (obtained via `stream.as_raw_fd()` — a safe call on the `AsRawFd` trait) remains open and refers to the same socket throughout both `setsockopt` invocations
+  - The first call passes a pointer to a local `libc::linger` value (`ling`) whose lifetime extends through the unsafe block. `libc::linger` is a POD C struct with two `c_int` fields (`l_onoff`, `l_linger`); the kernel reads them as a byte sequence of size `std::mem::size_of::<libc::linger>()`, which is what is passed as `optlen`
+  - The second call passes a pointer to a local `libc::c_int` value (`one = 1`) whose lifetime extends through the unsafe block. `optlen` is `std::mem::size_of::<libc::c_int>()` (4 on Linux x86_64)
+  - Both calls use `libc::SOL_SOCKET` (level 1) and the option identifiers `libc::SO_LINGER` / `libc::SO_KEEPALIVE` exposed as the correct `c_int` constants by the `libc` crate — no integer literals are hardcoded
+  - The return values are intentionally discarded (assigned to `_`): setsockopt failures on a socket that has already been closed by the peer manifest as subsequent read/write failures through the [`IoChain`](../src/net/io.rs) error path, which matches the best-effort posture of the FASM baseline
+  - Both `setsockopt` calls are consolidated into a single `unsafe { … }` block per the minimization principle (§0.7.4.2)
+- **Integration test**: `ffi_boundary::test_stream_defaults_roundtrip` (binds a loopback listener, establishes a connected `TcpStream`, applies `apply_stream_defaults`, then verifies the three effects via `libc::getsockopt` on `TCP_NODELAY` / `SO_LINGER` / `SO_KEEPALIVE`)
 
 ## nix FFI — Process Management
 
@@ -299,6 +333,8 @@ Per AAP §0.7.4.4, every FFI / raw-syscall boundary site must have a correspondi
 | `std::os::unix::net::UnixStream::from_raw_fd`  | `test_fork_spawn_child_basic`                       |
 | `nix::sys::signal::kill`                       | `test_killall_children_on_drop`                     |
 | SIGWINCH / SIGINT handlers                     | `test_sigwinch_handler`                             |
+| `runtime::check_ulimit` (getrlimit/setrlimit)  | `test_check_ulimit`                                 |
+| `runtime::apply_stream_defaults` (setsockopt)  | `test_stream_defaults_roundtrip`                    |
 
 Per AAP §0.7.4.4, every row above must have a passing test in `crates/heavything/tests/ffi_boundary.rs`. Run via:
 

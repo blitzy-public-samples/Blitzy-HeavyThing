@@ -63,12 +63,20 @@
 //!   10-field accessor surface used by `webclient` and `webserver`
 //!   (port of `url.inc`; AAP §0.5.1.7). Wraps the `url` crate.
 //!
-//! Additional networking submodules (`runtime`, `dns`, `fcgi`, `tls`,
-//! `ssh`) are scheduled in subsequent translation checkpoints per AAP
-//! §0.5.1.4 and are not yet declared here. Declaring a `pub mod foo;`
-//! without a backing source file is a hard compile error (rustc E0583),
-//! so premature declarations would break the whole workspace build
-//! under the Gate 2 `RUSTFLAGS="-D warnings"` discipline (AAP §0.8.3).
+//! * [`runtime`] — Async runtime construction, Stage 10
+//!   `RLIMIT_NOFILE` check, socket-default helpers, periodic-timer
+//!   spawn helpers, generic accept loop, and cooperative
+//!   graceful-shutdown primitive (port of `epoll.inc`; AAP §0.5.1.4,
+//!   §0.7.1). Replaces the 3,512-line hand-rolled epoll event loop
+//!   with a thin orchestrator over `tokio::runtime::Runtime` whose
+//!   internal `mio` backend already provides `epoll` on Linux.
+//!
+//! Additional networking submodules (`dns`, `fcgi`, `tls`, `ssh`) are
+//! scheduled in subsequent translation checkpoints per AAP §0.5.1.4
+//! and are not yet declared here. Declaring a `pub mod foo;` without
+//! a backing source file is a hard compile error (rustc E0583), so
+//! premature declarations would break the whole workspace build under
+//! the Gate 2 `RUSTFLAGS="-D warnings"` discipline (AAP §0.8.3).
 //!
 //! # Error handling
 //!
@@ -94,6 +102,14 @@
 //! `nix::unistd::fork` in [`spawn_child`](child::spawn_child) plus two
 //! `std::os::unix::net::UnixStream::from_raw_fd` calls that take
 //! ownership of the two halves of the `socketpair(2)` return value.
+//!
+//! The [`runtime`] submodule contributes **two** `unsafe` sites per
+//! AAP §0.7.4.1 expected budget: one in
+//! [`runtime::check_ulimit`] grouping `libc::getrlimit` /
+//! `libc::setrlimit`, and one in
+//! [`runtime::apply_stream_defaults`] grouping two
+//! `libc::setsockopt` calls (`SO_LINGER`, `SO_KEEPALIVE`).
+//!
 //! Each site has a matching `// SAFETY:` rationale comment, an entry
 //! in [`UNSAFE_AUDIT.md`](../../../../UNSAFE_AUDIT.md), and a
 //! corresponding integration test in `tests/ffi_boundary.rs`.
@@ -114,6 +130,20 @@ pub mod http;
 /// IO chain trait, parent/child link state, no-op base layer, and the
 /// six directional-dispatch default helpers — port of `io.inc`.
 pub mod io;
+
+/// Async runtime and event-loop orchestration — port of `epoll.inc`.
+/// Provides [`runtime::build`] / [`runtime::build_current_thread`] /
+/// [`runtime::run`] for constructing the tokio runtime that drives
+/// the async network stack; [`runtime::check_ulimit`] for the Stage
+/// 10 `RLIMIT_NOFILE ≥ EPOLL_MINFDS` init check (AAP §0.7.1.1);
+/// [`runtime::apply_stream_defaults`] for the accepted-socket option
+/// bundle (`SO_KEEPALIVE` / `SO_LINGER` / `TCP_NODELAY`);
+/// [`runtime::accept_loop`] / [`runtime::spawn_periodic`] /
+/// [`runtime::spawn_periodic_async`] / [`runtime::install_shutdown_signals`]
+/// for the common event-loop building blocks; and the
+/// [`runtime::timers`] sub-module exposing the eight canonical
+/// integration-point `Duration` constants.
+pub mod runtime;
 
 /// RFC 3986 URL parser/encoder/decoder with FASM-style accessors —
 /// port of `url.inc`.

@@ -35,8 +35,9 @@
 //! | `test_prctl_pdeathsig`           | `nix::sys::prctl::set_pdeathsig` in worker / child init       | `heavything::net::child` / `webserver::worker` |
 //!
 //! This test binary is authored iteratively as each unsafe site lands on
-//! the branch. The three tests below cover the **`heavything::net::child`
-//! subsystem specifically** (AAP §0.7.4.2):
+//! the branch. The tests below cover two subsystems:
+//!
+//! **`heavything::net::child`** (AAP §0.7.4.2):
 //!
 //! * [`test_fork_spawn_child_basic`] — covers the `fork` unsafe in
 //!   `net::child::spawn_child` plus the two `UnixStream::from_raw_fd`
@@ -49,6 +50,23 @@
 //!   path in [`killall_children`] end-to-end: spawn several children,
 //!   call `killall_children`, and observe `WaitStatus::Signaled` with
 //!   `Signal::SIGTERM` via `waitpid(2)`.
+//!
+//! **`heavything::net::runtime`** (AAP §0.7.1.1, §0.7.4.1):
+//!
+//! * [`test_check_ulimit`] — covers the `libc::getrlimit` / `libc::setrlimit`
+//!   unsafe block in `runtime::check_ulimit` by forking a child,
+//!   lowering `RLIMIT_NOFILE` to a value below
+//!   [`heavything::config::EPOLL_MINFDS`], and asserting that
+//!   `check_ulimit()` returns `Err(InitError::UlimitTooLow)` — the
+//!   Stage 10 init-check path that maps to exit code 97.
+//! * [`test_stream_defaults_roundtrip`] — covers the
+//!   `libc::setsockopt(SO_LINGER, SO_KEEPALIVE)` unsafe block in
+//!   `runtime::apply_stream_defaults` by binding a loopback listener,
+//!   establishing a connected `TcpStream`, invoking
+//!   `apply_stream_defaults`, then verifying `TCP_NODELAY=1`,
+//!   `SO_LINGER=(l_onoff=1, l_linger=0)`, and `SO_KEEPALIVE=1` via
+//!   `libc::getsockopt` — the FASM `epoll.inc:1438–1490` socket-option
+//!   sequence reproduced on every freshly accepted stream.
 //!
 //! The row `nix::unistd::fork` in the Integration Test Mapping table of
 //! `/UNSAFE_AUDIT.md` therefore references **both**
@@ -115,9 +133,11 @@ use nix::sys::signal::{self, Signal};
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::{close, fork, pipe, read as nix_read, write as nix_write, ForkResult, Pid};
 
+use heavything::error::InitError;
 use heavything::net::child::{
     killall_children, spawn_child, ChildProcess, LinkMessage, LogRecord, LogSeverity,
 };
+use heavything::net::runtime::{apply_stream_defaults, check_ulimit};
 
 // ============================================================================
 // Test serialization
@@ -729,4 +749,327 @@ fn test_killall_children_on_drop() {
             pid
         );
     }
+}
+
+// ============================================================================
+// test_check_ulimit
+//
+// Exercises UNSAFE SITE in `net::runtime::check_ulimit`:
+//   * `unsafe { libc::getrlimit(RLIMIT_NOFILE, *mut rlimit) }` (×2)
+//   * `unsafe { libc::setrlimit(RLIMIT_NOFILE, *const rlimit) }`
+//
+// Verifies both branches of the function:
+//
+//   1. **Ok path** — in the test-harness parent process, which is
+//      expected to run with the CI default `RLIMIT_NOFILE` (typically
+//      ≥ 4096), `check_ulimit()` returns `Ok(())`. If the harness's
+//      hard limit happens to be below `EPOLL_MINFDS`, the test still
+//      passes but emits a diagnostic note so the operator can verify
+//      the environment configuration.
+//
+//   2. **Err path** — in a forked child process, we lower BOTH
+//      `rlim_cur` and `rlim_max` of `RLIMIT_NOFILE` to a value well
+//      below `EPOLL_MINFDS` (4096). Because `check_ulimit()`'s
+//      self-repair step (raise `rlim_cur` to `rlim_max`) is capped by
+//      the reduced hard limit, the second `getrlimit` call observes
+//      the shortfall and returns `InitError::UlimitTooLow`. The child
+//      exits with status 0 iff `check_ulimit` returned the expected
+//      variant, allowing the parent to assert correctness via
+//      `waitpid`.
+//
+// We use a fork rather than mutating the harness's own ulimit because
+// `setrlimit` with `rlim_max < current open fd count` is undefined
+// behaviour per POSIX — forking to isolate the mutation keeps the
+// test harness's fd table unaffected.
+// ============================================================================
+
+#[test]
+fn test_check_ulimit() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if !live_tests_enabled() {
+        eprintln!("test_check_ulimit: skipped (set HEAVYTHING_LIVE_TESTS=1 to enable)");
+        return;
+    }
+
+    // ----- Part 1: Ok path in the parent process. -----
+    //
+    // Most CI environments configure a default `RLIMIT_NOFILE` hard
+    // limit of 1024 or higher (Debian/Ubuntu: 1048576 via systemd;
+    // GitHub Actions: 524288). If the hard limit happens to be below
+    // `EPOLL_MINFDS` (4096), the test cannot force it upward without
+    // CAP_SYS_RESOURCE and must skip the Ok assertion. We always
+    // execute the call to verify it does not panic, however.
+    match check_ulimit() {
+        Ok(()) => {
+            // Normal CI case: harness has adequate RLIMIT_NOFILE.
+        }
+        Err(InitError::UlimitTooLow) => {
+            eprintln!(
+                "test_check_ulimit: parent process has RLIMIT_NOFILE below EPOLL_MINFDS; \
+                 Ok-path assertion skipped but Err-path will still be exercised via the fork. \
+                 Consider raising the harness ulimit to run the full test."
+            );
+        }
+        Err(other) => panic!(
+            "check_ulimit returned an unexpected InitError variant in the parent: {:?}",
+            other
+        ),
+    }
+
+    // ----- Part 2: Err path in a forked child. -----
+    //
+    // SAFETY: top-level `fork()` in a single-threaded test context.
+    // The harness has not constructed a `tokio::runtime::Runtime` on
+    // this thread, so no background worker threads need to follow
+    // the fork. Inside the child we perform only async-signal-safe
+    // operations (`libc::setrlimit`, `libc::getrlimit`, and
+    // `std::process::exit`) before returning; no allocation, no
+    // mutex acquisition, no I/O.
+    let fork_result = unsafe { fork() }.expect("fork(2) must succeed");
+
+    match fork_result {
+        ForkResult::Parent { child } => {
+            let status = waitpid(child, None).expect("waitpid on child must succeed");
+            match status {
+                WaitStatus::Exited(pid, code) => {
+                    assert_eq!(pid, child, "waitpid returned the wrong PID");
+                    // Exit code 0 means the child observed
+                    // `InitError::UlimitTooLow` from `check_ulimit()`
+                    // as expected. Any other code encodes a specific
+                    // failure mode documented in the child branch
+                    // below.
+                    assert_eq!(
+                        code, 0,
+                        "child reported an unexpected check_ulimit outcome; \
+                         diagnostic exit codes: 2=setrlimit failed, \
+                         3=check_ulimit returned Ok() (should have failed), \
+                         4=check_ulimit returned Err(other variant), \
+                         5=pre-condition getrlimit failed"
+                    );
+                }
+                other => panic!(
+                    "child did not exit cleanly; WaitStatus = {:?} (expected Exited(_, 0))",
+                    other
+                ),
+            }
+        }
+        ForkResult::Child => {
+            // Intentionally low target: well below EPOLL_MINFDS
+            // (4096) so the raise-to-rlim_max self-repair step cannot
+            // satisfy the check. 128 is above typical concurrent open
+            // fd counts in a minimal child (stdin/stdout/stderr +
+            // a handful of runtime fds), avoiding EMFILE on the
+            // setrlimit itself.
+            const LOW_LIMIT: libc::rlim_t = 128;
+
+            // SAFETY: `libc::setrlimit` is a standard POSIX syscall
+            // whose second argument is a `*const rlimit` pointing to a
+            // stack-local `rlimit` struct. `libc::rlimit` is POD with
+            // two `rlim_t` fields and no niche requirements. The
+            // values we set (128/128) are below any typical current
+            // usage but above stdin/stdout/stderr, preventing EMFILE
+            // on the syscall itself. We intentionally set both
+            // `rlim_cur` and `rlim_max` to `LOW_LIMIT` so that
+            // `check_ulimit`'s self-repair attempt (raise `rlim_cur`
+            // to `rlim_max`) cannot restore the soft limit above
+            // `EPOLL_MINFDS`.
+            let rc = unsafe {
+                // Pre-condition check: read current limits so we can
+                // abort cleanly if the child already has an unusual
+                // ulimit state.
+                let mut probe: libc::rlimit = std::mem::zeroed();
+                if libc::getrlimit(libc::RLIMIT_NOFILE, &mut probe) != 0 {
+                    std::process::exit(5);
+                }
+
+                // Lower both soft and hard to LOW_LIMIT. In the
+                // unprivileged case `rlim_max` can only be lowered,
+                // never raised, so we must be below the current hard
+                // limit. `LOW_LIMIT=128` is strictly below any
+                // reasonable starting hard limit in CI.
+                let new_rl = libc::rlimit {
+                    rlim_cur: LOW_LIMIT,
+                    rlim_max: LOW_LIMIT,
+                };
+                libc::setrlimit(libc::RLIMIT_NOFILE, &new_rl)
+            };
+            if rc != 0 {
+                std::process::exit(2);
+            }
+
+            // Now invoke the function under test. `check_ulimit` is
+            // expected to: (a) observe `rlim_cur = 128 < EPOLL_MINFDS`,
+            // (b) attempt to raise `rlim_cur` to `rlim_max = 128` which
+            // is a no-op, (c) observe the shortfall on the second
+            // getrlimit, and (d) return `Err(InitError::UlimitTooLow)`.
+            let result = check_ulimit();
+
+            match result {
+                Err(InitError::UlimitTooLow) => std::process::exit(0),
+                Ok(()) => std::process::exit(3),
+                Err(_) => std::process::exit(4),
+            }
+        }
+    }
+}
+
+// ============================================================================
+// test_stream_defaults_roundtrip
+//
+// Exercises UNSAFE SITE in `net::runtime::apply_stream_defaults`:
+//   * `unsafe { libc::setsockopt(fd, SOL_SOCKET, SO_LINGER, …) }`
+//   * `unsafe { libc::setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, …) }`
+//
+// `TCP_NODELAY` is applied via tokio's safe wrapper outside the
+// unsafe block, but we verify all three options for completeness
+// because they are the full FASM `epoll.inc:1438–1490` socket-option
+// sequence.
+//
+// Verifies:
+//   1. `apply_stream_defaults(&server_stream)` returns `Ok(())` on a
+//      freshly accepted tokio `TcpStream`.
+//   2. `getsockopt(TCP_NODELAY)` returns 1 (EPOLL_NODELAY = true).
+//   3. `getsockopt(SO_LINGER)` returns `l_onoff=1, l_linger=0`
+//      (unconditional in the FASM baseline).
+//   4. `getsockopt(SO_KEEPALIVE)` returns 1 (EPOLL_KEEPALIVE = true).
+// ============================================================================
+
+#[test]
+fn test_stream_defaults_roundtrip() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if !live_tests_enabled() {
+        eprintln!("test_stream_defaults_roundtrip: skipped (set HEAVYTHING_LIVE_TESTS=1 to enable)");
+        return;
+    }
+
+    let rt = build_current_thread_runtime();
+
+    rt.block_on(async {
+        // Bind a loopback listener on an ephemeral port.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind on 127.0.0.1:0 must succeed");
+        let addr = listener.local_addr().expect("listener local_addr must succeed");
+
+        // Drive the accept + connect concurrently on the same
+        // single-threaded runtime so neither side deadlocks.
+        let accept_task = async {
+            let (server, _peer) = listener
+                .accept()
+                .await
+                .expect("listener.accept() must succeed on loopback");
+            server
+        };
+        let connect_task = async {
+            tokio::net::TcpStream::connect(addr)
+                .await
+                .expect("client connect to loopback must succeed")
+        };
+        let (server_stream, _client_stream) = tokio::join!(accept_task, connect_task);
+
+        // Apply the defaults to the server-side stream — this is the
+        // unsafe site under test.
+        apply_stream_defaults(&server_stream)
+            .expect("apply_stream_defaults must succeed on a freshly accepted stream");
+
+        let fd = server_stream.as_raw_fd();
+
+        // ----- 1. TCP_NODELAY -----
+        //
+        // SAFETY: `libc::getsockopt` is a standard POSIX syscall
+        // whose `optval`/`optlen` arguments are sized to match the
+        // option. `fd` is owned by `server_stream` for the duration
+        // of this closure; `nodelay_val` and `nodelay_len` are
+        // stack-local and valid for the call. `libc::c_int` is POD
+        // with no niche requirements.
+        let mut nodelay_val: libc::c_int = 0;
+        let mut nodelay_len: libc::socklen_t = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                libc::TCP_NODELAY,
+                (&mut nodelay_val as *mut libc::c_int).cast::<libc::c_void>(),
+                &mut nodelay_len,
+            )
+        };
+        assert_eq!(rc, 0, "getsockopt(TCP_NODELAY) must succeed");
+        assert_eq!(
+            nodelay_len as usize,
+            std::mem::size_of::<libc::c_int>(),
+            "getsockopt(TCP_NODELAY) optlen must match c_int size"
+        );
+        assert_eq!(
+            nodelay_val, 1,
+            "TCP_NODELAY must be enabled after apply_stream_defaults (EPOLL_NODELAY = true)"
+        );
+
+        // ----- 2. SO_LINGER -----
+        //
+        // SAFETY: same rationale as above. `libc::linger` is a POD C
+        // struct with two `c_int` fields; zero-initialisation via
+        // `std::mem::zeroed()` is a valid initial state that is
+        // fully overwritten by `getsockopt`.
+        let mut linger_val: libc::linger = unsafe { std::mem::zeroed() };
+        let mut linger_len: libc::socklen_t = std::mem::size_of::<libc::linger>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_LINGER,
+                (&mut linger_val as *mut libc::linger).cast::<libc::c_void>(),
+                &mut linger_len,
+            )
+        };
+        assert_eq!(rc, 0, "getsockopt(SO_LINGER) must succeed");
+        assert_eq!(
+            linger_len as usize,
+            std::mem::size_of::<libc::linger>(),
+            "getsockopt(SO_LINGER) optlen must match linger size"
+        );
+        assert_eq!(
+            linger_val.l_onoff, 1,
+            "SO_LINGER l_onoff must be 1 (RST-on-close per FASM baseline)"
+        );
+        assert_eq!(
+            linger_val.l_linger, 0,
+            "SO_LINGER l_linger must be 0 (zero-duration linger per FASM baseline)"
+        );
+
+        // ----- 3. SO_KEEPALIVE -----
+        //
+        // SAFETY: same rationale as above.
+        let mut keepalive_val: libc::c_int = 0;
+        let mut keepalive_len: libc::socklen_t = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_KEEPALIVE,
+                (&mut keepalive_val as *mut libc::c_int).cast::<libc::c_void>(),
+                &mut keepalive_len,
+            )
+        };
+        assert_eq!(rc, 0, "getsockopt(SO_KEEPALIVE) must succeed");
+        assert_eq!(
+            keepalive_len as usize,
+            std::mem::size_of::<libc::c_int>(),
+            "getsockopt(SO_KEEPALIVE) optlen must match c_int size"
+        );
+        assert_eq!(
+            keepalive_val, 1,
+            "SO_KEEPALIVE must be enabled after apply_stream_defaults (EPOLL_KEEPALIVE = true)"
+        );
+
+        // Drop streams and listener explicitly before leaving the
+        // runtime so no I/O is in flight when the runtime shuts down.
+        drop(server_stream);
+        drop(_client_stream);
+        drop(listener);
+    });
+
+    // Drop the runtime explicitly.
+    drop(rt);
 }
