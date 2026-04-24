@@ -35,6 +35,11 @@
 //!   `ring::digest::SHA1_FOR_LEGACY_USE_ONLY`); port of `sha1.inc`.
 //! * [`sha2`] — SHA-256 and SHA-512 hash wrappers over
 //!   `ring::digest`; port of `sha2.inc`.
+//! * [`hmac`] — HMAC over MD5, SHA-1, SHA-224, SHA-256, SHA-384,
+//!   and SHA-512 (RFC 2104); `ring::hmac` backs the four
+//!   ring-supported variants, while MD5-HMAC and SHA-224-HMAC are
+//!   implemented manually per AAP §0.5.1.3 (because `ring::hmac`
+//!   does not support those algorithms). Port of `hmac.inc`.
 //! * [`hmac_drbg`] — NIST SP 800-90A HMAC-DRBG over `ring::hmac`,
 //!   with 64-bit-per-3072-bit discard policy preserved per
 //!   AAP §0.5.1.3; port of `hmac_drbg.inc`.
@@ -43,12 +48,11 @@
 //!   HMAC-SHA-256, HMAC-SHA-384, and HMAC-SHA-512 per AAP §0.5.1.3;
 //!   port of `pbkdf2.inc`.
 //!
-//! Additional crypto submodules (`aes`, `hmac`, `scrypt`, `bigint`,
-//! `dh`, `x509`, `rng`) are scheduled in subsequent translation
-//! phases per AAP §0.5.1.3 and are not yet wired here. The
-//! aggregator exposes only the submodules that exist as source
-//! files today so that `cargo check` succeeds on the currently
-//! committed sub-set.
+//! Additional crypto submodules (`aes`, `scrypt`, `bigint`, `dh`,
+//! `x509`, `rng`) are scheduled in subsequent translation phases per
+//! AAP §0.5.1.3 and are not yet wired here. The aggregator exposes
+//! only the submodules that exist as source files today so that
+//! `cargo check` succeeds on the currently committed sub-set.
 //!
 //! # Error handling
 //!
@@ -82,6 +86,12 @@ pub mod sha1;
 
 /// SHA-256 / SHA-512 hash wrappers — port of `sha2.inc`.
 pub mod sha2;
+
+/// HMAC (RFC 2104) over MD5, SHA-1, SHA-224, SHA-256, SHA-384, and
+/// SHA-512 — port of `hmac.inc`. Ring backs the four algorithms it
+/// supports; MD5-HMAC and SHA-224-HMAC are implemented manually per
+/// AAP §0.5.1.3.
+pub mod hmac;
 
 /// NIST SP 800-90A HMAC-DRBG — port of `hmac_drbg.inc`.
 pub mod hmac_drbg;
