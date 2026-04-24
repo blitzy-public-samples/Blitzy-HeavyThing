@@ -491,6 +491,70 @@ pub fn derive_sha512(
 }
 
 // ============================================================================
+// API-adaptation wrappers for downstream consumers
+// ============================================================================
+//
+// The Checkpoint 4 Phase 2 API adaptation registry prescribes two convenience
+// entry points with the argument order `(password, salt, iterations, output)`
+// — i.e., password first, matching `std::io`/PKCS idioms and the downstream
+// `util_integration.rs` caller signature.
+//
+// Our canonical internal API (`derive`, `derive_sha256`, `derive_sha384`,
+// `derive_sha512`) places `iterations` first because that is how the FASM
+// `pbkdf2$doit` entry point lays out its register-passed arguments
+// (`rdi = iterations, rsi = salt, rdx = salt_len, rcx = password, …`, see
+// `pbkdf2.inc` lines 218 ff.). We therefore cannot alias via `pub use`;
+// a thin re-ordered wrapper is required. These functions are additive and
+// do not modify the existing public API surface.
+//
+// Both wrappers delegate directly to `derive` — there is no duplicated logic
+// and no extra allocation; the optimizer elides the call under `#[inline]`.
+
+/// Derive key material using PBKDF2-HMAC-SHA-256 with the argument order
+/// prescribed by the API-adaptation registry: `(password, salt, iterations,
+/// output)`.
+///
+/// Semantically identical to [`derive_sha256`]; only the argument order
+/// differs. Exists so downstream callers (e.g., `util_integration.rs`) can
+/// invoke the PBKDF2-HMAC-SHA-256 path with password-first argument
+/// ordering that matches the RFC 2898 / PKCS #5 textual description.
+///
+/// # Errors
+///
+/// Same as [`derive`].
+#[inline]
+pub fn pbkdf2_sha256(
+    password: &[u8],
+    salt: &[u8],
+    iterations: u32,
+    output: &mut [u8],
+) -> Result<(), CryptoError> {
+    derive(Pbkdf2Algo::HmacSha256, iterations, salt, password, output)
+}
+
+/// Derive key material using PBKDF2-HMAC-SHA-512 with the argument order
+/// prescribed by the API-adaptation registry: `(password, salt, iterations,
+/// output)`.
+///
+/// Semantically identical to [`derive_sha512`]; only the argument order
+/// differs. Exists so downstream callers (e.g., `util_integration.rs`) can
+/// invoke the PBKDF2-HMAC-SHA-512 path with password-first argument
+/// ordering that matches the RFC 2898 / PKCS #5 textual description.
+///
+/// # Errors
+///
+/// Same as [`derive`].
+#[inline]
+pub fn pbkdf2_sha512(
+    password: &[u8],
+    salt: &[u8],
+    iterations: u32,
+    output: &mut [u8],
+) -> Result<(), CryptoError> {
+    derive(Pbkdf2Algo::HmacSha512, iterations, salt, password, output)
+}
+
+// ============================================================================
 // Tests — RFC 6070 PBKDF2-HMAC-SHA-1 and RFC 7914 PBKDF2-HMAC-SHA-256 vectors
 // ============================================================================
 

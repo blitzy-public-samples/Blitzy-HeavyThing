@@ -349,6 +349,46 @@ pub fn deflate_decompress(data: &[u8]) -> Result<Vec<u8>, UtilError> {
 }
 
 // ---------------------------------------------------------------------------
+// API-adaptation aliases for downstream consumers.
+// ---------------------------------------------------------------------------
+//
+// The Checkpoint 4 Phase 2 API adaptation registry prescribes the short
+// spellings `deflate` / `inflate` as the primary zlib-format entry
+// points — matching the zlib C-API (`deflate(3)` / `inflate(3)`) and
+// the FASM `zlib_deflate.inc` / `zlib_inflate.inc` naming that the
+// assembly baseline used. Our canonical names
+// ([`zlib_compress`] / [`zlib_decompress`]) are more explicit and
+// disambiguate the three format families (zlib / gzip / raw-deflate)
+// by prefix; both spellings are useful, so the aliases are additive.
+//
+// These aliases intentionally map to the **zlib-wrapped** variants
+// (RFC 1950 — 2-byte header + Adler-32 trailer), NOT to the raw-DEFLATE
+// variants (RFC 1951, exposed separately as [`deflate_compress`] /
+// [`deflate_decompress`]). This preservation of the "classical zlib"
+// convention matches the FASM assembly's default `zlib_*` entry points
+// and RFC 2616 §3.5's `Content-Encoding: deflate` semantics. Callers
+// that need raw-DEFLATE should continue to use [`deflate_compress`] /
+// [`deflate_decompress`] explicitly.
+//
+// Because these are `pub use` re-exports rather than wrapper functions,
+// they share the exact same implementation, ABI, and documentation
+// anchors as the canonical names; there is zero overhead.
+
+/// Alias of [`zlib_compress`] under the C-API `deflate(3)` / FASM
+/// `zlib_deflate.inc` naming convention. Produces a zlib-wrapped
+/// (RFC 1950) byte stream at [`DEFAULT_LEVEL`]; byte-identical behavior
+/// to [`zlib_compress`]. For raw-DEFLATE (RFC 1951, no wrapper), use
+/// [`deflate_compress`].
+pub use self::zlib_compress as deflate;
+
+/// Alias of [`zlib_decompress`] under the C-API `inflate(3)` / FASM
+/// `zlib_inflate.inc` naming convention. Decodes a zlib-wrapped
+/// (RFC 1950) byte stream; byte-identical behavior to
+/// [`zlib_decompress`]. For raw-DEFLATE (RFC 1951, no wrapper), use
+/// [`deflate_decompress`].
+pub use self::zlib_decompress as inflate;
+
+// ---------------------------------------------------------------------------
 // Unit tests — validate round-trip semantics across all three format
 // families, level handling, magic-byte emission, empty-input handling,
 // and the error surface for invalid input.

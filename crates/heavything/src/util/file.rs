@@ -287,6 +287,37 @@ pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<(), Util
     Ok(fs::rename(from, to)?)
 }
 
+// ---------------------------------------------------------------------------
+// API-adaptation aliases for downstream consumers.
+// ---------------------------------------------------------------------------
+//
+// The Checkpoint 4 Phase 2 API adaptation registry prescribes the names
+// `read_to_end` and `write_all` for the whole-file slurp / whole-buffer
+// dump entry points — matching the `std::io::Read::read_to_end` and
+// `std::io::Write::write_all` method names that Rust callers will find
+// most familiar. Our canonical names ([`read`] / [`write`]) match the
+// FASM `file$to_buffer` / inverse pattern; both spellings are useful,
+// so the aliases are additive.
+//
+// Because these are `pub use` re-exports rather than wrapper functions,
+// they share the exact same implementation, ABI, and documentation
+// anchors as [`read`] and [`write`]; there is zero overhead and the
+// optimizer needs no inlining hints.
+
+/// Alias of [`read`] under the `std::io::Read::read_to_end` naming
+/// convention. Provided per the API adaptation registry so downstream
+/// callers (e.g., `util_integration.rs`) can slurp an entire file into
+/// a [`Vec<u8>`] using the name they expect from the standard library.
+/// Byte-identical behavior to [`read`].
+pub use self::read as read_to_end;
+
+/// Alias of [`write`] under the `std::io::Write::write_all` naming
+/// convention. Provided per the API adaptation registry so downstream
+/// callers can dump an entire byte slice to a file using the name they
+/// expect from the standard library. Byte-identical behavior to
+/// [`write`].
+pub use self::write as write_all;
+
 #[cfg(test)]
 mod tests {
     use super::*;

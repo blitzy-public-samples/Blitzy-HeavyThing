@@ -304,6 +304,39 @@ impl std::fmt::Debug for Mapped {
     }
 }
 
+// ---------------------------------------------------------------------------
+// API-adaptation wrapper for downstream consumers.
+// ---------------------------------------------------------------------------
+//
+// The Checkpoint 4 Phase 2 API adaptation registry prescribes a free
+// function `open_readonly(path) -> Result<Mapped, UtilError>` as the
+// primary entry point for memory-mapping a file read-only — matching
+// the intent-revealing naming convention used by the downstream
+// `util_integration.rs` consumer (and by analogous std::fs helpers
+// like `std::fs::File::open`, which itself is read-only by default).
+//
+// The canonical constructor [`Mapped::new_file`] already produces a
+// read-only mapping (it uses `MmapOptions::map`, not `map_mut`), so
+// the wrapper is a pure naming adapter with zero overhead — a single
+// delegated call that the optimizer will collapse.
+
+/// Memory-map an existing file for read-only access, returning a
+/// [`Mapped`] value that exposes the file's contents via
+/// [`Mapped::as_bytes`]. Provided per the API adaptation registry as
+/// an intent-revealing alias for [`Mapped::new_file`].
+///
+/// Behavior (including the underlying `open(2)` + `mmap(2)` syscalls,
+/// `MAP_POPULATE` hint, and error reporting) is byte-identical to
+/// [`Mapped::new_file`]; see that method's documentation for the full
+/// syscall sequence and error taxonomy.
+///
+/// # Errors
+/// Returns [`UtilError::Io`] if the file cannot be opened; returns
+/// [`UtilError::Mmap`] if the underlying `mmap(2)` syscall fails.
+pub fn open_readonly<P: AsRef<Path>>(p: P) -> Result<Mapped, UtilError> {
+    Mapped::new_file(p)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

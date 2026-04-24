@@ -785,6 +785,59 @@ fn format_duration_into(
 }
 
 // ============================================================================
+// API-adaptation helper for downstream consumers.
+// ============================================================================
+//
+// The Checkpoint 4 Phase 2 API adaptation registry prescribes a free
+// function `with_commas(n: u64) -> String` for thousand-separated
+// rendering of unsigned integers — this is the most frequent use of
+// the FASM formatter's `FORMATTER_FLAG_COMMAS` flag in the showcase
+// applications (status bars, data grids, server metrics).
+//
+// We cannot implement this by delegating to the `Formatter` +
+// `FormatItemType::Unsigned` path because, as deliberately preserved
+// from the FASM renderer, `FormatItem::flags` is never consulted by
+// the `Integer` / `Unsigned` render arms — the comma-insertion
+// behavior lives outside the flags matrix. A standalone implementation
+// is therefore both correct and minimal.
+//
+// The algorithm walks the ASCII decimal representation of `n` and
+// inserts a `,` before each group of three digits counted from the
+// right. `u64::to_string` produces exclusively ASCII `'0'..='9'`, so
+// byte-to-char coercion via `as char` is safe (single-byte code
+// points).
+
+/// Render an unsigned integer with US-English thousand separators.
+///
+/// `with_commas(0) == "0"`, `with_commas(1_234) == "1,234"`,
+/// `with_commas(18_446_744_073_709_551_615) ==
+/// "18,446,744,073,709,551,615"` (`u64::MAX`).
+///
+/// Provided per the API adaptation registry as a convenience entry
+/// point. For more general number formatting (fractional seconds,
+/// durations, custom widths), use [`Formatter`] with an appropriate
+/// [`FormatItem`].
+#[must_use]
+pub fn with_commas(n: u64) -> String {
+    let s = n.to_string();
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    // Pre-allocate: every additional three digits beyond the first
+    // contributes one separator, so the output length is at most
+    // `len + (len - 1) / 3`. Using `len + len / 3` is a safe upper
+    // bound that avoids a subtract-underflow branch for len=0 (which
+    // cannot occur since `n.to_string()` always yields at least "0").
+    let mut out = String::with_capacity(len + len / 3);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(*b as char);
+    }
+    out
+}
+
+// ============================================================================
 // Unit tests.
 // ============================================================================
 

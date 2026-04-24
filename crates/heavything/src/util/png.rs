@@ -380,6 +380,25 @@ impl Png {
     pub fn pixel_count(&self) -> usize {
         (self.width as usize) * (self.height as usize)
     }
+
+    /// Return the decoded RGBA pixel buffer as an immutable byte slice.
+    ///
+    /// Provided per the Checkpoint 4 Phase 2 API adaptation registry as
+    /// a spelling-compatible accessor for downstream consumers that
+    /// reach for `image.pixels()` (borrowing the convention from
+    /// `image::RgbaImage::as_raw` / typical PNG-decoder crates). Since
+    /// the canonical [`Png::data`] field is already `pub`, this
+    /// accessor is additive and purely for API-surface parity — it
+    /// compiles to the same single-field load as direct `.data[..]`
+    /// access.
+    ///
+    /// The returned slice contains exactly `width * height * 4` bytes,
+    /// laid out row-major as `[R, G, B, A, R, G, B, A, …]`.
+    #[inline]
+    #[must_use]
+    pub fn pixels(&self) -> &[u8] {
+        &self.data
+    }
 }
 
 // ============================================================================
@@ -513,6 +532,53 @@ fn map_png_err(e: DecodingError) -> UtilError {
             UtilError::Io(IoError::new(ErrorKind::InvalidData, "PNG limits exceeded"))
         }
     }
+}
+
+// ============================================================================
+// API-adaptation helpers for downstream consumers.
+// ============================================================================
+//
+// The Checkpoint 4 Phase 2 API adaptation registry prescribes two
+// additional spellings for the PNG decoding entry-point:
+//
+// * A type alias `PngImage` paralleling the canonical [`Png`] name —
+//   many downstream consumers (e.g., `util_integration.rs`) reach for
+//   `PngImage` by convention because the `Png` prefix is otherwise
+//   reserved in their namespaces for the format-identification enum.
+//
+// * A free function `decode(data) -> Result<Png, UtilError>` paralleling
+//   [`Png::new`] — matches the naming pattern established by
+//   `base64::decode`, `hex::decode`, etc.
+//
+// Both spellings preserve the canonical 9-field [`Png`] struct layout
+// with its FASM `png_*_ofs` offset table parity (see module doc); we
+// deliberately do NOT introduce a parallel `PngImage { width, height,
+// channels, pixels }` struct that would discard the extra `bit_depth`,
+// `color_type`, `line_length`, `row_length`, and `pixel_depth` fields
+// — those fields are load-bearing for downstream callers that inspect
+// the underlying PNG format metadata. The alias is therefore a
+// spelling-only compatibility shim.
+
+/// Alias of [`Png`] under the `PngImage` naming convention. Provided
+/// per the API adaptation registry. Both names refer to the same
+/// 9-field struct; pick whichever reads more naturally at the call
+/// site.
+pub use Png as PngImage;
+
+/// Decode a PNG byte buffer into a [`Png`]. Alias of [`Png::new`] in
+/// the free-function form (`png::decode(bytes)`) preferred by
+/// downstream consumers. Byte-identical behavior to [`Png::new`]:
+/// IDAT decompression via `miniz_oxide`/`flate2`, expansion to RGBA
+/// via `png` crate `Transformations::EXPAND | ALPHA | STRIP_16`, and
+/// rejection of indexed/PLTE images + sub-8bpp bit depths + zero or
+/// greater-than-65535 dimensions.
+///
+/// # Errors
+/// Returns [`UtilError::Io`] for malformed PNG data, unsupported
+/// color types, or out-of-range dimensions; returns
+/// [`UtilError::CrcMismatch`] if a chunk CRC check fails.
+pub fn decode(data: &[u8]) -> Result<Png, UtilError> {
+    Png::new(data)
 }
 
 // ============================================================================

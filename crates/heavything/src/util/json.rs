@@ -454,6 +454,29 @@ pub fn empty_object() -> JsonValue {
 }
 
 // ---------------------------------------------------------------------------
+// API-adaptation alias for downstream consumers.
+// ---------------------------------------------------------------------------
+//
+// The Checkpoint 4 Phase 2 API adaptation registry prescribes the name
+// `stringify` for the JSON value → `String` serializer — matching the
+// JavaScript `JSON.stringify` naming convention that downstream callers
+// (e.g., `util_integration.rs`) will find most intuitive. Our canonical
+// name ([`to_string`]) matches Rust's own `ToString::to_string`
+// convention; both spellings are useful, so the alias is additive.
+//
+// Because this is a `pub use` re-export rather than a wrapper function,
+// it shares the exact same implementation, ABI, error type, and
+// documentation anchors as [`to_string`]; there is zero overhead and
+// no observable difference at the call site beyond the spelling.
+
+/// Alias of [`to_string`] under the JavaScript `JSON.stringify` naming
+/// convention. Provided per the API adaptation registry so downstream
+/// callers can serialize a [`JsonValue`] into a compact UTF-8 `String`
+/// using the name they recognize from the web ecosystem.
+/// Byte-identical behavior to [`to_string`].
+pub use self::to_string as stringify;
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

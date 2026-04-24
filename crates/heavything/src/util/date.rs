@@ -412,6 +412,60 @@ pub fn rfc3164_timestamp() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// API-adaptation wrappers for downstream consumers.
+// ---------------------------------------------------------------------------
+//
+// The Checkpoint 4 Phase 2 API adaptation registry prescribes a
+// `SystemTime`-taking variant of the RFC 1123 formatter plus an `http_date`
+// alias. The canonical entry point [`rfc1123`] takes a [`DateParts`] by
+// value because the FASM source (`date.inc` `datetime$to_httpdate`) is
+// structured around a pre-decoded in-register year/month/day/… tuple.
+// Consumers such as the forthcoming HTTP server's `Date:` header emitter
+// will typically hold a [`std::time::SystemTime`] and want a single-call
+// path that performs the decode + format in one step.
+//
+// These functions are additive; they delegate to the existing decode
+// ([`unix_secs_to_parts`]) and format ([`rfc1123`]) primitives and do not
+// duplicate logic.
+
+/// Format a [`SystemTime`] as an RFC 1123 HTTP-date string.
+///
+/// Convenience wrapper around [`rfc1123`] + [`unix_secs_to_parts`] that
+/// accepts a [`SystemTime`] directly — the form typically available to
+/// HTTP server callers when emitting a `Date:` header.
+///
+/// Times before the Unix epoch (`UNIX_EPOCH`) produce the sentinel
+/// `"Thu, 01 Jan 1970 00:00:00 GMT"` rather than failing; this matches
+/// the `rfc3164_timestamp` fallback discipline (logging / header emission
+/// must never be fallible at the call site, as the caller may itself be
+/// on an error-reporting path).
+///
+/// Output is byte-identical to [`rfc1123`] for any `t >= UNIX_EPOCH`.
+///
+/// # Example
+///
+/// ```
+/// use std::time::{SystemTime, UNIX_EPOCH, Duration};
+/// use heavything::util::date;
+///
+/// let t = UNIX_EPOCH + Duration::from_secs(784_111_777);
+/// assert_eq!(date::rfc1123_system_time(t), "Sun, 06 Nov 1994 08:49:37 GMT");
+/// ```
+pub fn rfc1123_system_time(t: SystemTime) -> String {
+    match t.duration_since(UNIX_EPOCH) {
+        Ok(d) => rfc1123(unix_secs_to_parts(d.as_secs() as i64)),
+        Err(_) => String::from("Thu, 01 Jan 1970 00:00:00 GMT"),
+    }
+}
+
+/// Alias of [`rfc1123_system_time`] for the HTTP `Date:` header emission
+/// site. Provided per the API adaptation registry; the name `http_date`
+/// communicates intent at the call site (the caller writes a `Date:`
+/// header rather than a generic RFC 1123 timestamp). Byte-identical
+/// output to [`rfc1123_system_time`].
+pub use self::rfc1123_system_time as http_date;
+
+// ---------------------------------------------------------------------------
 // Tests.
 // ---------------------------------------------------------------------------
 
