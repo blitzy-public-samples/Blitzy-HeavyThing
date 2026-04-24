@@ -29,9 +29,9 @@
 //!
 //! The `util/` port is delivered across several checkpoints. This file
 //! declares only the submodules that have already landed source files in
-//! this repository; declarations for the remaining 2 planned modules
-//! (`privmapped`, `syslog`) will be added by later checkpoints
-//! alongside their implementations. Declaring a `pub mod foo;` without a
+//! this repository; declarations for any remaining planned modules
+//! (e.g. `privmapped`) will be added by later checkpoints alongside
+//! their implementations. Declaring a `pub mod foo;` without a
 //! backing source file is a hard compile error (rustc E0583), so
 //! premature declarations would break the whole workspace build — see
 //! AAP §0.8.3 and Gate 2's `RUSTFLAGS="-D warnings"` discipline.
@@ -85,6 +85,10 @@ pub mod string_math;
 
 /// System information helpers (`uname(2)`, CPU count) — port of `sysinfo.inc`.
 pub mod sysinfo;
+
+/// RFC 3164 syslog messages over `AF_UNIX`/`SOCK_DGRAM` to `/dev/log` —
+/// port of `syslog.inc`.
+pub mod syslog;
 
 /// Unicode case-mapping helpers — port of `unicodecase.inc`.
 pub mod unicodecase;
