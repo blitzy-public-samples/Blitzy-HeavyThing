@@ -175,19 +175,13 @@ pub enum Http1Error {
 impl From<Http1Error> for HttpError {
     fn from(e: Http1Error) -> Self {
         match e {
-            Http1Error::HeaderParseFailure(msg) => {
-                HttpError::Parse(format!("http1: {}", msg))
-            }
+            Http1Error::HeaderParseFailure(msg) => HttpError::Parse(format!("http1: {}", msg)),
             Http1Error::RequestTooLarge { .. } => HttpError::TooLarge,
             Http1Error::MalformedContentLength => {
                 HttpError::Parse("http1: malformed content-length".to_string())
             }
-            Http1Error::MalformedChunked => {
-                HttpError::Parse("http1: malformed chunked encoding".to_string())
-            }
-            Http1Error::HeaderTooLarge => {
-                HttpError::Parse("http1: header too large".to_string())
-            }
+            Http1Error::MalformedChunked => HttpError::Parse("http1: malformed chunked encoding".to_string()),
+            Http1Error::HeaderTooLarge => HttpError::Parse("http1: header too large".to_string()),
         }
     }
 }
@@ -426,7 +420,6 @@ impl Http1Parser {
         self.body_ptr = Some(bytes);
     }
 
-
     // -------------------------------------------------------------------------
     // Serialisation (compose-side)
     // -------------------------------------------------------------------------
@@ -568,9 +561,7 @@ impl Http1Parser {
                 let body_slice = &data[header_end..];
                 self.check_body_phase_with_body_data(header_end, body_slice)
             }
-            Err(e) => {
-                Http1InputResult::Error(Http1Error::HeaderParseFailure(e.to_string()))
-            }
+            Err(e) => Http1InputResult::Error(Http1Error::HeaderParseFailure(e.to_string())),
         }
     }
 
@@ -619,8 +610,7 @@ impl Http1Parser {
                 // buffer. Work out how many came from the new `data` slice
                 // (the rest, if any, are body bytes already at hand).
                 let combined_consumed = n.min(pd.len());
-                let new_data_consumed =
-                    combined_consumed.saturating_sub(previous_len);
+                let new_data_consumed = combined_consumed.saturating_sub(previous_len);
                 self.header_len = combined_consumed;
                 // The accumulator is consumed on success; do not reinstate.
                 // Transition back to InHeaders so the upcoming body phase
@@ -639,7 +629,6 @@ impl Http1Parser {
             }
         }
     }
-
 
     /// After header parsing has completed (either direct or via partial
     /// reassembly), inspect the header table for `Content-Length` or
@@ -669,9 +658,7 @@ impl Http1Parser {
             let cl: u64 = match cl_str.trim().parse::<u64>() {
                 Ok(v) => v,
                 Err(_) => {
-                    return Http1InputResult::Error(
-                        Http1Error::MalformedContentLength,
-                    );
+                    return Http1InputResult::Error(Http1Error::MalformedContentLength);
                 }
             };
             if cl > WEBSERVER_MAXREQUEST as u64 {
@@ -728,11 +715,7 @@ impl Http1Parser {
     /// `prefix_consumed` accounts for any header bytes already counted in
     /// this `input()` call (zero when entered directly from
     /// [`ParseState::InBodyLength`]).
-    fn consume_body_length(
-        &mut self,
-        data: &[u8],
-        prefix_consumed: usize,
-    ) -> Http1InputResult {
+    fn consume_body_length(&mut self, data: &[u8], prefix_consumed: usize) -> Http1InputResult {
         // Number of new bytes to pull from `data` this call.
         let take_u64 = (data.len() as u64).min(self.body_len);
         // Safe cast: `take_u64 <= data.len()` which is a valid `usize`.
@@ -766,11 +749,7 @@ impl Http1Parser {
     /// Correctly handles terminators that straddle the boundary between
     /// the previous buffer state and the new incoming bytes by rewinding
     /// the scan start by `CHUNKED_TERMINATOR.len() - 1` bytes.
-    fn consume_body_chunked(
-        &mut self,
-        data: &[u8],
-        prefix_consumed: usize,
-    ) -> Http1InputResult {
+    fn consume_body_chunked(&mut self, data: &[u8], prefix_consumed: usize) -> Http1InputResult {
         // Cap total size before touching the buffer.
         let prev_len = self.body_ptr.as_ref().map_or(0, |b| b.len());
         let new_total = prev_len.saturating_add(data.len());
@@ -803,9 +782,7 @@ impl Http1Parser {
             None => return Http1InputResult::Error(Http1Error::MalformedChunked),
         };
 
-        if let Some(relative_idx) =
-            find_sentinel(&body[scan_start..], CHUNKED_TERMINATOR)
-        {
+        if let Some(relative_idx) = find_sentinel(&body[scan_start..], CHUNKED_TERMINATOR) {
             let absolute_idx = scan_start + relative_idx;
             let total_body = absolute_idx + term_len;
             // Truncate any post-terminator bytes (they belong to the next
@@ -859,7 +836,6 @@ fn find_sentinel(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-
 // -----------------------------------------------------------------------------
 // Unit tests
 // -----------------------------------------------------------------------------
@@ -884,10 +860,7 @@ mod tests {
         }
         assert!(p.body_complete(), "Request should be complete");
         // No body → body() returns None.
-        assert!(
-            p.body().is_none(),
-            "No body expected for GET without CL/TE"
-        );
+        assert!(p.body().is_none(), "No body expected for GET without CL/TE");
         // `Host: example.com` should be retrievable via either accessor.
         assert_eq!(p.headers().get("host"), Some("example.com"));
         assert_eq!(p.headers.get("host"), Some("example.com"));
@@ -955,8 +928,10 @@ mod tests {
         }
         // Boundary conversion must map to HttpError::TooLarge per AAP
         // §0.8.3.
-        let err: HttpError =
-            Http1Error::RequestTooLarge { max: 64 * 1024 * 1024 }.into();
+        let err: HttpError = Http1Error::RequestTooLarge {
+            max: 64 * 1024 * 1024,
+        }
+        .into();
         assert!(matches!(err, HttpError::TooLarge));
     }
 
@@ -1209,8 +1184,7 @@ mod tests {
     /// `NeedMore`; feed remainder, get `Consumed`.
     #[test]
     fn test_partial_body_content_length() {
-        let headers_plus_partial =
-            b"POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\nHel";
+        let headers_plus_partial = b"POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\nHel";
         let rest = b"loWorld";
         let mut p = Http1Parser::new();
         match p.input(headers_plus_partial) {
@@ -1250,8 +1224,7 @@ mod tests {
     /// recognised as chunked.
     #[test]
     fn test_transfer_encoding_compound() {
-        let headers =
-            b"POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n";
+        let headers = b"POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n";
         let body = b"5\r\nHello\r\n0\r\n\r\n";
         let mut data: Vec<u8> = Vec::new();
         data.extend_from_slice(headers);
@@ -1271,10 +1244,7 @@ mod tests {
     fn test_chunked_terminator_bytes() {
         assert_eq!(CHUNKED_TERMINATOR, b"\r\n0\r\n\r\n");
         assert_eq!(CHUNKED_TERMINATOR.len(), 7);
-        assert_eq!(
-            CHUNKED_TERMINATOR,
-            &[0x0d, 0x0a, 0x30, 0x0d, 0x0a, 0x0d, 0x0a]
-        );
+        assert_eq!(CHUNKED_TERMINATOR, &[0x0d, 0x0a, 0x30, 0x0d, 0x0a, 0x0d, 0x0a]);
     }
 
     /// `find_sentinel` returns the earliest match and handles edge cases.
@@ -1285,7 +1255,7 @@ mod tests {
         assert_eq!(find_sentinel(b"", b"xy"), None);
         assert_eq!(find_sentinel(b"ab", b""), None); // empty needle
         assert_eq!(find_sentinel(b"ab", b"abc"), None); // needle > haystack
-        // Longer haystack with multiple potential hits — returns first.
+                                                        // Longer haystack with multiple potential hits — returns first.
         assert_eq!(find_sentinel(b"__xx__xx__", b"xx"), Some(2));
     }
 
@@ -1295,8 +1265,7 @@ mod tests {
         let e1: HttpError = Http1Error::HeaderParseFailure("oops".into()).into();
         assert!(matches!(e1, HttpError::Parse(_)));
 
-        let e2: HttpError =
-            Http1Error::RequestTooLarge { max: 1024 }.into();
+        let e2: HttpError = Http1Error::RequestTooLarge { max: 1024 }.into();
         assert!(matches!(e2, HttpError::TooLarge));
 
         let e3: HttpError = Http1Error::MalformedContentLength.into();
@@ -1319,8 +1288,8 @@ mod tests {
         // straddle the terminator bytes.
         // Full body: b"5\r\nHello\r\n0\r\n\r\n"  (15 bytes).
         // Terminator starts at offset 8 (after "5\r\nHello" = 1+2+5 = 8).
-        let first_body = b"5\r\nHello\r\n0\r\n\r";  // 14 bytes (missing last LF)
-        let second_body = b"\n";                   // 1 byte — the final LF
+        let first_body = b"5\r\nHello\r\n0\r\n\r"; // 14 bytes (missing last LF)
+        let second_body = b"\n"; // 1 byte — the final LF
         let mut first_input: Vec<u8> = Vec::new();
         first_input.extend_from_slice(headers);
         first_input.extend_from_slice(first_body);
@@ -1371,4 +1340,3 @@ mod tests {
         assert!(!p.body_complete());
     }
 }
-
