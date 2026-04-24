@@ -28,8 +28,9 @@
 //! * [`headers`] — HTTP/1.x + HTTP/2 header container, HPACK encoder/decoder,
 //!   the RFC 7541 static table, and the complete Huffman codec (port of
 //!   `httpheaders.inc`).
-//! * `http1` — HTTP/1.1 request/response state machine (scheduled — port of
-//!   `http1.inc`).
+//! * [`http1`] — HTTP/1.x parser state-machine driver with five-state
+//!   dispatch (InHeaders / PartialHeadersDirect / PartialHeadersBuffer /
+//!   InBodyLength / InBodyChunked) — port of `http1.inc`.
 //! * `mimelike` — MIME-like parser for HTTP messages with gzip threshold and
 //!   chunked-transfer framing (scheduled — port of `mimelike.inc`).
 //! * `cookiejar` — session cookie storage (scheduled — port of
@@ -57,3 +58,11 @@
 /// HTTP/1.x wire-format parse + compose helpers — port of
 /// `httpheaders.inc`.
 pub mod headers;
+
+/// HTTP/1.x parser state-machine driver with five-state dispatch
+/// (InHeaders / PartialHeadersDirect / PartialHeadersBuffer /
+/// InBodyLength / InBodyChunked). Wraps [`headers::HttpHeaders`] as the
+/// first step of the pipeline and handles body-phase consumption
+/// (Content-Length countdown or chunked sentinel scan). Port of
+/// `http1.inc`.
+pub mod http1;
