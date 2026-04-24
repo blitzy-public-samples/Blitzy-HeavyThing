@@ -29,8 +29,8 @@
 //!
 //! The `util/` port is delivered across several checkpoints. This file
 //! declares only the submodules that have already landed source files in
-//! this repository; declarations for the remaining 3 planned modules
-//! (`png`, `privmapped`, `syslog`) will be added by later checkpoints
+//! this repository; declarations for the remaining 2 planned modules
+//! (`privmapped`, `syslog`) will be added by later checkpoints
 //! alongside their implementations. Declaring a `pub mod foo;` without a
 //! backing source file is a hard compile error (rustc E0583), so
 //! premature declarations would break the whole workspace build — see
@@ -66,6 +66,9 @@ pub mod mappedheap;
 
 /// Basic math helpers — port of `math.inc`.
 pub mod math;
+
+/// PNG image decoding (wraps the `png` crate) — port of `png.inc`.
+pub mod png;
 
 /// Lightweight timing wrapper over `std::time::Instant` — port of `profiler.inc`.
 pub mod profiler;
