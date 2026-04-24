@@ -49,6 +49,11 @@
 //!   channels, typed [`LinkMessage`](child::LinkMessage) records, global
 //!   child-PID registry, and `SIGTERM`-on-exit cleanup (port of
 //!   `epoll_child.inc`; AAP §0.5.1.4, §0.7.4.2).
+//! * [`dns`] — Async DNS resolution via the system resolver
+//!   ([`tokio::net::lookup_host`]), plus a Tier 2 manual UDP-based
+//!   resolver that reads `/etc/resolv.conf`, scrambles query IDs,
+//!   and supports roundrobin server selection (port of
+//!   `epoll_dns.inc`; AAP §0.5.1.4).
 //! * [`http`] — HTTP/1.1 and HTTP/2 header containers, HPACK codec,
 //!   and line-oriented wire-format parser/serializer (port of
 //!   `httpheaders.inc`, with `http1.inc`, `mimelike.inc`,
@@ -71,7 +76,7 @@
 //!   with a thin orchestrator over `tokio::runtime::Runtime` whose
 //!   internal `mio` backend already provides `epoll` on Linux.
 //!
-//! Additional networking submodules (`dns`, `fcgi`, `tls`, `ssh`) are
+//! Additional networking submodules (`fcgi`, `tls`, `ssh`) are
 //! scheduled in subsequent translation checkpoints per AAP §0.5.1.4
 //! and are not yet declared here. Declaring a `pub mod foo;` without
 //! a backing source file is a hard compile error (rustc E0583), so
@@ -121,6 +126,13 @@ pub mod blacklist;
 /// `epoll_child.inc`.
 pub mod child;
 
+/// Async DNS resolution — port of `epoll_dns.inc`. Provides Tier 1
+/// system-resolver wrappers ([`dns::lookup_host`], [`dns::lookup_ipv4`],
+/// [`dns::lookup_host_cached`]) plus the Tier 2 manual UDP-based
+/// resolver ([`dns::Dns`]) and the schema-required public façade
+/// ([`dns::DnsResolver`]).
+pub mod dns;
+
 /// HTTP/1.1 and HTTP/2 aggregator module — contains the header container,
 /// HPACK codec, and sibling submodules for MIME-like parsing, HTTP/1.x
 /// state machines, and server/client request handling. Ports the
@@ -155,3 +167,9 @@ pub mod url;
 /// module hop. Matches the export surface declared in AAP §0.3.1.2 for
 /// `crates/heavything/src/net/child.rs`.
 pub use self::child::{ChildProcess, LinkMessage};
+
+/// Re-export of the public DNS-resolution API surface so callers can
+/// write `use heavything::net::{DnsResolver, DnsError};` without an
+/// extra module hop. Matches the export surface declared in AAP
+/// §0.3.1.2 for `crates/heavything/src/net/dns.rs`.
+pub use self::dns::{DnsError, DnsResolver};
