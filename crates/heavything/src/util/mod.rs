@@ -29,13 +29,12 @@
 //!
 //! The `util/` port is delivered across several checkpoints. This file
 //! declares only the submodules that have already landed source files in
-//! this repository; declarations for the remaining 4 planned modules
-//! (`file`, `png`, `privmapped`, `syslog`) will be added by later
-//! checkpoints alongside their implementations. Declaring a
-//! `pub mod foo;` without a backing source file is a hard compile error
-//! (rustc E0583), so premature declarations would break the whole
-//! workspace build — see AAP §0.8.3 and Gate 2's `RUSTFLAGS="-D warnings"`
-//! discipline.
+//! this repository; declarations for the remaining 3 planned modules
+//! (`png`, `privmapped`, `syslog`) will be added by later checkpoints
+//! alongside their implementations. Declaring a `pub mod foo;` without a
+//! backing source file is a hard compile error (rustc E0583), so
+//! premature declarations would break the whole workspace build — see
+//! AAP §0.8.3 and Gate 2's `RUSTFLAGS="-D warnings"` discipline.
 
 /// Base64 (RFC 4648) encode/decode — port of `base64_latin1.inc`.
 pub mod base64;
@@ -48,6 +47,10 @@ pub mod date;
 
 /// Directory enumeration helpers — port of `dir.inc`.
 pub mod dir;
+
+/// File I/O helpers (stat, read, write, append, rename, remove) —
+/// port of `file.inc`.
+pub mod file;
 
 /// Printf-like reusable output formatter — port of `formatter.inc`.
 pub mod formatter;
