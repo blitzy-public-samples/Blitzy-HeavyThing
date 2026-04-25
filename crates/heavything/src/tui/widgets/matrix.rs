@@ -700,9 +700,7 @@ impl MatrixInner {
         // Defensive: if shadow buffers haven't been sized to match
         // current widget dimensions yet (e.g. tick fires before
         // initial_fill resized them), bail rather than write OOB.
-        if self.text_shadow.len() < total_bytes
-            || self.attr_shadow.cells.len() < total_cells_usize
-        {
+        if self.text_shadow.len() < total_bytes || self.attr_shadow.cells.len() < total_cells_usize {
             return;
         }
         for i in 0..MAX_STREAMS {
@@ -736,8 +734,7 @@ impl MatrixInner {
             // 415–457: skips if `y >= height` (`cmp r11d, ecx; jae
             // .checksecond`). Bounds: x must also be in [0, width).
             if y < height && y >= 0 && x >= 0 && x < width {
-                let cell_idx = (y as usize).saturating_mul(width as usize)
-                    + x as usize;
+                let cell_idx = (y as usize).saturating_mul(width as usize) + x as usize;
                 let byte_off = cell_idx.saturating_mul(BYTES_PER_CELL);
                 write_u32_at(&mut self.text_shadow, byte_off, char_head);
                 write_attr_at(&mut self.attr_shadow, cell_idx, color_primary);
@@ -751,16 +748,10 @@ impl MatrixInner {
             if y > 0 && y <= height && x >= 0 && x < width {
                 let body_y = y - 1;
                 if body_y >= 0 && body_y < height {
-                    let cell_idx = (body_y as usize)
-                        .saturating_mul(width as usize)
-                        + x as usize;
+                    let cell_idx = (body_y as usize).saturating_mul(width as usize) + x as usize;
                     let byte_off = cell_idx.saturating_mul(BYTES_PER_CELL);
                     write_u32_at(&mut self.text_shadow, byte_off, char_body);
-                    write_attr_at(
-                        &mut self.attr_shadow,
-                        cell_idx,
-                        color_secondary,
-                    );
+                    write_attr_at(&mut self.attr_shadow, cell_idx, color_secondary);
                 }
             }
 
@@ -771,9 +762,7 @@ impl MatrixInner {
             if y >= BACKTRACE && x >= 0 && x < width {
                 let tail_y = y - BACKTRACE;
                 if tail_y >= 0 && tail_y < height {
-                    let cell_idx = (tail_y as usize)
-                        .saturating_mul(width as usize)
-                        + x as usize;
+                    let cell_idx = (tail_y as usize).saturating_mul(width as usize) + x as usize;
                     let byte_off = cell_idx.saturating_mul(BYTES_PER_CELL);
                     write_u32_at(&mut self.text_shadow, byte_off, TAIL_CHAR);
                     write_attr_at(&mut self.attr_shadow, cell_idx, TAIL_ATTR);
@@ -1032,8 +1021,7 @@ impl Matrix {
             self.state.attributes.cells.truncate(target_cells);
         }
         let attr_n = target_cells.min(self.state.attributes.cells.len());
-        self.state.attributes.cells[..attr_n]
-            .copy_from_slice(&guard.attr_shadow.cells[..attr_n]);
+        self.state.attributes.cells[..attr_n].copy_from_slice(&guard.attr_shadow.cells[..attr_n]);
         Ok(())
     }
 
@@ -1429,9 +1417,21 @@ mod tests {
             let r2 = (BASE_R / 3).saturating_sub(sos * INC_R_S);
             let g2 = (BASE_G / 3).saturating_sub(sos * INC_G_S);
             let b2 = (BASE_B / 3).saturating_sub(sos * INC_B_S);
-            assert_eq!(r2, (BASE_R / 3) - sos * INC_R_S, "secondary R underflow at sos={sos}");
-            assert_eq!(g2, (BASE_G / 3) - sos * INC_G_S, "secondary G underflow at sos={sos}");
-            assert_eq!(b2, (BASE_B / 3) - sos * INC_B_S, "secondary B underflow at sos={sos}");
+            assert_eq!(
+                r2,
+                (BASE_R / 3) - sos * INC_R_S,
+                "secondary R underflow at sos={sos}"
+            );
+            assert_eq!(
+                g2,
+                (BASE_G / 3) - sos * INC_G_S,
+                "secondary G underflow at sos={sos}"
+            );
+            assert_eq!(
+                b2,
+                (BASE_B / 3) - sos * INC_B_S,
+                "secondary B underflow at sos={sos}"
+            );
         }
     }
 
@@ -1465,10 +1465,7 @@ mod tests {
         let mut s = 0x1234_5678_9ABC_DEF0u64;
         for _ in 0..1000 {
             assert!(rng_intmax(&mut s, 5) < 5, "rng_intmax(5) out of range");
-            assert!(
-                rng_intmax(&mut s, 62) < 62,
-                "rng_intmax(62) out of range"
-            );
+            assert!(rng_intmax(&mut s, 62) < 62, "rng_intmax(62) out of range");
         }
     }
 
@@ -1677,23 +1674,21 @@ mod tests {
         // Head at (35, 10)
         let head_idx = 35 * 80 + 10;
         assert_ne!(
-            guard.text_shadow.as_slice()
-                [head_idx * BYTES_PER_CELL..head_idx * BYTES_PER_CELL + 4],
+            guard.text_shadow.as_slice()[head_idx * BYTES_PER_CELL..head_idx * BYTES_PER_CELL + 4],
             [b' ', 0, 0, 0],
             "head cell should be a kana glyph, not space"
         );
         // Body at (34, 10)
         let body_idx = 34 * 80 + 10;
         assert_ne!(
-            guard.text_shadow.as_slice()
-                [body_idx * BYTES_PER_CELL..body_idx * BYTES_PER_CELL + 4],
+            guard.text_shadow.as_slice()[body_idx * BYTES_PER_CELL..body_idx * BYTES_PER_CELL + 4],
             [b' ', 0, 0, 0],
             "body cell should be a kana glyph, not space"
         );
         // Tail at (5, 10) (35 - BACKTRACE = 5)
         let tail_idx = 5 * 80 + 10;
-        let tail_bytes = &guard.text_shadow.as_slice()
-            [tail_idx * BYTES_PER_CELL..tail_idx * BYTES_PER_CELL + 4];
+        let tail_bytes =
+            &guard.text_shadow.as_slice()[tail_idx * BYTES_PER_CELL..tail_idx * BYTES_PER_CELL + 4];
         assert_eq!(
             tail_bytes,
             &(b' ' as u32).to_le_bytes()[..],
@@ -1808,10 +1803,7 @@ mod tests {
             guard.text_shadow.len(),
             "state.text resized to match shadow"
         );
-        assert_eq!(
-            m.state.attributes.cells.len(),
-            guard.attr_shadow.cells.len()
-        );
+        assert_eq!(m.state.attributes.cells.len(), guard.attr_shadow.cells.len());
     }
 
     #[test]

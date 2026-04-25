@@ -32,11 +32,16 @@
 //!   container (`tui_spacers.inc`).
 //! - [`spinner`] — 1×1 animated glyph indicator cycling `-\|/` at a
 //!   configurable tick interval (`tui_spinner.inc`).
+//! - [`ssh`] — SSH-side bridge between the widget tree and the
+//!   `net::ssh` transport, providing the dual-class
+//!   [`ssh::TuiSsh`] (I/O-chain descendant) and
+//!   [`ssh::TuiSshRenderer`] (Renderer descendant) types
+//!   (`tui_ssh.inc`).
 //!
 //! Additional widget submodules (`panel`, `lines`, `label`, `text`,
 //! `textbox`, `button`, `form`, `simpleauth`, `alert`, `bell`,
 //! `progressbar`, `progressbox`, `datagrid`, `statusbar`,
-//! `newsticker`, `typist`, `splash`, `effects`, `ssh`)
+//! `newsticker`, `typist`, `splash`, `effects`)
 //! are added by subsequent translation agents per the AAP
 //! file-by-file transformation plan.
 
@@ -46,3 +51,4 @@ pub mod matrix;
 pub mod png;
 pub mod spacers;
 pub mod spinner;
+pub mod ssh;
