@@ -39,6 +39,10 @@
 //! - [`bell`] — 1×1 [`background::TuiBackground`] descendant emitting
 //!   the terminal BEL character (0x07) at a 120 ms cadence for a
 //!   caller-specified number of ring cycles (`tui_bell.inc`).
+//! - [`datagrid`] — JSON-array-backed scrollable data-grid widget with
+//!   configurable columns, selectable rows, and a private
+//!   [`crate::tui::gridguts::GridGuts`] internal renderer
+//!   (`tui_datagrid.inc`).
 //! - [`effect`] — particle-system effect base widget powering the
 //!   six built-in transition effects (`tui_effect.inc`).
 //! - [`effects`] — high-level transition catalog (slide-in, slide-out,
@@ -80,13 +84,14 @@
 //!
 //! Additional widget submodules (`panel`,
 //! `textbox`, `button`, `form`, `simpleauth`, `alert`,
-//! `progressbox`, `datagrid`, `statusbar`,
+//! `progressbox`, `statusbar`,
 //! `splash`)
 //! are added by subsequent translation agents per the AAP
 //! file-by-file transformation plan.
 
 pub mod background;
 pub mod bell;
+pub mod datagrid;
 pub mod effect;
 pub mod effects;
 pub mod label;
