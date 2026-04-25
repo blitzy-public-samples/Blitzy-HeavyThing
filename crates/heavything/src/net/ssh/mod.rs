@@ -52,8 +52,12 @@
 //!   that implements both `zlib` (immediate) and `zlib@openssh.com`
 //!   (delayed-until-userauth) negotiation behaviours (port of the
 //!   compression fragments of `ssh.inc`, AAP §0.5.1.4).
+//! * [`kex`] — `diffie-hellman-group-exchange-sha256` key exchange,
+//!   six-key derivation per RFC 4253 §7.2, and `ssh-rsa` / `ssh-dss`
+//!   host-key signature emission and verification (port of the KEX
+//!   fragments of `ssh.inc`, AAP §0.5.1.4).
 //!
-//! Other SSH submodules (`kex`, `server`) are scheduled in subsequent
+//! Remaining SSH submodules (`server`) are scheduled in subsequent
 //! translation checkpoints per AAP §0.5.1.4 and are not yet declared
 //! here. Declaring `pub mod foo;` without a backing source file is a
 //! hard compile error (rustc E0583), so premature declarations would
@@ -73,16 +77,18 @@
 //!
 //! # `unsafe` audit
 //!
-//! None of the three currently-wired submodules ([`auth`], [`cipher`],
-//! [`compression`]) contribute any `unsafe` blocks to the crate's
-//! [`UNSAFE_AUDIT.md`](../../../../UNSAFE_AUDIT.md) tally
+//! None of the four currently-wired submodules ([`auth`], [`cipher`],
+//! [`compression`], [`kex`]) contribute any `unsafe` blocks to the
+//! crate's [`UNSAFE_AUDIT.md`](../../../../UNSAFE_AUDIT.md) tally
 //! (AAP §0.7.4.1). Correctness of the cipher / MAC layer derives
 //! entirely from `aes` (raw AES-256 block cipher), `ring::hmac`
 //! (HMAC-SHA-256), and `ring::constant_time::verify_slices_are_equal`
 //! (timing-safe MAC comparison). Correctness of the authentication
 //! layer derives from safe slice indexing and the crate-internal RNG.
 //! Correctness of the compression layer derives from the `flate2`
-//! crate's safe streaming API.
+//! crate's safe streaming API. Correctness of the key-exchange layer
+//! derives from `ring::digest`/`ring::signature` (SHA-256 / RSA
+//! signing) and `num-bigint` for DSA + DH modular arithmetic.
 
 /// SSH 2.0 authentication protocol — userauth frame parsing, callback
 /// invocation, and frame construction — port of the authentication
@@ -98,3 +104,10 @@ pub mod cipher;
 /// port of the compression fragments of `ssh.inc`, implementing both
 /// `zlib` (immediate) and `zlib@openssh.com` (delayed) negotiation.
 pub mod compression;
+
+/// `diffie-hellman-group-exchange-sha256` key exchange, six-key
+/// derivation per RFC 4253 §7.2, and `ssh-rsa` / `ssh-dss` host-key
+/// signature emission and verification — port of the KEX fragments
+/// of `ssh.inc` (`.got_kexinit`, `.got_kexgexreq`, `.got_kexgexgroup`,
+/// `.got_kexgexinit`, `.got_kexgexreply`, `.keycalc`).
+pub mod kex;
