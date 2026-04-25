@@ -76,12 +76,18 @@
 //!   with a thin orchestrator over `tokio::runtime::Runtime` whose
 //!   internal `mio` backend already provides `epoll` on Linux.
 //!
-//! Additional networking submodules (`tls`) are scheduled in subsequent
-//! translation checkpoints per AAP §0.5.1.4 and are not yet declared
-//! here. Declaring a `pub mod foo;` without a backing source file is a
-//! hard compile error (rustc E0583), so premature declarations would
-//! break the whole workspace build under the Gate 2
-//! `RUSTFLAGS="-D warnings"` discipline (AAP §0.8.3).
+//! * [`tls`] — TLS 1.2/1.3 server and client built on `rustls 0.23` —
+//!   port of `tls.inc` (AAP §0.5.1.4, §0.7.2). Provides
+//!   [`tls::TlsServer`] / [`tls::TlsClient`] / [`tls::TlsStream`],
+//!   plus the session-cache hook surface
+//!   ([`tls::set_sessioncache_hook`] / [`tls::take_sessioncache_hook`]
+//!   / [`tls::sessioncache_put`]) and three background-task spawners
+//!   (`spawn_pem_reload`, `spawn_ocsp_refresh`,
+//!   `spawn_session_cache_sweep`) that preserve the FASM 3,600-second
+//!   PEM hot-reload, 7,200-second OCSP refresh, and session-cache
+//!   sweep cadences. Architectural divergences (DHE→ECDHE, AES-CBC→AES-GCM,
+//!   addition of TLS 1.3) are documented in the module's `//!`
+//!   doc comment per AAP §0.7.2.2.
 //!
 //! # Error handling
 //!
@@ -171,6 +177,11 @@ pub mod runtime;
 /// submodules (`auth`, `compression`, `kex`, `server`) are wired in
 /// from `ssh/mod.rs` by their owning translation agents.
 pub mod ssh;
+
+/// TLS 1.2/1.3 server and client built on `rustls 0.23` — port of
+/// `tls.inc`. See the module's `//!` doc comment for the
+/// architectural-divergence summary required by AAP §0.7.2.2.
+pub mod tls;
 
 /// RFC 3986 URL parser/encoder/decoder with FASM-style accessors —
 /// port of `url.inc`.
