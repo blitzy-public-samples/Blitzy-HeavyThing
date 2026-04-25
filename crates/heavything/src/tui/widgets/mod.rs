@@ -26,6 +26,9 @@
 //!   caller-specified number of ring cycles (`tui_bell.inc`).
 //! - [`effect`] — particle-system effect base widget powering the
 //!   six built-in transition effects (`tui_effect.inc`).
+//! - [`effects`] — high-level transition catalog (slide-in, slide-out,
+//!   distort-in, distort-out) — a thin constructor layer over
+//!   [`effect::Effect`] (`tui_effects.inc`).
 //! - [`label`] — multi-line text label with three text alignments
 //!   (Left/Center/Right) and per-character highlight marking
 //!   (`tui_label.inc`).
@@ -56,16 +59,17 @@
 //!   character-by-character at a 50–160 ms human-typing cadence with
 //!   QWERTY-aware typo simulation (`tui_typist.inc`).
 //!
-//! Additional widget submodules (`panel`, `text`,
+//! Additional widget submodules (`panel`,
 //! `textbox`, `button`, `form`, `simpleauth`, `alert`,
 //! `progressbox`, `datagrid`, `statusbar`,
-//! `splash`, `effects`)
+//! `splash`)
 //! are added by subsequent translation agents per the AAP
 //! file-by-file transformation plan.
 
 pub mod background;
 pub mod bell;
 pub mod effect;
+pub mod effects;
 pub mod label;
 pub mod lines;
 pub mod matrix;
