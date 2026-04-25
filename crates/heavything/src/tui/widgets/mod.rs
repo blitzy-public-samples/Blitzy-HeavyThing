@@ -31,6 +31,10 @@
 //! - [`matrix`] — Matrix-rain animation with 100 parallel character
 //!   streams and a 50 ms (20 fps) tokio-driven ticker
 //!   (`tui_matrix.inc`).
+//! - [`newsticker`] — Height-1 [`background::TuiBackground`]
+//!   descendant scrolling a text string right-to-left across its
+//!   row at a 200 ms (5 fps) tokio-driven ticker
+//!   (`tui_newsticker.inc`).
 //! - [`png`] — PNG-to-ANSI-256 image widget with xterm 256-color
 //!   quantization (`tui_png.inc`).
 //! - [`progressbar`] — Background-descendant fill-based progress bar
@@ -49,7 +53,7 @@
 //! Additional widget submodules (`panel`, `text`,
 //! `textbox`, `button`, `form`, `simpleauth`, `alert`, `bell`,
 //! `progressbox`, `datagrid`, `statusbar`,
-//! `newsticker`, `typist`, `splash`, `effects`)
+//! `typist`, `splash`, `effects`)
 //! are added by subsequent translation agents per the AAP
 //! file-by-file transformation plan.
 
@@ -58,6 +62,7 @@ pub mod effect;
 pub mod label;
 pub mod lines;
 pub mod matrix;
+pub mod newsticker;
 pub mod png;
 pub mod progressbar;
 pub mod spacers;
