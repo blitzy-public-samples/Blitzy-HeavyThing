@@ -85,3 +85,10 @@ pub mod mimelike;
 /// 7-field semicolon-delimited persistence buffer format). Port of
 /// `cookiejar.inc` (942 lines / 6 FASM functions).
 pub mod cookiejar;
+
+/// HTTP/1.1 server with the 8-stage dispatch pipeline, mmap-based file
+/// hotlist cache, HSTS + BREACH header emission, three-mode response
+/// send dispatch, keep-alive pipelining, 30-second idle timeout, and
+/// Common Log Format access logs. Port of `webserver.inc` (5,670 lines
+/// / ~55 FASM functions).
+pub mod server;

@@ -103,6 +103,13 @@ memmap2 = { workspace = true }
 thiserror = { workspace = true }
 once_cell = { workspace = true }
 
+# `hex` is used by the HTTP server's BREACH-mitigation X-NB header
+# (AAP §0.7.4 / `crates/heavything/src/net/http/server.rs`) to encode
+# 1..=48 random bytes into ASCII-safe hex for transport in an HTTP
+# header value. The crate is also used in dev-dependencies for crypto
+# KAT vectors; declaring it here pulls it into release builds too.
+hex       = { workspace = true }
+
 # ---------------------------------------------------------------------------
 # Dev-dependencies — tests (AAP §0.8.4) and benchmarks (AAP §0.8.5, Gate 3).
 # These dependencies are NOT linked into release builds.
