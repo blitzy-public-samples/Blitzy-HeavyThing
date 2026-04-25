@@ -72,22 +72,63 @@
 //!   port of `bigint.inc` (the largest `.inc` file at 10,923
 //!   lines). Wraps `num-bigint`/`num-traits`/`num-integer` per
 //!   AAP §0.5.1.3 and §0.6.1.
+//! * [`dh`] — Diffie–Hellman parameter and keypair types backing
+//!   the SSH `diffie-hellman-group-exchange-sha256` key exchange
+//!   (RFC 4419); ports `dh_groups.inc` and supplies the RFC 3526
+//!   MODP Group 14 / 15 / 16 safe primes that replace the
+//!   intentionally-omitted `dh_pool_*.inc` static pools per
+//!   AAP §0.3.2.2.
+//! * [`x509`] — X.509 certificate parsing, PEM/DER bridging, SSH
+//!   host-key loading, and OCSP stapling support (refresh /
+//!   retry timers driven by `config::X509_OCSP_REFRESH` /
+//!   `X509_OCSP_RETRY`). Wraps `rustls`/`rustls-pemfile` per
+//!   AAP §0.5.1.3 and §0.7.2.3; preserves the FASM
+//!   "garbage-in/garbage-out" no-chain-validation default for
+//!   server-presented certs, delegating chain validation to
+//!   `rustls-webpki` at TLS handshake time.
 //!
-//! Additional crypto submodules (`dh`, `x509`) are scheduled in
-//! subsequent translation phases per AAP §0.5.1.3 and are not yet
-//! wired here. The aggregator exposes only the submodules that
-//! exist as source files today so that `cargo check` succeeds on
-//! the currently committed sub-set.
+//! The two FASM crypto includes that are NOT wired here are
+//! `htcrypt.inc` and `htxts.inc` — both are toplip-specific
+//! (cascaded AES-256 pipeline / XTS-AES file encryption) and the
+//! toplip showcase application is explicitly out of scope per
+//! AAP §0.3.2.2.
+//!
+//! # Bootstrapping
+//!
+//! [`rng::init`] is the **single** crypto-subsystem bootstrap
+//! entry point — it is invoked from `crate::init_args` Stage 9 per
+//! AAP §0.5.1.3 / §0.7.4.2. Every other crypto submodule uses lazy
+//! `OnceLock` initialization or has no global state at all, so
+//! callers do not need to perform additional setup beyond ensuring
+//! `init_args` has been called.
+//!
+//! Worker processes spawned via `nix::unistd::fork` re-seed the RNG
+//! through [`rng::reseed`] immediately after the fork, mirroring the
+//! `worker$entry` re-seed step in `rwasa/worker.inc` and matching the
+//! AAP §0.5.1.8 worker-lifecycle requirement.
 //!
 //! # Error handling
 //!
 //! All fallible crypto APIs surface the crate-wide
-//! [`CryptoError`](crate::error::CryptoError) enum (see
-//! [`crate::error`]). Every variant pairs a machine-readable
-//! discriminator with a short diagnostic string — see
-//! [`CryptoError::Hmac`](crate::error::CryptoError::Hmac) and
-//! [`CryptoError::Rng`](crate::error::CryptoError::Rng) for the two
-//! variants used by this subsystem today.
+//! [`CryptoError`] enum, which is **re-exported from this module**
+//! (see [`CryptoError`]) so consumers can write
+//! `heavything::crypto::CryptoError` rather than the longer
+//! `heavything::error::CryptoError` path — matching the assembly
+//! library's flat API surface per AAP §0.4.1.1 / §0.5.1.3. The eight
+//! variants are:
+//!
+//! | Variant            | Source                                 |
+//! |--------------------|----------------------------------------|
+//! | [`CryptoError::Aes`]    | [`aes`] cipher failure              |
+//! | [`CryptoError::Digest`] | [`md5`] / [`sha1`] / [`sha2`] failure |
+//! | [`CryptoError::Hmac`]   | [`hmac`] / [`hmac_drbg`] failure    |
+//! | [`CryptoError::Kdf`]    | [`pbkdf2`] / [`scrypt`] failure     |
+//! | [`CryptoError::Rng`]    | [`rng`] entropy / DRBG failure      |
+//! | [`CryptoError::Bignum`] | [`bigint`] arithmetic failure       |
+//! | [`CryptoError::X509`]   | [`x509`] parse / OCSP failure       |
+//! | [`CryptoError::Dh`]     | [`dh`] key-exchange failure         |
+//!
+//! The full variant definitions live in [`crate::error`].
 //!
 //! # Thread safety
 //!
@@ -100,18 +141,18 @@
 //! # `unsafe` audit
 //!
 //! Per AAP §0.7.4.1 this subsystem contains **exactly one** `unsafe`
-//! block, located in [`rng::read_tsc`] (private helper) wrapping the
-//! [`std::arch::x86_64::_rdtsc`] intrinsic for jitter-entropy
-//! contribution during seed gathering. The instruction is
-//! architecturally required on x86_64 and cannot trigger undefined
-//! behaviour on the `x86_64-unknown-linux-gnu` target; see the
-//! [`rng`] module documentation for the full safety invariant and
-//! `UNSAFE_AUDIT.md` for the corresponding audit entry. The [`aes`]
-//! submodule explicitly contributes zero `unsafe` sites — both
-//! `ring::aead` and the RustCrypto `aes` / `cbc` crates expose
-//! safe-only public APIs. All other crypto primitives derive
-//! correctness from `ring`, the RustCrypto stack, and the safe
-//! `Vec`/slice APIs.
+//! block, located in a private RDTSC helper inside [`rng`] that
+//! wraps the [`std::arch::x86_64::_rdtsc`] intrinsic for
+//! jitter-entropy contribution during seed gathering. The
+//! instruction is architecturally required on x86_64 and cannot
+//! trigger undefined behaviour on the `x86_64-unknown-linux-gnu`
+//! target; see the [`rng`] module documentation for the full safety
+//! invariant and `UNSAFE_AUDIT.md` for the corresponding audit
+//! entry. The [`aes`] submodule explicitly contributes zero
+//! `unsafe` sites — both `ring::aead` and the RustCrypto `aes` /
+//! `cbc` crates expose safe-only public APIs. All other crypto
+//! primitives derive correctness from `ring`, the RustCrypto stack,
+//! and the safe `Vec`/slice APIs.
 
 /// AES-128 / AES-192 / AES-256 block-cipher wrappers (CBC, single
 /// -block ECB, and AES-256-GCM AEAD) — port of `aes.inc`. The CBC
@@ -183,6 +224,22 @@ pub mod dh;
 /// **delegated** to `rustls-webpki` at TLS handshake time — this module
 /// does not perform path validation.
 pub mod x509;
+
+// ----------------------------------------------------------------------------
+// Flat re-exports for ergonomic consumer access.
+// ----------------------------------------------------------------------------
+
+/// Crate-wide cryptographic error enum — re-exported from
+/// [`crate::error`] so consumers can write
+/// `heavything::crypto::CryptoError` instead of the longer
+/// `heavything::error::CryptoError` path. This convenience matches
+/// the FASM library's flat (single-namespace) API surface per
+/// AAP §0.4.1.1 / §0.5.1.3. All eight variants
+/// (`Aes`, `Digest`, `Hmac`, `Kdf`, `Rng`, `Bignum`, `X509`, `Dh`)
+/// are carried through the re-export — see the
+/// [module-level docs](self#error-handling) for the variant table
+/// and [`crate::error::CryptoError`] for the canonical definitions.
+pub use crate::error::CryptoError;
 
 // Flat re-export of the primary DRBG type so consumers can write
 // `use heavything::crypto::HmacDrbg;` rather than the longer
