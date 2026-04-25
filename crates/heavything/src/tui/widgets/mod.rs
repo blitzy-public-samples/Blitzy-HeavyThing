@@ -82,10 +82,12 @@
 //!   character-by-character at a 50–160 ms human-typing cadence with
 //!   QWERTY-aware typo simulation (`tui_typist.inc`).
 //!
-//! Additional widget submodules (`panel`,
-//! `textbox`, `button`, `form`, `simpleauth`, `alert`,
-//! `progressbox`, `statusbar`,
-//! `splash`)
+//! - [`panel`] — bordered container widget with optional title and
+//!   a "guts" interior child where user widgets are placed
+//!   (`tui_panel.inc`).
+//!
+//! Additional widget submodules (`textbox`, `button`, `form`,
+//! `simpleauth`, `alert`, `progressbox`, `statusbar`, `splash`)
 //! are added by subsequent translation agents per the AAP
 //! file-by-file transformation plan.
 
@@ -98,6 +100,7 @@ pub mod label;
 pub mod lines;
 pub mod matrix;
 pub mod newsticker;
+pub mod panel;
 pub mod png;
 pub mod progressbar;
 pub mod spacers;
