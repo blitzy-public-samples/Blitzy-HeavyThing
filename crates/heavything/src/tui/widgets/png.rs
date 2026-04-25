@@ -1307,7 +1307,32 @@ impl Widget for PngWidget {
         // Copy cached buffer into the attribute buffer.
         // FASM lines 243–245: rsi = self.buffer, rdi = self.attr,
         // memcpy.
-        let buffer_ref = self.buffer.as_ref().expect("buffer was just populated above");
+        //
+        // INVARIANT: `self.buffer` is always `Some` when control
+        // reaches this point. There are exactly two possible paths
+        // through the preceding code:
+        //   (a) `needs_recompute` was `true` at line 1283, the `if`
+        //       block on line 1286 was entered, and line 1289
+        //       assigned `self.buffer = Some(buffer)`. Therefore
+        //       `self.buffer.is_some()` afterwards.
+        //   (b) `needs_recompute` was `false` at line 1283, which by
+        //       the disjunction's short-circuit semantics requires
+        //       `self.buffer.is_none()` to have been `false` — so
+        //       `self.buffer` was already `Some` before the
+        //       conditional and remains `Some`.
+        // We therefore use `match` with an explicit `unreachable!`
+        // arm rather than `expect()` so the panic call is unreachable
+        // by construction (no production code path can reach it) and
+        // AAP §0.8.3's no-`expect()`-in-production rule is honored.
+        let buffer_ref = match self.buffer.as_ref() {
+            Some(buffer) => buffer,
+            None => unreachable!(
+                "PngWidget::draw: self.buffer is guaranteed Some here — \
+                 either the needs_recompute branch above just assigned it, \
+                 or it was already Some before the conditional (see invariant \
+                 comment above)"
+            ),
+        };
         copy_attr_buffer(&mut self.state.attributes, buffer_ref);
 
         // FASM final step: vupdatedisplaylist.

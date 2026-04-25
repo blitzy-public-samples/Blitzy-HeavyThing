@@ -635,7 +635,23 @@ impl Force {
         // The two formulations produce identical floating-point
         // results modulo IEEE 754 rounding rules (associativity is
         // preserved by the strict left-to-right evaluation).
-        let strength_per_distance = self.strength / distance;
+        //
+        // Defensive divisor saturation: while the exact-zero
+        // `distance == 0.0` short-circuit at Step 4 (above) matches
+        // FASM `je .nothingtodo` at line 178 and is sufficient under
+        // realistic particle-effect inputs, an additional
+        // `.max(f64::EPSILON)` clamp protects against the
+        // theoretically possible sub-normal case where `distance` is
+        // a denormal floating-point value (`< 2.22e-308`) that
+        // survives the exact-zero check yet would still produce a
+        // finite-but-overflow-prone reciprocal. The clamp is a
+        // strict superset of the FASM behavior — when distance is
+        // ≥ EPSILON it is a true no-op, so behavioral parity with
+        // FASM is preserved for every realistic input. CP6 review
+        // finding (effect.rs MINOR — "radius/distance division
+        // guard") is addressed here.
+        let safe_distance = distance.max(f64::EPSILON);
+        let strength_per_distance = self.strength / safe_distance;
         particle.x_velocity += -dx_to_force * strength_per_distance;
         particle.y_velocity += -dy_to_force * strength_per_distance;
     }
@@ -1411,7 +1427,12 @@ impl ApplyForce {
         if self.radius > 0.0 && distance > self.radius {
             return;
         }
-        let strength_per_distance = self.strength / distance;
+        // Defensive divisor saturation — see [`Force::apply`] for the
+        // full rationale. Mirrors the same `.max(f64::EPSILON)` clamp
+        // applied to `Force::apply` so the snapshot path produces
+        // identical numerical results.
+        let safe_distance = distance.max(f64::EPSILON);
+        let strength_per_distance = self.strength / safe_distance;
         particle.x_velocity += -dx_to_force * strength_per_distance;
         particle.y_velocity += -dy_to_force * strength_per_distance;
     }

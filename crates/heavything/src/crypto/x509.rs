@@ -1501,6 +1501,25 @@ pub fn set_ocsp_hook(hook: OcspHook) -> bool {
 /// through the hook installed via [`set_ocsp_hook`]. Parses the
 /// response just enough to extract `producedAt` and `nextUpdate`.
 ///
+/// # Server-side cert validation posture (AAP §0.7.2.3)
+///
+/// **`fetch_ocsp` is exclusively a server-side staple-data
+/// helper** — it neither validates `cert` against any chain nor
+/// verifies the OCSP responder's signature. Per AAP §0.7.2.3 the
+/// HeavyThing TLS subsystem inherits the assembly library's
+/// **"garbage-in/garbage-out"** posture for server-presented
+/// certificates: the server *presents* its certificate as DER bytes
+/// without any side-of-server chain validation. The OCSP response
+/// fetched here is *stapled* into the rustls `CertifiedKey` (see
+/// [`update_ocsp_response`]) and shipped to the client; the client
+/// is responsible for verifying both the cert chain and the OCSP
+/// signature using its own webpki+webpki-roots trust anchors.
+///
+/// This contrasts with the client-side path used by `hnwatch` for
+/// HTTPS calls to `news.ycombinator.com`, where rustls + webpki +
+/// webpki-roots **do** perform full chain validation. The
+/// asymmetry is intentional and preserves FASM behavioral parity.
+///
 /// # Arguments
 ///
 /// * `cert` — DER bytes of the target end-entity certificate.

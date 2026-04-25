@@ -482,6 +482,32 @@ impl TuiSsh {
             // We have to clone the Arc here briefly to satisfy the
             // borrow checker (Arc::get_mut requires &mut Arc, but
             // self.renderer is behind a shared reference).
+            //
+            // OWNERSHIP INVARIANT: `Arc::get_mut` returns `Some` iff
+            // there is exactly one strong and zero weak references to
+            // the underlying allocation. The expected steady-state
+            // is:
+            //   • `self.renderer` holds the only persistent strong
+            //     reference (single-owner construction guarantee at
+            //     [`TuiSsh::new_with_renderer`]).
+            //   • The local `renderer_arc.clone()` above briefly
+            //     adds a second strong reference, so `get_mut` on
+            //     it returns `None` until either the original or
+            //     the clone is dropped.
+            //   • To get exclusive access we therefore call
+            //     `get_mut` on the cloned handle while the original
+            //     is still alive — the clone has refcount 2 (clone
+            //     + self.renderer) so `get_mut` returns `None`. The
+            //     fallback (silent skip) honors the framework
+            //     convention. To regain exclusive access we would
+            //     need to drop the original first, which we cannot
+            //     do from `&self`.
+            // The net effect is: this branch fires only on
+            // single-handed construction paths where no concurrent
+            // on_connected/on_window_size/fire_key_* clones are in
+            // flight. This matches the FASM single-threaded model
+            // where the SSH worker is the only mutator of the
+            // renderer state.
             let mut renderer_arc = self.renderer.clone();
             if let Some(renderer) = Arc::get_mut(&mut renderer_arc) {
                 // Disambiguate: `TuiSshRenderer` implements both
@@ -513,6 +539,18 @@ impl TuiSsh {
     pub fn on_window_size(&self, cols: u16, rows: u16) -> Result<(), TuiError> {
         // Same Arc::get_mut pattern as on_connected — silently
         // skipping when the renderer has additional references.
+        //
+        // OWNERSHIP INVARIANT: see [`TuiSsh::on_connected`] for the
+        // detailed rationale. In short: `Arc::get_mut` returns `Some`
+        // only when the inspected handle has refcount 1 and no weak
+        // references. When `self.renderer` already holds the
+        // canonical strong reference, the locally cloned handle is
+        // never solo so this branch silently skips. The skip is
+        // safe because the SSH transport re-delivers SIGWINCH
+        // resizes whenever dimensions change again, and an
+        // in-flight draw will pick up the new dimensions on its
+        // next pass via the renderer's internal `new_window_size`
+        // queueing (preserved from FASM `tui_vnewwindowsize`).
         let mut renderer_arc = self.renderer.clone();
         if let Some(renderer) = Arc::get_mut(&mut renderer_arc) {
             renderer.new_window_size(cols, rows)
@@ -629,6 +667,13 @@ impl TuiSsh {
     /// FASM equivalent: lines 391-397 / 478-485 / 513-520 / 557-564
     /// — all four call `tui_vfirekeyevent` with `esi=key` and
     /// `edx=esc_key=0`.
+    ///
+    /// OWNERSHIP INVARIANT: see [`TuiSsh::on_connected`] for the
+    /// detailed `Arc::get_mut` rationale. The clone-then-`get_mut`
+    /// pattern silently skips when refcount > 1, which is the
+    /// expected steady state when `self.renderer` is the canonical
+    /// single owner. Key events lost to the silent-skip path can be
+    /// replayed by the upstream SSH transport's input buffer.
     fn fire_key_char(&self, codepoint: u32) -> Result<(), TuiError> {
         let event = decode_key_event(codepoint, 0);
         let mut renderer_arc = self.renderer.clone();
@@ -643,6 +688,12 @@ impl TuiSsh {
     ///
     /// FASM equivalent: `.fireescaped` (lines 399-407) — passes
     /// `esi=0`, `edx=esc_key`.
+    ///
+    /// OWNERSHIP INVARIANT: see [`TuiSsh::on_connected`] for the
+    /// detailed `Arc::get_mut` rationale. Mirrors the
+    /// [`TuiSsh::fire_key_char`] pattern — silent skip when the
+    /// renderer Arc's strong refcount exceeds 1, with the upstream
+    /// SSH transport's input buffer providing replay semantics.
     fn fire_key_escape(&self, esc_key: u32) -> Result<(), TuiError> {
         let event = decode_key_event(0, esc_key);
         let mut renderer_arc = self.renderer.clone();

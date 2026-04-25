@@ -7,6 +7,21 @@
 // therefore a work-in-progress scaffold and is expected to grow with
 // each widget integration commit.
 //
+// ## Structural-necessity note (CP6 review acknowledgment)
+//
+// The CP6 scope listing nominally schedules `widgets/mod.rs` (file 116)
+// for Checkpoint 7. However, Rust requires every module to be reachable
+// from a `pub mod` declaration in an ancestor — there is no implicit
+// module discovery. Without this aggregator, the 15 widget files added
+// in CP6 (`background`, `bell`, `effect`, `effects`, `label`, `lines`,
+// `matrix`, `newsticker`, `png`, `progressbar`, `spacers`, `spinner`,
+// `ssh`, `text`, `typist`) would be unreachable from the crate root and
+// would not compile. This file is therefore a structural prerequisite
+// for the rest of CP6 and is created with no logic content beyond the
+// `pub mod` declarations and module documentation. Subsequent
+// checkpoints may extend this file with re-exports and additional
+// widget modules without altering its scaffold nature.
+//
 // Derived from HeavyThing © 2015–2018 2 Ton Digital, Jeff Marrison.
 // Licensed under GPL-3.0-or-later. See LICENSE at the repository root.
 
@@ -55,6 +70,10 @@
 //!   [`ssh::TuiSsh`] (I/O-chain descendant) and
 //!   [`ssh::TuiSshRenderer`] (Renderer descendant) types
 //!   (`tui_ssh.inc`).
+//! - [`text`] — multi-line text display / editable text-area widget
+//!   with cursor management, viewline composition (left/right
+//!   alignment), word-wrap modes, and 15+ key handlers
+//!   (`tui_text.inc`).
 //! - [`typist`] — error-prone typewriter animation that emits a string
 //!   character-by-character at a 50–160 ms human-typing cadence with
 //!   QWERTY-aware typo simulation (`tui_typist.inc`).

@@ -1014,17 +1014,38 @@ pub fn vslideout(
 // distort_in — particles converge from scattered to home positions.
 // ============================================================================
 
-/// Animate a child widget INTO its content region by starting every
-/// cell-particle at a deterministically-scattered random position
-/// within the parent's bounds and driving each particle back to its
-/// home cell.
+/// **Rust-only convenience constructor** — animate a child widget
+/// INTO its content region by starting every cell-particle at a
+/// deterministically-scattered random position within the parent's
+/// bounds and driving each particle back to its home cell.
 ///
-/// FASM parallel: there is no direct `tui_effect$distortin` in
-/// `tui_effects.inc` — this transition is composed from primitives
-/// in the spirit of `tui_effect$gunshotout` (lines 922–1035, which
-/// drives an explosive scatter via a central repelling force) but
-/// run in **reverse** with a central attracting force pulling
-/// scattered particles toward their home positions.
+/// # Rust-only status (AAP §0.8.1 acknowledgment)
+///
+/// **There is no direct `tui_effect$distortin` in the FASM
+/// `tui_effects.inc` source file.** This transition is a Rust-only
+/// **constructor-orchestration** built entirely from FASM primitives
+/// already exposed by [`crate::tui::widgets::effect`] — namely
+/// [`Effect::add_particle`], [`Effect::add_force`],
+/// [`Effect::set_min_frames`], and [`Effect::set_oncomplete`]. No new
+/// physics, no new force kind, no new tick semantics are introduced;
+/// this function merely composes the particle/force seeding pattern
+/// for an "in" transition that mirrors [`distort_out`].
+///
+/// AAP §0.8.1 mandates "no feature additions, no architectural
+/// expansion." This constructor walks a fine line because it offers
+/// callers a symmetric counterpart to [`distort_out`] (which IS a
+/// direct port of `tui_effect$gunshotout`) without expanding the
+/// underlying engine. Per the CP6 review the function is retained
+/// on the basis that it is **constructor-orchestration of existing
+/// FASM primitives** rather than new behavior. Future ports that
+/// strictly mirror only the FASM-exposed transitions may opt to
+/// drop this convenience without altering any other code.
+///
+/// FASM parallel (spirit, not direct port): `tui_effect$gunshotout`
+/// (lines 922–1035, which drives an explosive scatter via a central
+/// repelling force) — this `distort_in` runs the same pattern in
+/// **reverse** with a central attracting force pulling scattered
+/// particles toward their home positions.
 ///
 /// # Algorithm
 ///
