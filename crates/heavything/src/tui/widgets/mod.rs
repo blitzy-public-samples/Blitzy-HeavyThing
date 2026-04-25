@@ -21,6 +21,8 @@
 //!
 //! - [`background`] — solid-color rectangle base for ~12 descendants
 //!   (`tui_background.inc`).
+//! - [`effect`] — particle-system effect base widget powering the
+//!   six built-in transition effects (`tui_effect.inc`).
 //! - [`png`] — PNG-to-ANSI-256 image widget with xterm 256-color
 //!   quantization (`tui_png.inc`).
 //! - [`spacers`] — horizontal/vertical spacer + vertical-box layout
@@ -31,11 +33,12 @@
 //! Additional widget submodules (`panel`, `lines`, `label`, `text`,
 //! `textbox`, `button`, `form`, `simpleauth`, `alert`, `bell`,
 //! `progressbar`, `progressbox`, `datagrid`, `statusbar`,
-//! `newsticker`, `matrix`, `typist`, `splash`, `effect`, `effects`,
-//! `ssh`) are added by subsequent translation agents per the
-//! AAP file-by-file transformation plan.
+//! `newsticker`, `matrix`, `typist`, `splash`, `effects`, `ssh`)
+//! are added by subsequent translation agents per the AAP
+//! file-by-file transformation plan.
 
 pub mod background;
+pub mod effect;
 pub mod png;
 pub mod spacers;
 pub mod spinner;
