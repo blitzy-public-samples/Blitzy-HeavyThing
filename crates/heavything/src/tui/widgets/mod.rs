@@ -21,12 +21,15 @@
 //!
 //! - [`background`] — solid-color rectangle base for ~12 descendants
 //!   (`tui_background.inc`).
+//! - [`spacers`] — horizontal/vertical spacer + vertical-box layout
+//!   container (`tui_spacers.inc`).
 //!
 //! Additional widget submodules (`panel`, `lines`, `label`, `text`,
 //! `textbox`, `button`, `form`, `simpleauth`, `alert`, `bell`,
 //! `progressbar`, `progressbox`, `spinner`, `datagrid`, `statusbar`,
 //! `newsticker`, `matrix`, `typist`, `splash`, `effect`, `effects`,
-//! `png`, `ssh`, `spacers`) are added by subsequent translation
-//! agents per the AAP file-by-file transformation plan.
+//! `png`, `ssh`) are added by subsequent translation agents per the
+//! AAP file-by-file transformation plan.
 
 pub mod background;
+pub mod spacers;
