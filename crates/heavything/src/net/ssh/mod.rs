@@ -38,23 +38,27 @@
 //!
 //! Sub-protocol layers each live in their own file:
 //!
+//! * [`auth`] — SSH 2.0 authentication-protocol layer: `SSH_MSG_*`
+//!   constants, server-side `handle_userauth_request` / client-side
+//!   `build_client_userauth_request` frame construction, the
+//!   `AuthCallback` type registered by server applications (port of
+//!   the authentication fragments of `ssh.inc`, AAP §0.5.1.4).
 //! * [`cipher`] — AES-256-CBC encryption + HMAC-SHA-256 MAC computation
 //!   per packet (port of the cipher / MAC fragments of `ssh.inc`,
 //!   AAP §0.5.1.4). Owns [`CipherState`](cipher::CipherState) plus
 //!   the wire-format constants and packet-framing helpers.
+//! * [`compression`] — zlib deflate/inflate for the SSH transport
+//!   layer, including the four-valued `CompressionState` state machine
+//!   that implements both `zlib` (immediate) and `zlib@openssh.com`
+//!   (delayed-until-userauth) negotiation behaviours (port of the
+//!   compression fragments of `ssh.inc`, AAP §0.5.1.4).
 //!
-//! Other SSH submodules (`auth`, `compression`, `kex`, `server`) are
-//! scheduled in subsequent translation checkpoints per AAP §0.5.1.4
-//! and are not yet declared here. Declaring `pub mod foo;` without a
-//! backing source file is a hard compile error (rustc E0583), so
-//! premature declarations would break the whole workspace build under
-//! the Gate 2 `RUSTFLAGS="-D warnings"` discipline (AAP §0.8.3).
-//!
-//! Concrete sibling files (`auth.rs`, `compression.rs`) currently
-//! exist on disk but are intentionally **not** wired into the build
-//! tree from this `mod.rs`; the agents that own those files will add
-//! the corresponding `pub mod auth;` / `pub mod compression;`
-//! declarations when they perform their own module-level validation.
+//! Other SSH submodules (`kex`, `server`) are scheduled in subsequent
+//! translation checkpoints per AAP §0.5.1.4 and are not yet declared
+//! here. Declaring `pub mod foo;` without a backing source file is a
+//! hard compile error (rustc E0583), so premature declarations would
+//! break the whole workspace build under the Gate 2
+//! `RUSTFLAGS="-D warnings"` discipline (AAP §0.8.3).
 //!
 //! # Error handling
 //!
@@ -69,13 +73,28 @@
 //!
 //! # `unsafe` audit
 //!
-//! The [`cipher`] submodule contributes **zero** `unsafe` blocks to
-//! the crate's [`UNSAFE_AUDIT.md`](../../../../UNSAFE_AUDIT.md) tally
-//! (AAP §0.7.4.1). Correctness derives entirely from `aes` (raw
-//! AES-256 block cipher), `ring::hmac` (HMAC-SHA-256), and
-//! `ring::constant_time::verify_slices_are_equal` (timing-safe MAC
-//! comparison).
+//! None of the three currently-wired submodules ([`auth`], [`cipher`],
+//! [`compression`]) contribute any `unsafe` blocks to the crate's
+//! [`UNSAFE_AUDIT.md`](../../../../UNSAFE_AUDIT.md) tally
+//! (AAP §0.7.4.1). Correctness of the cipher / MAC layer derives
+//! entirely from `aes` (raw AES-256 block cipher), `ring::hmac`
+//! (HMAC-SHA-256), and `ring::constant_time::verify_slices_are_equal`
+//! (timing-safe MAC comparison). Correctness of the authentication
+//! layer derives from safe slice indexing and the crate-internal RNG.
+//! Correctness of the compression layer derives from the `flate2`
+//! crate's safe streaming API.
+
+/// SSH 2.0 authentication protocol — userauth frame parsing, callback
+/// invocation, and frame construction — port of the authentication
+/// fragments of `ssh.inc` (`.got_userauth_*`, `.got_service*`,
+/// `.got_ignore`, and callback registration `ssh$set_authcb`).
+pub mod auth;
 
 /// AES-256-CBC encryption + HMAC-SHA-256 MAC for the SSH transport
 /// layer — port of the cipher / MAC fragments of `ssh.inc`.
 pub mod cipher;
+
+/// zlib compression/decompression for the SSH transport layer —
+/// port of the compression fragments of `ssh.inc`, implementing both
+/// `zlib` (immediate) and `zlib@openssh.com` (delayed) negotiation.
+pub mod compression;

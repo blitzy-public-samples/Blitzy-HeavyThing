@@ -23,351 +23,431 @@
 
 This document inventories every `unsafe` block appearing in the Rust port of HeavyThing. The inventory is maintained per AAP §0.7.4 and Gate 6 of the validation framework. Every entry below includes:
 
-- **Location**: path within the workspace, with an approximate line range
+- **Location**: path within the workspace, with the actual line number
 - **Category**: one of {FFI-libc, FFI-nix, FFI-memmap2, raw-syscall, CPU-intrinsic, other}
 - **Functions called**: the specific unsafe-extern / unsafe-fn invocation(s) inside the block
 - **Reason**: why safe alternatives could not be used
 - **Safety invariant**: the preconditions that make the unsafe operation sound
-- **Integration test**: name of the test in `crates/heavything/tests/ffi_boundary.rs` that exercises this site, if applicable
+- **Integration test**: name of the test in `crates/heavything/tests/ffi_boundary.rs` that exercises this site, if applicable (aspirational tests — those referenced by the audit that do not yet exist — are marked as _pending_)
 
 Each site is traceable back to the assembly behavior it preserves. In the assembly baseline, the raw `syscall` instruction in the `.inc` files referenced below performed the same kernel interaction. The Rust port narrows these to well-defined FFI boundaries with documented invariants, as mandated by AAP §0.7.4.2.
 
 ## Audit Summary
 
-| Metric                                   | Value |
-|------------------------------------------|-------|
-| Total `unsafe` blocks                    | 18    |
-| Target budget                            | ≤ 50  |
-| Expected count per AAP §0.7.4.1          | 14–22 |
-| FFI / raw-syscall boundary sites         | 18    |
-| FFI / raw-syscall sites with coverage    | 18    |
+| Metric                                    | Value |
+|-------------------------------------------|-------|
+| Total production `unsafe` sites           | 23    |
+| Target budget (AAP §0.7.4)                | ≤ 50  |
+| Expected count per AAP §0.7.4.1           | 14–22 |
+| FFI / raw-syscall / intrinsic sites       | 23    |
 | Sites exceeding budget with justification | 0     |
+| Additional test-only `unsafe` sites       | 3     |
 
-_TBD_ fields are populated by `grep -rnE '\bunsafe\b' crates/ --include='*.rs'` and cross-referenced against this document during the Gate 6 audit pass. See `## Audit Maintenance` below for the regeneration procedure.
+The 23 production sites enumerated below were verified by grepping
+`\bunsafe\s+(fn|impl|\{|extern)` across `crates/heavything/src/` (26
+lexical matches — 23 production + 3 test-only blocks). Test-only sites
+are listed in the "Test-only Unsafe (Appendix)" section for
+completeness but do not count against the AAP §0.7.4 budget, which
+governs production code only.
 
-## libc FFI — TUI Raw Mode
+The overall count (23) is one site over the top of the AAP §0.7.4.1
+"expected 14–22" range. The excess is attributable to the sub-TUI
+signal-handler installation / restore machinery (nine sites in
+`tui/terminal.rs`, where AAP §0.7.4.1 anticipated roughly 6–8) plus
+the five `net/http/mimelike.rs` sites that implement the raw-pointer
+escape hatch needed for zero-copy mmap delivery of HTTP response
+bodies. Both site groups are isolated behind `RawTerminal` and
+`Mimelike::set_body_external` respectively, consumers interact via
+safe method surfaces, and every block carries a `// SAFETY:` comment
+naming the invariants. No single site requires the >50 justification
+paragraph carve-out described in the "Unsafe Minimization Principles"
+section.
 
-This category encapsulates the direct `libc` termios operations required to place the controlling terminal into raw mode. The Rust port mirrors the behavior preserved from `tui_terminal.inc`, which hand-coded `ioctl(TCGETS)` / `ioctl(TCSETSF)` / `ioctl(TIOCGWINSZ)` on STDIN_FILENO. Per AAP §0.7.3 and §0.7.4.1, three sites are expected in this category.
+### Breakdown by Category
 
-### `RawTerminal::enter` — Enter raw mode
+| Category       | Sites | Files                                                     |
+|----------------|-------|-----------------------------------------------------------|
+| FFI-libc       | 11    | `net/runtime.rs` (2), `tui/terminal.rs` (9)               |
+| FFI-nix        | 3     | `net/child.rs` (3)                                        |
+| FFI-memmap2    | 3     | `util/mapped.rs`, `util/mappedheap.rs`, `util/privmapped.rs` |
+| CPU-intrinsic  | 1     | `crypto/rng.rs`                                           |
+| Other          | 5     | `net/http/mimelike.rs` (marker traits + raw pointers)     |
+| Raw syscall    | 0     | —                                                         |
+| **Total**      | **23**|                                                           |
 
-- **Location**: `crates/heavything/src/tui/terminal.rs` (approx. line 40–60)
+## FFI-libc — TUI Raw Mode and Signal Handling
+
+This category encapsulates the direct `libc` termios operations required to place the controlling terminal into raw mode, plus the `sigaction` / `_exit` / `raise` / `write` / `tcsetattr` operations inside async-signal-safe signal handlers. The Rust port mirrors `tui_terminal.inc`, which hand-coded `ioctl(TCGETS)`/`ioctl(TCSETSF)`/`ioctl(TIOCGWINSZ)` on `STDIN_FILENO` and used `sigaction` for terminal-cleanup-on-crash. Per AAP §0.7.3 and §0.7.4.1 these sites are strictly necessary because the Rust std library does not expose a raw-mode abstraction, and the prompt explicitly prohibits `crossterm`/`termion`.
+
+### `RawTerminal::enter` — raw-mode acquisition and save-to-static
+
+- **Location**: `crates/heavything/src/tui/terminal.rs:203`
 - **Category**: FFI-libc
-- **Functions called**: `libc::tcgetattr`, `libc::cfmakeraw`, `libc::tcsetattr`
-- **Reason**: the `libc` crate declares these FFI functions as `unsafe extern "C"`; no safe wrapper exists in `std` for raw TTY mode manipulation, and the prompt explicitly prohibits `crossterm`/`termion` whose safe wrappers would otherwise apply
+- **Functions called**: `std::mem::zeroed::<termios>()`, `libc::tcgetattr`, `libc::cfmakeraw`, `libc::tcsetattr`, `ptr::addr_of_mut!(SAVED_TERMIOS).write(...)`
+- **Reason**: `libc` declares these FFI functions as `unsafe extern "C"`; no safe wrapper exists in `std` for raw TTY mode manipulation; the AAP prohibits `crossterm`/`termion` whose safe wrappers would otherwise apply. Consolidated into a single `unsafe { ... }` block per the "Group related unsafe into single blocks" minimization principle.
 - **Safety invariant**:
-  - `libc::STDIN_FILENO` is a valid process file descriptor for the lifetime of the process
-  - `libc::termios` is a POD (plain-old-data) type; `std::mem::zeroed()` produces a valid initial state before `tcgetattr` fills it
-  - The saved `original` termios is used only in the matching `Drop::drop` to restore state, during which the fd remains open
-  - No concurrent `tcsetattr` can race because `RawTerminal` is created once at TUI init and the struct is `!Sync`
-  - All three calls are consolidated into one `unsafe { … }` block with a single `// SAFETY:` comment per the minimization principle (§0.7.4.2)
-- **Integration test**: `ffi_boundary::test_raw_terminal_roundtrip`
+  - `STDIN_FILENO` is a valid process file descriptor for the lifetime of the process
+  - `termios` is POD; `mem::zeroed()` produces a valid initial state before `tcgetattr` fully overwrites it
+  - `cfmakeraw` mutates a local stack copy in place; its Linux libc-0.2 binding returns void
+  - `tcsetattr` applies atomically — on failure, the kernel leaves cooked mode intact, so the early-return path is sound
+  - `addr_of_mut!(SAVED_TERMIOS).write(MaybeUninit::new(t))` publishes the saved termios to a `static mut`; `INIT_GUARD.set(())` above succeeded exactly once, so this writer has no concurrent peer. No signal handlers are installed yet at this point, so no concurrent reader exists. `addr_of_mut!` avoids the `static_mut_refs` lint
+- **Integration test**: `test_raw_terminal_roundtrip` (_pending_; covered indirectly by the in-file unit tests at `tui/terminal.rs:530+`)
 
-### `RawTerminal::get_winsize` — Query terminal size
+### `RawTerminal::get_winsize` — TIOCGWINSZ ioctl
 
-- **Location**: `crates/heavything/src/tui/terminal.rs` (approx. line 70–90; awaiting implementation confirmation)
+- **Location**: `crates/heavything/src/tui/terminal.rs:267`
 - **Category**: FFI-libc
-- **Functions called**: `libc::ioctl(fd, TIOCGWINSZ, &mut winsize)`
-- **Reason**: `libc::ioctl` is variadic and FFI; `std` exposes no portable winsize query. Preserves the `syscall_ioctl` + `0x5413` (TIOCGWINSZ) invocation at `tui_terminal.inc:104–115` verbatim in semantics
+- **Functions called**: `libc::ioctl(self.stdin_fd, TIOCGWINSZ, *mut winsize)`, pointer dereference of `ws.as_ptr()` after success
+- **Reason**: `libc::ioctl` is variadic FFI with no safe wrapper in `std`; `TIOCGWINSZ` is Linux-specific and not exposed by `nix::pty`
 - **Safety invariant**:
-  - The file descriptor argument is either `libc::STDIN_FILENO` or a valid fd owned by a `tokio::net::TcpStream` representing the SSH channel (for `tui_ssh` rendering)
-  - `libc::winsize` is a POD type; zeroing is a valid initial state before ioctl fills it
-  - The third argument is a valid `&mut winsize` pointer with alignment and size matching the kernel's expectation
-- **Integration test**: `ffi_boundary::test_raw_terminal_roundtrip` (covers winsize query as part of enter flow); SIGWINCH-driven re-query covered by `ffi_boundary::test_sigwinch_handler`
+  - `self.stdin_fd` is valid for the life of the process
+  - `ws.as_mut_ptr()` is correctly aligned for `struct winsize`
+  - Only after the ioctl returns 0 do we dereference the storage; on non-zero rc the early-return path is taken without touching the uninitialized memory
+- **Integration test**: _pending_; covered by in-file unit tests
 
-### `RawTerminal::drop` — Restore original termios
+### `RawTerminal::install_signal_handlers` — sigaction install batch
 
-- **Location**: `crates/heavything/src/tui/terminal.rs` (approx. line 100–115; awaiting implementation confirmation)
+- **Location**: `crates/heavything/src/tui/terminal.rs:318`
 - **Category**: FFI-libc
-- **Functions called**: `libc::tcsetattr(STDIN_FILENO, TCSANOW, &original)`
-- **Reason**: `Drop` is the Rust idiom for RAII-based cleanup of the termios state captured in `enter`; the `libc::tcsetattr` FFI declaration is unsafe
+- **Functions called**: 5× `install_one` (itself `unsafe fn`, see next entry) for `SIGWINCH`, `SIGTERM`, `SIGINT`, `SIGSEGV`, `SIGABRT`
+- **Reason**: `sigaction(2)` is a C API expressed as `unsafe extern "C"` by `libc`; no safe Rust wrapper exposes the `SA_SIGINFO` 3-argument handler shape required by POSIX
 - **Safety invariant**:
-  - The `original` termios field was obtained from a successful `libc::tcgetattr` on the same fd in `enter`, so it is guaranteed to be a valid termios value the kernel will accept
-  - `Drop` runs exactly once per instance; double-restore is structurally impossible
-  - Errors from `tcsetattr` are intentionally ignored because `Drop` cannot propagate errors and a best-effort restore is correct on teardown (matches assembly `tui_terminal$cleanup` behavior at `tui_terminal.inc:163–175` which also ignores the ioctl return value)
-- **Integration test**: `ffi_boundary::test_raw_terminal_roundtrip` (exercises enter → query → drop → verify restore)
+  - Every handler passed in (`sigwinch_handler`, `sigterm_handler`, `sigint_handler`, `crash_handler`) is `extern "C" fn(c_int, *mut siginfo_t, *mut c_void)` and uses only async-signal-safe operations (atomic stores, `libc::write`, `libc::_exit`, `libc::raise`, `libc::tcsetattr`)
+  - The outer `install_signal_handlers` runs on the main thread before any tokio task is spawned, so no concurrent handler invocation can race with installation
+- **Integration test**: `test_sigwinch_handler` (_pending_)
 
-## libc FFI — Signal Handling
+### `unsafe fn install_one` — sigaction helper
 
-This category encapsulates the direct signal-handler registration required for TUI resize events, graceful teardown, and network-layer SIGPIPE suppression. Per AAP §0.7.3 and §0.7.4.1, 2–3 sites are expected. The assembly baseline in `tui_terminal.inc:256–286` uses raw `syscall_rt_sigaction` to install `stdio_winch` and `stdio_term` handlers; the Rust port prefers `tokio::signal::unix::signal` (safe) but falls back to `libc::sigaction` for cases where the default disposition needs to change (e.g., SIGPIPE → SIG_IGN).
-
-### `install_sigwinch_handler` — SIGWINCH registration
-
-- **Location**: `crates/heavything/src/tui/terminal.rs` (approx. line 120–140; awaiting implementation confirmation)
-- **Category**: FFI-libc (may be replaced by safe `tokio::signal::unix::signal(SignalKind::window_change())` — if so, this entry is removed and the count drops)
-- **Functions called**: `libc::sigaction` (only if tokio-native path proves insufficient)
-- **Reason**: TUI resize events require re-querying `TIOCGWINSZ` and re-laying-out the widget tree; matches assembly `tui_terminal.inc:261–270` which binds SIGWINCH (signal 28) to `stdio_winch`
-- **Safety invariant**:
-  - The `sigaction` struct is fully initialized (POD; `std::mem::zeroed()` starting state)
-  - The signal handler function is `extern "C" fn` with the `async-signal-safe` contract: it only sets an atomic flag or writes to a self-pipe/eventfd; it does not call non-signal-safe Rust code
-  - `sigaction(SIGWINCH, &new, null)` is called once during `RawTerminal::enter`; subsequent attempts are no-ops
-- **Integration test**: `ffi_boundary::test_sigwinch_handler` (sends SIGWINCH, verifies TUI resize handler fires)
-
-### `install_sigterm_sigint_handlers` — Graceful teardown
-
-- **Location**: `crates/heavything/src/tui/terminal.rs` and `crates/webserver/src/master.rs` (approx. line 150–180; awaiting implementation confirmation)
-- **Category**: FFI-libc (prefer `tokio::signal::unix::signal(SignalKind::terminate())` / `::interrupt()`)
-- **Functions called**: `libc::sigaction` (fallback); `tokio::signal::unix::signal` is safe and preferred
-- **Reason**: SIGTERM / SIGINT must trigger cooperative shutdown that calls `RawTerminal::drop` before process exit, preserving the behavior of assembly `tui_terminal.inc:271–285` which installs `stdio_term` on SIGTERM
-- **Safety invariant**:
-  - Handler function is `async-signal-safe`: it signals a `tokio::sync::Notify` or writes to a notify pipe; no heap allocation, no string formatting, no mutex acquisition inside the handler
-  - Registration happens exactly once per process (master process for `webserver`; main task for `sshtalk`/`hnwatch`)
-  - Teardown path invokes terminal restore before `std::process::exit`, matching the assembly `ctrl-c` path at `tui_terminal.inc:383–399`
-- **Integration test**: covered indirectly by `ffi_boundary::test_prctl_pdeathsig` (child receives SIGTERM on parent death); explicit signal-delivery test exists for master-worker orchestration
-
-### `install_sigpipe_ignore` — SIGPIPE SIG_IGN for network code
-
-- **Location**: `crates/heavything/src/lib.rs` in `heavything::init()` (approx. line 40–55; awaiting implementation confirmation)
-- **Category**: FFI-libc (or equivalent `nix::sys::signal::signal(Signal::SIGPIPE, SigHandler::SigIgn)` which still requires `unsafe` at call site)
-- **Functions called**: `libc::signal(SIGPIPE, SIG_IGN)` or `nix::sys::signal::signal`
-- **Reason**: network code that writes to closed sockets must receive `EPIPE` as a return value rather than a process-killing signal; this mirrors the long-standing Linux daemon idiom the assembly baseline implicitly relies on when spawning workers under `epoll.inc`
-- **Safety invariant**:
-  - Called exactly once from `heavything::init()`, before any network activity begins
-  - Does not race with any other signal registration because `init()` runs single-threaded at program start
-  - The library contract documents that callers should not re-register SIGPIPE after `init()`; doing so invokes undefined behavior per the `nix`/`libc` contract but is user error
-- **Integration test**: indirectly verified by the `net_integration` test suite (any HTTP write to a closed TCP peer returns `Err(io::ErrorKind::BrokenPipe)` instead of aborting the process)
-
-## libc FFI — Runtime (epoll.inc port)
-
-This category encapsulates the two `unsafe` blocks required by the `net::runtime` module — the Rust port of the 3,512-line FASM `epoll.inc`. Per AAP §0.7.4.1, exactly two sites are expected in this category: one for the ulimit check, one for the socket-option application on freshly accepted streams. Both sites are confined to `crates/heavything/src/net/runtime.rs` and are exercised by dedicated integration tests in `crates/heavything/tests/ffi_boundary.rs`.
-
-### `runtime::check_ulimit` — `getrlimit(RLIMIT_NOFILE)` + optional `setrlimit`
-
-- **Location**: `crates/heavything/src/net/runtime.rs:509` (the `unsafe { … }` expression spanning the body of [`check_ulimit`]; the accompanying `// SAFETY:` documentation block spans lines 489–508)
+- **Location**: `crates/heavything/src/tui/terminal.rs:350`
 - **Category**: FFI-libc
-- **Functions called**: `libc::getrlimit(libc::RLIMIT_NOFILE, *mut libc::rlimit)` (called twice — before and after the raise attempt), `libc::setrlimit(libc::RLIMIT_NOFILE, *const libc::rlimit)` (called once, return value discarded)
-- **Reason**: the Stage 10 init check in `lib::init()` must verify `RLIMIT_NOFILE ≥ EPOLL_MINFDS` (4096) and attempt to raise the soft limit up to the hard limit when below threshold — preserving the FASM `epoll.inc:1160–1250` behaviour that exits with code 97 when the limit cannot be satisfied. Neither `std::process` nor `nix::sys::resource` in the workspace's pinned dependency set (`nix = "0.29"` with features `user`, `process`, `fs`, `socket`, `signal`, `mman` per AAP §0.6.1) exposes `getrlimit`/`setrlimit` wrappers, leaving direct `libc` FFI as the sole path
+- **Functions called**: `ptr::write_bytes` (zero-initialize sigaction), `libc::sigemptyset`, `libc::sigaction`
+- **Reason**: `unsafe fn` declaration forces callers to make explicit their promise that `handler` is async-signal-safe. The function body contains two `unsafe` sub-operations (write_bytes of a POD struct; sigaction syscall); grouping them under the outer `unsafe fn` is the idiomatic Rust pattern.
 - **Safety invariant**:
-  - `libc::RLIMIT_NOFILE` is a standard POSIX resource identifier (`c_int` constant exposed by libc); no runtime validation is required
-  - `libc::rlimit` is a plain-old-data struct with two `rlim_t` (unsigned integer — `u64` on Linux x86_64) fields `rlim_cur` and `rlim_max`; it has no niche requirements, making `std::mem::zeroed::<rlimit>()` a valid initial state that is fully overwritten by the first `getrlimit` call before any read
-  - All three syscalls pass pointers to local stack variables (`rl` and `rl2`) whose lifetimes extend through the `unsafe` block and whose alignment matches the C struct layout
-  - The `setrlimit` return value is intentionally discarded via `let _ = …`: if the process lacks `CAP_SYS_RESOURCE` the syscall fails silently and the subsequent second `getrlimit` observes the shortfall, producing a clean `InitError::UlimitTooLow` rather than a bespoke error variant. This matches the FASM baseline which likewise treats `setrlimit` as best-effort
-  - The `getrlimit` comparison uses `rl.rlim_cur >= min` where `min` is `crate::config::EPOLL_MINFDS as libc::rlim_t`; on Linux x86_64 the cast is a no-op (both sides are `u64`) but documents intent and guards against libc definitions where `rlim_t` might be a different width
-  - The three calls are consolidated into one `unsafe { … }` block per the minimization principle (§0.7.4.2), reducing the block count below what three separate blocks would produce
-- **Integration test**: `ffi_boundary::test_check_ulimit` (invokes `check_ulimit` in a forked child so the per-process limit can be mutated without affecting the test harness; verifies both the success and `InitError::UlimitTooLow` paths)
+  - `handler` (caller's argument) is a valid `extern "C" fn(c_int, *mut siginfo_t, *mut c_void)` pointer whose body is async-signal-safe
+  - `ptr::write_bytes(sa.as_mut_ptr().cast::<u8>(), 0, size_of::<sigaction>())` produces a valid `sigaction` because: (a) `sa_restorer` is `Option<extern "C" fn()>` whose `None` representation is all-zeros (niche), (b) `sa_mask` (sigset_t) and `sa_flags` are POD
+  - `sigaction` reads the struct synchronously; the local `sa` may be dropped after the call
+- **Integration test**: exercised transitively by `test_sigwinch_handler` (_pending_)
 
-### `runtime::apply_stream_defaults` — `setsockopt(SO_LINGER, SO_KEEPALIVE)`
+### `sigterm_handler` — _exit after cleanup
 
-- **Location**: `crates/heavything/src/net/runtime.rs:619` (the `unsafe { … }` expression spanning the body of [`apply_stream_defaults`]; the accompanying `// SAFETY:` documentation block spans lines 596–618)
+- **Location**: `crates/heavything/src/tui/terminal.rs:406`
 - **Category**: FFI-libc
-- **Functions called**: `libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_LINGER, *const libc::linger, libc::socklen_t)` (unconditional), `libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_KEEPALIVE, *const libc::c_int, libc::socklen_t)` (gated on `EPOLL_KEEPALIVE`)
-- **Reason**: every freshly accepted [`tokio::net::TcpStream`] must have `SO_LINGER=(l_onoff=1, l_linger=0)` and `SO_KEEPALIVE=1` applied to preserve the FASM behaviour at `epoll.inc:1438–1490` (force RST-on-close to avoid TIME_WAIT accumulation under sustained load; enable TCP keepalive probing on idle connections). `TCP_NODELAY=1` is applied via the safe [`TcpStream::set_nodelay`] wrapper OUTSIDE the unsafe block. The remaining two options cannot be set via any safe wrapper in the pinned dependency set: `std::net` / `tokio` do not expose `SO_LINGER` configuration on `TcpStream`, and AAP §0.6.1 forbids adding `socket2` to the workspace inventory. Direct `libc::setsockopt` is the sole available path
+- **Functions called**: `libc::_exit(0)`
+- **Reason**: `_exit` is async-signal-safe and terminates the process without running destructors — which is explicitly what we want, since we just restored the terminal via `cleanup_terminal_from_signal` and running other destructors from a signal context could deadlock on mutexes held elsewhere
+- **Safety invariant**: `_exit` has no preconditions beyond "the process is still alive"; it cannot fail
+- **Integration test**: _pending_ (requires sending `SIGTERM` to a subprocess)
+
+### `sigint_handler` — _exit after cleanup
+
+- **Location**: `crates/heavything/src/tui/terminal.rs:419`
+- **Category**: FFI-libc
+- **Functions called**: `libc::_exit(130)` (POSIX convention `128 + SIGINT`)
+- **Reason**: identical to `sigterm_handler`; the exit code is the only difference
+- **Safety invariant**: identical to `sigterm_handler`
+- **Integration test**: _pending_ (requires sending `SIGINT` to a subprocess)
+
+### `crash_handler` — SIG_DFL reset + raise
+
+- **Location**: `crates/heavything/src/tui/terminal.rs:434`
+- **Category**: FFI-libc
+- **Functions called**: `ptr::write_bytes` (zero-initialize sigaction), field writes through `sa.as_mut_ptr()`, `libc::sigaction`, `libc::raise`
+- **Reason**: on `SIGSEGV`/`SIGABRT` we restore the terminal best-effort, then reset the handler to `SIG_DFL` and `raise` the signal so the kernel can produce a core dump. Both `sigaction` and `raise` are async-signal-safe.
 - **Safety invariant**:
-  - `stream` is borrowed for the duration of the function; its underlying fd (obtained via `stream.as_raw_fd()` — a safe call on the `AsRawFd` trait) remains open and refers to the same socket throughout both `setsockopt` invocations
-  - The first call passes a pointer to a local `libc::linger` value (`ling`) whose lifetime extends through the unsafe block. `libc::linger` is a POD C struct with two `c_int` fields (`l_onoff`, `l_linger`); the kernel reads them as a byte sequence of size `std::mem::size_of::<libc::linger>()`, which is what is passed as `optlen`
-  - The second call passes a pointer to a local `libc::c_int` value (`one = 1`) whose lifetime extends through the unsafe block. `optlen` is `std::mem::size_of::<libc::c_int>()` (4 on Linux x86_64)
-  - Both calls use `libc::SOL_SOCKET` (level 1) and the option identifiers `libc::SO_LINGER` / `libc::SO_KEEPALIVE` exposed as the correct `c_int` constants by the `libc` crate — no integer literals are hardcoded
-  - The return values are intentionally discarded (assigned to `_`): setsockopt failures on a socket that has already been closed by the peer manifest as subsequent read/write failures through the [`IoChain`](../src/net/io.rs) error path, which matches the best-effort posture of the FASM baseline
-  - Both `setsockopt` calls are consolidated into a single `unsafe { … }` block per the minimization principle (§0.7.4.2)
-- **Integration test**: `ffi_boundary::test_stream_defaults_roundtrip` (binds a loopback listener, establishes a connected `TcpStream`, applies `apply_stream_defaults`, then verifies the three effects via `libc::getsockopt` on `TCP_NODELAY` / `SO_LINGER` / `SO_KEEPALIVE`)
+  - `ptr::write_bytes(sa.as_mut_ptr().cast::<u8>(), 0, size_of::<sigaction>())` is sound because `SIG_DFL` is defined as `0 as sighandler_t` and `sa_restorer` is `Option<extern "C" fn()>` whose `None` is all-zeros
+  - `sigaction(sig, sa.as_ptr(), null_mut())` reads `sa` synchronously
+  - `raise(sig)` has no memory effects
+- **Integration test**: _pending_ (requires SIGSEGV/SIGABRT induction in a subprocess)
 
-## nix FFI — Process Management
+### `cleanup_terminal_from_signal` — write + tcsetattr from signal context
 
-The `nix` crate wraps Linux-specific syscalls with Rust-friendly APIs; many `nix` calls internally use `unsafe` but expose a safe or `unsafe`-accepting API. Per AAP §0.7.4.1, 3–4 sites in this category plus 2 more for setuid/setgid. All sites are concentrated in the `webserver` master-process path, mirroring the fork/privilege-drop sequence from `rwasa/master.inc`.
+- **Location**: `crates/heavything/src/tui/terminal.rs:476`
+- **Category**: FFI-libc
+- **Functions called**: 2× `libc::write(STDOUT_FILENO, ...)`, `libc::tcsetattr(STDIN_FILENO, TCSANOW, *const termios)`; cast of `*const MaybeUninit<termios>` to `*const termios`
+- **Reason**: all three are async-signal-safe per POSIX `signal-safety(7)` and are invoked from signal handlers; no Rust-level alternative is async-signal-safe
+- **Safety invariant**:
+  - `STDOUT_FILENO` (1) and `STDIN_FILENO` (0) are valid FDs for any process with an attached terminal
+  - The byte slices (`ansi::SHOW_CURSOR`, `ansi::ALT_SCREEN_EXIT`) are `&'static [u8]` constants with valid pointers and lengths
+  - The cast `*const MaybeUninit<termios>` → `*const termios` is layout-sound (`MaybeUninit<T>` is `#[repr(transparent)]` over `T`), and the inner value is guaranteed initialized because `RAW_MODE_ACTIVE.load(SeqCst) == true` synchronizes with the `SeqCst` store performed after `SAVED_TERMIOS.write()` in `RawTerminal::enter`
+- **Integration test**: exercised transitively by `test_sigterm_handler` / `test_sigint_handler` (_pending_)
 
-### `Master::spawn_workers` — Fork worker processes
+### `RawTerminal::drop` — tcsetattr restore
 
-- **Location**: `crates/webserver/src/master.rs` (approx. line 120–160; awaiting implementation confirmation)
+- **Location**: `crates/heavything/src/tui/terminal.rs:519`
+- **Category**: FFI-libc
+- **Functions called**: `libc::tcsetattr(self.stdin_fd, TCSANOW, &self.original)`
+- **Reason**: `tcsetattr` is `unsafe extern "C"` with no safe wrapper. `self.original` is owned by-value on the `RawTerminal` struct (rather than being read from `SAVED_TERMIOS`) so the Drop path does not need any unsafe static access beyond the `tcsetattr` call itself
+- **Safety invariant**:
+  - `self.stdin_fd` is valid (owned by the process; set at `enter` time)
+  - `&self.original` is a well-aligned pointer to initialized POD storage (captured by `tcgetattr` in `enter`)
+  - Return value intentionally discarded — on Drop there is no caller to propagate an error to
+- **Integration test**: `test_raw_terminal_roundtrip` (_pending_; drop is invoked at end of every in-file unit test via RAII)
+
+## FFI-libc — Runtime / `epoll.inc` backend
+
+Per AAP §0.5.1.4 / §0.7.1, the `tokio` + `mio` runtime replaces `epoll.inc`, but two specific syscalls at the boundary have no safe wrapper in `std` or `tokio`:
+
+### `runtime::check_ulimit` — getrlimit / setrlimit
+
+- **Location**: `crates/heavything/src/net/runtime.rs:509`
+- **Category**: FFI-libc
+- **Functions called**: `std::mem::zeroed::<libc::rlimit>()`, `libc::getrlimit`, `libc::setrlimit`
+- **Reason**: no safe Rust wrapper in `std` exposes ulimit-raising behaviour; `nix::sys::resource::{getrlimit, setrlimit}` is available but was not pulled in because the nix feature matrix for this functionality would require additional compile-time features beyond the ones already enabled per AAP §0.6.1
+- **Safety invariant**:
+  - `libc::RLIMIT_NOFILE` is a valid `c_int` resource identifier
+  - `libc::rlimit` is POD with two `rlim_t` fields; `mem::zeroed()` produces a valid initial state
+  - `&mut rl` and `&mut rl2` satisfy the `*mut rlimit` pointer shape; lifetime of both extends through the call
+  - `setrlimit` return value is discarded — if the process lacks `CAP_SYS_RESOURCE` the syscall fails silently, and the subsequent `getrlimit` detects the shortfall cleanly
+- **Integration test**: `test_check_ulimit` (`tests/ffi_boundary.rs:787`)
+
+### `runtime::apply_stream_defaults` — setsockopt
+
+- **Location**: `crates/heavything/src/net/runtime.rs:619`
+- **Category**: FFI-libc
+- **Functions called**: `libc::setsockopt(fd, SOL_SOCKET, SO_LINGER, ...)`, `libc::setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, ...)` (latter gated by `crate::config::EPOLL_KEEPALIVE`)
+- **Reason**: neither `std::net` nor `tokio` expose `SO_LINGER` configuration; AAP §0.6.1 prohibits pulling in `socket2` (not in the dependency inventory)
+- **Safety invariant**:
+  - `fd` is a valid socket file descriptor for the duration of the call (obtained via `AsRawFd::as_raw_fd` on an owned `tokio::net::TcpStream`)
+  - `libc::linger` and `libc::c_int` are POD; their lifetimes extend through the `setsockopt` call
+  - Both calls use `SOL_SOCKET` (level 1) with valid `SO_LINGER` / `SO_KEEPALIVE` option identifiers from `libc`
+  - Return values discarded per FASM best-effort baseline (`epoll.inc:1438–1490`); setsockopt failures surface later as read/write errors on the stream
+- **Integration test**: `test_stream_defaults_roundtrip` (`tests/ffi_boundary.rs:939`)
+
+## FFI-nix — Process Management
+
+Per AAP §0.5.1.4 and §0.7.4.1, `nix` wraps the process-management syscalls (`fork`, `setuid`, `setgid`, `prctl`), but the returned raw-fd values from `socketpair` must be handed off to `std::os::unix::net::UnixStream::from_raw_fd`, which remains `unsafe fn` regardless of the `nix` wrapper.
+
+### `net::child::spawn_child` — fork
+
+- **Location**: `crates/heavything/src/net/child.rs:910`
 - **Category**: FFI-nix
-- **Functions called**: `nix::unistd::fork` (returns `Result<ForkResult>`; marked `unsafe fn` at call site because fork's behavior in multi-threaded programs is notoriously fragile)
-- **Reason**: the master-worker process model in AAP §0.4.1 requires `fork` semantics; threads would not replicate `PR_SET_PDEATHSIG` and per-process isolation required by the assembly baseline at `epoll_child.inc:61–65`
+- **Functions called**: `nix::unistd::fork`
+- **Reason**: `fork(2)` is fundamentally unsafe in a multi-threaded program — only the calling thread survives the fork, and any mutex held by another thread deadlocks if the child attempts to take it. `nix` exposes this correctly as `unsafe fn fork()` so callers acknowledge the contract
 - **Safety invariant**:
-  - `fork` is called before any thread in the master process has been spawned (single-threaded at the point of fork); no `tokio::runtime::Runtime` has been built yet on the master side
-  - The worker's first action after fork is to set `prctl(PR_SET_PDEATHSIG, SIGTERM)` so the worker cannot survive master death, matching the assembly at `epoll_child.inc:110–113`
-  - The master does not share any `tokio::runtime::Runtime` with its children — each worker builds its own runtime after fork, preserving the per-process epoll isolation the assembly relies on
-  - Fork failures are handled by returning an error to `main`, which exits with the `webserver`-specific failure code; children never reach a "partially constructed" runtime state
-- **Integration test**: `ffi_boundary::test_fork_workers`
-
-### `Master::drop_privileges` — `setgid` call
-
-- **Location**: `crates/webserver/src/master.rs` (approx. line 200–215; awaiting implementation confirmation)
-- **Category**: FFI-nix
-- **Functions called**: `nix::unistd::setgid(Gid::from_raw(gid))`
-- **Reason**: dropping group privileges after binding low-numbered ports (e.g., 80/443) is a standard root-drop pattern required for security; preserved from `rwasa/master.inc` privilege-drop sequence
-- **Safety invariant**:
-  - Called after all privileged operations (port bind, PEM file read) have completed successfully
-  - Called BEFORE `setuid` — the `setgid → setuid` ordering is security-critical per AAP §0.1.1; reversing it permits the reversed code path to fail `setgid` after losing root, leaving partial privileges intact
-  - Called in the master process only, never in workers (workers inherit the already-dropped credentials via `fork`)
-  - Errors are treated as fatal: the process exits with a non-zero status rather than continuing with root still held
-- **Integration test**: `ffi_boundary::test_setuid_setgid_drop` (requires `HEAVYTHING_LIVE_TESTS=1` and a privileged runner; gated by env var)
-
-### `Master::drop_privileges` — `setuid` call
-
-- **Location**: `crates/webserver/src/master.rs` (approx. line 215–230; awaiting implementation confirmation)
-- **Category**: FFI-nix
-- **Functions called**: `nix::unistd::setuid(Uid::from_raw(uid))`
-- **Reason**: dropping user privileges to the `-runas` target after bind; mandated by `rwasa`'s operational model
-- **Safety invariant**:
-  - Called strictly AFTER the matching `setgid` call — see the §0.1.1 ordering rationale in the entry above
-  - Called in the master process only, once, on a privileged starting user (typically root); calling with an already-dropped UID is a harmless no-op but is treated as an error for defensive programming
-  - After successful completion, no code path in the master attempts to regain privileges; any call to `setuid(0)` later would fail (and the code does not attempt it)
-  - Errors are treated as fatal
-- **Integration test**: `ffi_boundary::test_setuid_setgid_drop` (covers combined setgid+setuid path)
-
-### `Worker::init` — `prctl(PR_SET_PDEATHSIG, SIGTERM)`
-
-- **Location**: `crates/webserver/src/worker.rs` (approx. line 40–55; awaiting implementation confirmation)
-- **Category**: FFI-nix
-- **Functions called**: `nix::sys::prctl::set_pdeathsig(Signal::SIGTERM)`
-- **Reason**: ensures workers die when the master dies, preventing orphaned worker processes; direct preservation of `epoll_child.inc:110–113` which installs `PR_SET_PDEATHSIG` with `SIGTERM` on the child immediately after fork
-- **Safety invariant**:
-  - Called as the very first action in the child branch of `fork()`, before any network I/O or tokio runtime construction
-  - Signal number `SIGTERM` (15) matches the assembly baseline; changing it would be a behavioral regression
-  - The `prctl` call is per-thread on Linux, but because the child is single-threaded immediately post-fork, per-thread semantics coincide with per-process semantics here
-- **Integration test**: `ffi_boundary::test_prctl_pdeathsig` (forks a worker, kills the master, verifies the worker received SIGTERM)
-
-### `net::child::spawn_child` — `fork(2)` syscall
-
-- **Location**: `crates/heavything/src/net/child.rs:924` (within `spawn_child`)
-- **Category**: FFI-nix
-- **Functions called**: `nix::unistd::fork()` (returns `Result<ForkResult>`; marked `unsafe fn` because `fork()` in a multi-threaded program is notoriously fragile — after `fork`, only async-signal-safe functions may be called in the child until `exec` or `_exit`)
-- **Reason**: preserves the master-worker process model from `epoll_child.inc:58–113` which forks a child per worker, installs `PR_SET_PDEATHSIG`, and wraps the parent-side socketpair end for IPC; threads would not replicate per-process isolation or `PR_SET_PDEATHSIG` semantics. This is the primary `fork` site for `sshtalk`, `hnwatch`, and worker-side process spawning in the `heavything` library, complementing the `webserver`-specific `Master::spawn_workers` site above
-- **Safety invariant**:
-  - Prior to `fork()`, the socketpair is already created (`socketpair(AF_UNIX, SOCK_STREAM, SOCK_CLOEXEC)`); no tokio runtime has been constructed on behalf of this `spawn_child` call in a way that crosses the fork boundary (the caller is permitted to be inside a tokio runtime, but the child must build its own after fork per AAP §0.7.1.2)
-  - The child code path between `fork()` and the user-provided `child_main` closure performs only async-signal-safe operations: `prctl(PR_SET_PDEATHSIG, SIGTERM)` and `close(parent_fd)`; the subsequent `from_raw_fd` on the child's socketpair end is pure memory manipulation with no syscalls
-  - The child's first syscall is `prctl(PR_SET_PDEATHSIG, SIGTERM)` (matches the assembly baseline at `epoll_child.inc:110–113`), guaranteeing the child dies if the parent dies before `child_main` completes setup
-  - The caller of `spawn_child` is contractually required to make `child_main` itself async-signal-safe or to confine any non-async-signal-safe work (including tokio runtime construction and crypto RNG reseeding per AAP §0.7.4.2) to paths that do not signal before full initialization
-  - Fork failures bubble up via `NetError::Fork(nix::Error)` and never leave the parent in a "partial child" state — no PID is registered in `CHILD_PIDS` until fork succeeds and parent-side setup completes
-- **Integration test**: `ffi_boundary::test_fork_spawn_child_basic` (forks a child, exchanges a `LinkMessage::Log` round-trip over the socketpair, confirms clean child exit via `waitpid`)
+  - Production callers (`webserver` master per AAP §0.5.1.8) fork before spawning additional threads
+  - Tests use `#[tokio::test(flavor = "current_thread")]` to stay single-threaded
+  - On fork failure both socketpair fds are closed before returning, preventing fd leaks
+- **Integration test**: `test_fork_spawn_child_basic` (`tests/ffi_boundary.rs:328`), `test_prctl_pdeathsig`, `test_killall_children_on_drop`
 
 ### `net::child::spawn_child` — parent-side `UnixStream::from_raw_fd`
 
-- **Location**: `crates/heavything/src/net/child.rs:958` (parent branch after successful `fork`)
-- **Category**: FFI-nix (raw fd construction)
-- **Functions called**: `std::os::unix::net::UnixStream::from_raw_fd(parent_fd)` (unsafe because the caller asserts exclusive ownership of the fd and its suitability for `UnixStream` semantics)
-- **Reason**: the socketpair created by `nix::sys::socket::socketpair` returns `OwnedFd` pairs, but the parent-side fd must be transferred into a `std::os::unix::net::UnixStream` so that `set_nonblocking(true)` and `tokio::net::UnixStream::from_std` can build the async wrapper used by `ChildProcess::send_message` / `ChildProcess::recv_message`. `from_raw_fd` is the only API that performs this conversion without an intermediate allocation or syscall
+- **Location**: `crates/heavything/src/net/child.rs:945`
+- **Category**: FFI-nix (bridging `nix::socketpair` → `std::os::unix::net::UnixStream`)
+- **Functions called**: `std::os::unix::net::UnixStream::from_raw_fd(parent_fd)`
+- **Reason**: `UnixStream::from_raw_fd` is declared `unsafe fn` because it asserts exclusive ownership of the fd; no safe alternative exists for bridging from `nix::socketpair`'s `OwnedFd` pair into a `tokio::net::UnixStream` (which requires a `std::os::unix::net::UnixStream` first)
 - **Safety invariant**:
-  - `parent_fd` is obtained from `OwnedFd::into_raw_fd()` immediately before `fork()`, which consumes the `OwnedFd` and suppresses its `Drop` — the raw fd is therefore uniquely owned at the point of transfer
-  - The parent branch runs `close(child_fd)` on the sibling fd before `from_raw_fd(parent_fd)`, ensuring no aliasing of the parent's fd within the parent process
-  - After `from_raw_fd`, the `UnixStream` takes exclusive ownership and will `close` the fd on drop; no other code path accesses `parent_fd` by raw integer after this line
-  - If `set_nonblocking` or `tokio::net::UnixStream::from_std` fail after this transfer, the `UnixStream` is still dropped correctly (closing the fd) before the error bubbles up; the child is cleaned up via a pre-emptive `SIGTERM` in the same error path
-- **Integration test**: `ffi_boundary::test_fork_spawn_child_basic` (constructs a real `ChildProcess`, validates async I/O through the wrapped `UnixStream`)
+  - `parent_fd` was just returned by `socketpair(2)` and converted from `OwnedFd` via `into_raw_fd`, suppressing the original `Drop`. No other code path has observed or re-used this fd
+  - The child branch of the fork `close`s its duplicate of `parent_fd` as the first operation, so the fd is exclusively owned by the parent here
+  - Ownership transfers to the `UnixStream`; no double-close because we do not call `close(parent_fd)` explicitly in the parent branch
+- **Integration test**: `test_fork_spawn_child_basic` (`tests/ffi_boundary.rs:328`)
 
 ### `net::child::spawn_child` — child-side `UnixStream::from_raw_fd`
 
-- **Location**: `crates/heavything/src/net/child.rs:1029` (child branch after `prctl` and `close(parent_fd)`)
-- **Category**: FFI-nix (raw fd construction)
-- **Functions called**: `std::os::unix::net::UnixStream::from_raw_fd(child_fd)` (same unsafety contract as the parent-side call)
-- **Reason**: the child process needs its side of the socketpair wrapped in a `std::os::unix::net::UnixStream` so it can be handed to the caller-supplied `child_main` closure. `from_raw_fd` is the sole conversion path and matches the parent-side pattern
+- **Location**: `crates/heavything/src/net/child.rs:1011`
+- **Category**: FFI-nix
+- **Functions called**: `std::os::unix::net::UnixStream::from_raw_fd(child_fd)`
+- **Reason**: identical to parent-side — the child needs to hand off its end of the socketpair to `std::os::unix::net::UnixStream` before further tokio wrapping
 - **Safety invariant**:
-  - `child_fd` is obtained from `OwnedFd::into_raw_fd()` on the parent side of `fork` and inherited through fork — the child has a valid, open copy
-  - The child calls `close(parent_fd)` (the sibling fd) immediately before this line, ensuring no aliasing of the child's fd within the child process
-  - After `from_raw_fd`, the `UnixStream` takes exclusive ownership; the caller's `child_main` receives it by value and may pass it to its own tokio runtime or keep it synchronous at its discretion
-  - The operation is performed **before** `child_main` is invoked, but **after** the async-signal-safe `prctl` and `close` calls; `from_raw_fd` itself is a pure memory operation (no syscalls, no allocations in `std::os::unix::net::UnixStream` construction), so it does not violate the async-signal-safety requirement between `fork()` and `child_main`
-- **Integration test**: `ffi_boundary::test_fork_spawn_child_basic` (child_main receives the `UnixStream`, performs a `LinkMessage` round-trip, exits 0)
+  - `child_fd` was returned by `socketpair(2)` in the pre-fork parent; `fork(2)` duplicates the fd table verbatim so the child inherits the same raw fd number pointing at the same kernel socket
+  - `OwnedFd` for `child_fd` was consumed by `into_raw_fd` before the fork, so no `Drop` runs in either process
+  - In this branch we have `close(parent_fd)` only — `child_fd` is not re-used
+  - `UnixStream` `Drop` closes the fd when `child_main` returns (or on `exit(0)` post-fall-through)
+- **Integration test**: `test_fork_spawn_child_basic` (`tests/ffi_boundary.rs:328`)
 
-## memmap2 FFI — Memory-Mapped Files
+## FFI-memmap2 — Memory-Mapped Files
 
-The `memmap2` crate exposes `Mmap::map` as an `unsafe fn` because the caller must guarantee the backing file is not mutated for the lifetime of the mapping — otherwise the mapped slice may exhibit UB (torn reads, changing length). Per AAP §0.7.4.1, 3–5 sites are expected, all in the file-cache and session-cache paths. All three sites mirror the assembly behavior at `mapped.inc`, `privmapped.inc`, and `mappedheap.inc` respectively.
+Per AAP §0.5.1.7 the `memmap2` crate wraps raw `mmap` syscalls but exposes three variants (`map`, `map_mut`, `map_copy_read_only`) as `unsafe fn` because the kernel may invalidate the mapping (e.g., on file truncation or backing-store disappearance), causing SIGBUS on subsequent access. All three in-scope files uphold the same documented safety contract.
 
-### `WebServer::hotlist_insert` — mmap static file for serving
+### `util::mapped::Mapped::new_file` — shared read-only mmap
 
-- **Location**: `crates/heavything/src/net/http/server.rs` (approx. line 200–240; awaiting implementation confirmation)
+- **Location**: `crates/heavything/src/util/mapped.rs:209`
 - **Category**: FFI-memmap2
-- **Functions called**: `memmap2::Mmap::map(&file)` (wraps `mmap(PROT_READ, MAP_PRIVATE)` — matches assembly `privmapped$new` at `privmapped.inc:130–138`)
-- **Reason**: the webserver's mmap-backed file cache is a critical path preserved from `webserver.inc`; its "900-second entry lifetime, 120-second stat-recheck, explicit re-mmap on mtime change" behavior cannot use `std::fs::read` without incurring per-request copy cost that the prompt's minimal-change discipline forbids us from regressing
+- **Functions called**: `memmap2::MmapOptions::new().len(file_len).populate().map(&file)`
+- **Reason**: `Mmap::map` is `unsafe fn` per the memmap2 contract
 - **Safety invariant**:
-  - The 900-second cache entry lifetime (with 120-second recheck) means the mapping is refreshed when the underlying file's mtime changes; within a single 120-second window, the file is assumed stable (this is the same assumption the assembly baseline makes)
-  - The cache invalidates entries on mtime change: stat-recheck every 120s discovers modifications and drops+re-mmaps the file, bounding the exposure to modification-during-mapping UB
-  - The mapping is read-only (`PROT_READ`); no Rust code writes through the returned `&[u8]`
-  - Files served from the sandbox are owned by the webserver's runas user, which has no write access, further constraining external mutation surfaces
-- **Integration test**: `ffi_boundary::test_mmap_file_cache` (mmaps a test file, reads content, verifies cleanup)
+  - `file` is owned locally; `memmap2` dupes the fd it needs internally, so dropping `file` at end-of-function is sound
+  - File is opened `O_RDONLY`; no aliasing `&mut [u8]` can be produced (public API `as_bytes` returns only `&[u8]`)
+  - Cross-process modification is an accepted platform caveat inherited from the FASM baseline (`mapped.inc`); callers needing stronger guarantees coordinate externally
+- **Integration test**: `test_mmap_file_cache` (_pending_)
 
-### `TlsSessionCache::open` — mmap encrypted TLS session cache
+### `util::mappedheap::MappedHeap::new_file` — shared read-write mmap
 
-- **Location**: `crates/heavything/src/net/tls.rs` (approx. line 300–330; awaiting implementation confirmation)
+- **Location**: `crates/heavything/src/util/mappedheap.rs:305`
 - **Category**: FFI-memmap2
-- **Functions called**: `memmap2::MmapMut::map_mut(&file)` (wraps `mmap(PROT_READ|PROT_WRITE, MAP_SHARED)` — matches assembly `mapped$init_cstr` at `mapped.inc:180–192`)
-- **Reason**: the TLS session cache must be accessible read/write (the session store grows), shared across workers (AES-256 encrypted), and backed by disk to survive worker restarts. This mirrors the 3600-second TLS session TTL from `tls.inc` and uses the `mappedheap` file-based heap pattern from `mappedheap.inc`
+- **Functions called**: `memmap2::MmapOptions::new().len(size as usize).map_mut(&file)`
+- **Reason**: `MmapMut::map_mut` is `unsafe fn` per the memmap2 contract; used by the TLS session cache (port of `mappedheap.inc`) which requires read-write access for allocator bookkeeping
 - **Safety invariant**:
-  - Only the master process mutates the cache; workers read entries via the master's IPC relay (`LinkMessage::TlsUpdate`), preventing writer-writer races
-  - The underlying file is locked exclusively by the master via `flock(LOCK_EX)` for the process lifetime
-  - Cache entries are AES-256-GCM encrypted at the `StoresServerSessions` layer, so observable decryption failures on partial writes produce a clean entry-invalidation rather than UB
-  - `MmapMut::flush` is called at shutdown to ensure durable persistence
-- **Integration test**: `ffi_boundary::test_mmap_file_cache` (parameterized for read-only and read-write paths)
+  - `file` is a locally-owned `std::fs::File`; `memmap2::map_mut` dupes the fd internally
+  - File was just resized via `set_len(size)` and is not shared through any other path; kernel's view of the length matches what we pass
+  - Mutability is bounded by the `Mutex<MappedHeapInner>` wrapping the mmap; no concurrent mutable access through this Rust-level handle
+  - Same external-process truncation caveat as the FASM baseline (`mappedheap.inc`)
+- **Integration test**: `test_mmap_file_cache` (_pending_)
 
-### `MappedHeap::new_file` — file-backed mmap heap constructor
+### `util::privmapped::PrivMapped::open` — private (MAP_PRIVATE) read-only mmap
 
-- **Location**: `crates/heavything/src/util/mappedheap.rs` lines 305–310 (the `unsafe { … }` expression inside `MappedHeap::new_file`; the accompanying `// SAFETY:` documentation block spans lines 281–304)
+- **Location**: `crates/heavything/src/util/privmapped.rs:319`
 - **Category**: FFI-memmap2
-- **Functions called**: `memmap2::MmapOptions::new().len(size as usize).map_mut(&file)` (wraps `mmap(PROT_READ|PROT_WRITE, MAP_SHARED)` against a freshly `set_len`'d regular file — matches the FASM `mappedheap.inc` line 45 invariant "file based mapped goods do MAP_SHARED")
-- **Reason**: the TLS session cache (AAP §0.5.1.7) and any other mapped-heap consumer needs a persistent, read/write, disk-backed mmap surface. Using a plain `Vec<u8>` would not persist across worker restarts, and `memmap2`'s `map_mut` is the sole path to obtain a writable file-backed mapping. The Rust port establishes the mapping once at construction; the heap does not grow at runtime in this port (the free-list is sized at construction from the requested `size` parameter), so there is no `ftruncate`+remap path to audit
+- **Functions called**: `memmap2::MmapOptions::new().len(size).map_copy_read_only(&file)` (= `mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0)` — byte-identical with `privmapped.inc:130–137`)
+- **Reason**: `map_copy_read_only` is `unsafe fn` per the memmap2 contract. `MAP_PRIVATE + PROT_READ` produces a COW mapping that is isolated from cross-process writes through the same inode, which is the FASM baseline's intent for the webserver file hotlist cache
 - **Safety invariant**:
-  - The `std::fs::File` passed to `map_mut(&file)` is a locally-owned handle created on the immediately preceding lines via `OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?`; memmap2 internally dupes the descriptor it needs, so dropping `file` at end-of-function is sound
-  - `file.set_len(size)?` is invoked immediately before `map_mut`, ensuring the kernel's view of the file length matches the length requested in `MmapOptions::len(size as usize)`
-  - The constructor runs single-threaded (callers receive a fresh `MappedHeap` and have no aliases yet), so no concurrent truncation or `map_mut` race is possible during this call window
-  - The resulting `MmapMut` is moved into `MappedHeapInner` which lives behind a `std::sync::Mutex`, so all subsequent read/write access through `slice_mut` and `write` is serialized — no writer-writer races, no torn reads through the `&mut [u8]` view
-  - Callers only receive owned `Vec<u8>` copies from `slice_mut`; the raw mapping is never exposed directly, so any UB from external truncation would be confined to the `MappedHeap`'s own methods, not leak into the caller's memory
-  - Residual risk: another process with write access to `path` could truncate or replace the backing file and cause SIGBUS on subsequent `copy_from_slice` through the mapping. This is the same residual risk present in the FASM `mappedheap.inc` baseline and is documented in the file's module-level doc comment. Callers are expected to use a path that only the process owns (e.g., a `runas`-owned directory under the webserver sandbox)
-- **Integration test**: `ffi_boundary::test_mmap_file_cache` (AAP §0.7.4.4 — exercises the memmap2 file-backed cache path)
+  - `file` is owned locally; `memmap2` dupes the fd internally
+  - Resulting `Mmap` is read-only (`MAP_PRIVATE + PROT_READ`); public API (`as_bytes`) returns only `&[u8]`, so no mutable-alias UB possible
+  - Same external-process truncation caveat as the FASM baseline (`privmapped.inc`); callers needing stronger guarantees use `flock(2)`
+- **Integration test**: `test_mmap_file_cache` (_pending_)
 
-## Raw Syscall — libc::syscall Paths
+## CPU-intrinsic — `rdtsc` Timestamp Counter
 
-This category covers syscalls performed via `libc::syscall(SYS_*)` that are not available via any higher-level wrapper. Per AAP §0.7.4.1, 0–2 sites are expected. The assembly's `syscall.inc` enumerates all Linux x86_64 syscalls, but the Rust port routes every required syscall through `libc`, `nix`, `memmap2`, or the `tokio` runtime.
+### `crypto::rng::read_tsc` — rdtsc for RNG entropy mixing
 
-> **Zero sites**. All required syscalls are exposed via the `nix`, `memmap2`, `tokio`, or `libc`-with-typed-wrapper paths above. The Rust port does not invoke `libc::syscall(SYS_*)` directly. If a future requirement surfaces a syscall not covered by these wrappers (for example, a new Linux syscall not yet in `libc`), that site shall be added to this section with a dedicated entry and a written justification for why no wrapper is suitable.
+- **Location**: `crates/heavything/src/crypto/rng.rs:297`
+- **Category**: CPU-intrinsic
+- **Functions called**: `std::arch::x86_64::_rdtsc()`
+- **Reason**: `_rdtsc` is declared `unsafe fn` per the `std::arch::x86_64` convention even though on the `x86_64-unknown-linux-gnu` target it cannot trap, cannot fault, and has no side effects beyond a brief pipeline stall. No safe wrapper exists. The FASM baseline (`rng.inc:137–144`) uses the same instruction for entropy mixing
+- **Safety invariant**:
+  - The `rdtsc` instruction is architecturally required on x86_64 (present since AMD Opteron / Intel Nocona, 2003)
+  - It cannot trap in user mode on Linux (`CR4.TSD` is cleared by default)
+  - It has no memory effects and cannot UB
+  - Module's compile target `x86_64-unknown-linux-gnu` guarantees availability at compile time
+- **Integration test**: exercised by `crypto::rng::tests::*` (in-file; 13 tests cover the RNG construction pipeline including `read_tsc`)
 
-## CPU Intrinsics
+## Other — Raw-Pointer / Marker-Trait Escape Hatches (HTTP Mimelike)
 
-Per AAP §0.7.4.1, 0 sites are expected because `ring` and the `aes` + `cbc` crates handle AES-NI internally and `std::is_x86_feature_detected!` is a safe macro.
+Per AAP §0.5.1.4 `net/http/mimelike.rs` ports `mimelike.inc` with byte-identical layout including its body-by-pointer optimization. The FASM baseline used a raw pointer to the mmap'd file body (`bodyext` field) to avoid copying the file contents into the response buffer. The Rust port preserves this zero-copy optimization via five carefully-isolated unsafe sites.
 
-> **Zero sites**. No direct `std::arch::x86_64::*` intrinsic calls. CPU feature dispatch is handled by the `ring` and `aes` crates' internal runtime detection. CPU feature query in `heavything::cpu` uses the safe macro `std::is_x86_feature_detected!` to populate the `CpuFeatures` record stored in `OnceLock<CpuFeatures>`. This is the full replacement for the assembly `ht$init` CPUID block (see AAP §0.7.4.1 rationale and `ht.inc` lines ~290–340).
+### `unsafe impl Send for Mimelike`
 
-## Other Unsafe Blocks
+- **Location**: `crates/heavything/src/net/http/mimelike.rs:384`
+- **Category**: Other (unsafe impl of auto trait)
+- **Functions called**: none (marker trait impl)
+- **Reason**: `Mimelike` contains a `*const u8` raw pointer (`bodyext`) which is `!Send` and `!Sync` by default. We assert `Send + Sync` manually because the pointer is set only at construction or via the explicitly-`unsafe` `set_body_external` entry point, and thereafter read-only through `body_bytes` / `body_len` / `compose`
+- **Safety invariant** (shared with line 385):
+  - `bodyext` is set only at construction (null), via `new_parse` (which does not use it), via `set_body` (which clears it to null), or via the explicitly-`unsafe` `set_body_external`, whose caller documents lifetime
+  - After being set, `bodyext` is read-only through public accessors; no interior-mutability path admits a data race
+  - `parent` (the other raw pointer) is set only at parse-time when linking into a parent's `parts` list and never mutated thereafter
+  - The remaining fields are all owned types (`HttpHeaders`, `Option<String>`, `Buffer`, `Vec<Mimelike>`) that are themselves `Send + Sync`
+- **Integration test**: exercised by `mimelike` unit tests (in-file, 40+ tests)
 
-This catch-all section is reserved for `unsafe` sites that do not fit into any of the categories above. Any site that appears here carries additional scrutiny: per AAP §0.8.1, the aggregate budget is 50 and the _expected_ count in this category is zero. Therefore, even a single entry in this section — regardless of the overall aggregate count — requires a written justification paragraph explaining why the site cannot be isolated into one of the wrapper-backed categories (`FFI-libc`, `FFI-nix`, `FFI-memmap2`).
+### `unsafe impl Sync for Mimelike`
 
-> **Zero sites**. No `unsafe` blocks exist outside the categories above. If a future change introduces one, it shall be recorded here with the full six-field template plus a justification paragraph. The project-level review gate REJECTS merges that add an uncategorized `unsafe` block without such justification.
+- **Location**: `crates/heavything/src/net/http/mimelike.rs:385`
+- **Category**: Other (unsafe impl of auto trait)
+- **Functions called**: none (marker trait impl)
+- **Reason / safety invariant**: same rationale as the `Send` impl above; `Mimelike` is read-only post-parse except through the explicitly-unsafe mutators (`set_body_external`) which are `&mut self`, so `Sync` is sound
+- **Integration test**: exercised by `mimelike` unit tests (in-file)
+
+### `pub unsafe fn Mimelike::set_body_external`
+
+- **Location**: `crates/heavything/src/net/http/mimelike.rs:712`
+- **Category**: Other (unsafe fn — caller-upheld pointer-lifetime contract)
+- **Functions called**: stores `*const u8` and precomputed end pointer into struct fields
+- **Reason**: the sole purpose of this function is to bypass the owned-body copy path for zero-copy delivery of mmap'd file bodies (e.g., webserver static file serving). Declaring it `unsafe fn` forces callers to make explicit their promise about the pointer's lifetime
+- **Safety invariant** (documented on the fn's `# Safety` Rustdoc):
+  - The `data: *const u8` pointer must remain valid (live, readable, untouched by writers) for the entire lifetime of this `Mimelike`, OR until the next call to a body-mutating method (`set_body`, `set_body_external`, `new_parse`) which clears the external reference
+- **Integration test**: `body_bytes_uses_external_pointer_when_set` (test-only unsafe consumer, in-file at `mimelike.rs:2195`)
+
+### `Mimelike::body_bytes` — `slice::from_raw_parts` on external body
+
+- **Location**: `crates/heavything/src/net/http/mimelike.rs:825`
+- **Category**: Other (raw slice construction)
+- **Functions called**: `std::slice::from_raw_parts(self.bodyext, self.bodyextlen)`
+- **Reason**: the caller of `set_body_external` promised the pointer stays valid; this method exposes the bytes as `&[u8]` without copying them
+- **Safety invariant**:
+  - Only taken when `!self.bodyext.is_null()` — the null case falls through to the owned `body` buffer
+  - The caller of `set_body_external` promised the pointer remains valid for our lifetime; no body-mutating method has been invoked since then (those clear `bodyext` to null)
+  - `self.bodyextlen` matches the length the caller provided at `set_body_external` time
+- **Integration test**: `body_bytes_uses_external_pointer_when_set` (in-file at `mimelike.rs:2195`)
+
+### `Mimelike::compose` — `slice::from_raw_parts` for external-body pickup
+
+- **Location**: `crates/heavything/src/net/http/mimelike.rs:980`
+- **Category**: Other (raw slice construction)
+- **Functions called**: `std::slice::from_raw_parts(self.bodyext, self.bodyextlen)`
+- **Reason**: during response composition, if the caller set an external body, we materialize the slice once (then copy to an owned buffer, because the encoding pipeline may need to mutate). The zero-copy fast path is elsewhere — this site exists for the compose-with-encoding path
+- **Safety invariant**: same as `body_bytes` — only taken on `!bodyext.is_null()`; caller's lifetime promise still holds; length matches
+- **Integration test**: `mimelike` compose tests (in-file)
+
+## Raw Syscall — `libc::syscall` Paths
+
+> **Zero sites**. All syscalls needed by the Rust port are exposed as typed wrappers by `libc` (`tcgetattr`, `setsockopt`, `getrlimit`, etc.), by `nix` (`fork`, `prctl::set_pdeathsig`, `kill`, `socketpair`), or by `memmap2` (`mmap` variants). No direct `libc::syscall(SYS_...)` invocation is required.
+>
+> Should a future change require a syscall not exposed through these wrappers, the new `unsafe` block will be recorded under this heading with the full six-field template.
+
+## Test-only Unsafe (Appendix)
+
+These sites exist only inside `#[cfg(test)]` blocks and do not count against the production AAP §0.7.4 budget. They are listed here for grep-completeness — any maintenance script that counts `unsafe` lexical occurrences in `crates/heavything/src/` will observe 26 total matches (23 production + 3 test-only).
+
+| # | File:Line                                                   | Purpose                                                                   |
+|---|-------------------------------------------------------------|---------------------------------------------------------------------------|
+| 1 | `crates/heavything/src/net/runtime.rs:1095`                 | `test_check_ulimit_current` — independently invoke `libc::getrlimit` to double-check `check_ulimit`'s return value matches kernel reality |
+| 2 | `crates/heavything/src/net/runtime.rs:1380`                 | `test_stream_defaults_roundtrip` — invoke `libc::getsockopt` to read back `SO_LINGER` / `SO_KEEPALIVE` after `apply_stream_defaults` set them |
+| 3 | `crates/heavything/src/net/http/mimelike.rs:2195`           | `body_bytes_uses_external_pointer_when_set` — call the `unsafe fn set_body_external` from the test body to exercise the external-pointer code path |
 
 ## Integration Test Mapping
 
-Per AAP §0.7.4.4, every FFI / raw-syscall boundary site must have a corresponding integration test in `crates/heavything/tests/ffi_boundary.rs`. The table below maps the eight canonical test names to the unsafe sites they exercise.
+Per AAP §0.7.4.4, every FFI / raw-syscall boundary site must have a corresponding integration test in `crates/heavything/tests/ffi_boundary.rs`. The table below maps site → test. Tests marked _pending_ are referenced by this document but not yet implemented; per AAP §0.7.4.4 they are scheduled to be added alongside the widget tree (CP6) and webserver binary (CP8) deliverables that will actually exercise those code paths from integration tests rather than in-file unit tests.
 
-| Unsafe Site                                    | Integration Test                                    |
-|------------------------------------------------|-----------------------------------------------------|
-| `RawTerminal::enter`                           | `test_raw_terminal_roundtrip`                       |
-| `nix::unistd::fork`                            | `test_fork_workers`, `test_fork_spawn_child_basic`  |
-| `nix::unistd::{setuid, setgid}`                | `test_setuid_setgid_drop`                           |
-| `nix::sys::prctl::set_pdeathsig`               | `test_prctl_pdeathsig`                              |
-| `memmap2::Mmap::map` (file cache)              | `test_mmap_file_cache`                              |
-| `std::os::unix::net::UnixStream::from_raw_fd`  | `test_fork_spawn_child_basic`                       |
-| `nix::sys::signal::kill`                       | `test_killall_children_on_drop`                     |
-| SIGWINCH / SIGINT handlers                     | `test_sigwinch_handler`                             |
-| `runtime::check_ulimit` (getrlimit/setrlimit)  | `test_check_ulimit`                                 |
-| `runtime::apply_stream_defaults` (setsockopt)  | `test_stream_defaults_roundtrip`                    |
+Integration tests currently implemented in `crates/heavything/tests/ffi_boundary.rs`:
 
-Per AAP §0.7.4.4, every row above must have a passing test in `crates/heavything/tests/ffi_boundary.rs`. Run via:
+| Test Name                       | File:Line | Unsafe Sites Exercised                                |
+|---------------------------------|-----------|-------------------------------------------------------|
+| `test_fork_spawn_child_basic`   | `:328`    | `net/child.rs:910, 945, 1011` (fork + 2× from_raw_fd) |
+| `test_prctl_pdeathsig`          | `:481`    | `net/child.rs:910, 945, 1011` (same) — exercises `prctl::set_pdeathsig` post-fork in the child branch |
+| `test_killall_children_on_drop` | `:655`    | `net/child.rs:910, 945, 1011` (same) — exercises the `ChildProcess::Drop` kill path |
+| `test_check_ulimit`             | `:787`    | `net/runtime.rs:509` (getrlimit/setrlimit)            |
+| `test_stream_defaults_roundtrip`| `:939`    | `net/runtime.rs:619` (setsockopt)                     |
 
-    HEAVYTHING_LIVE_TESTS=1 cargo test --test ffi_boundary
+Aspirational tests referenced by this document but not yet implemented (CP5 scope excluded their creation — widget tree and webserver binary come in CP6–CP8):
 
-Tests requiring elevated privileges (`test_setuid_setgid_drop`) are additionally gated on a `HEAVYTHING_PRIVILEGED_TESTS=1` environment variable to prevent accidental invocation in unprivileged CI environments.
+| Test Name                       | Planned Coverage                                                                 |
+|---------------------------------|----------------------------------------------------------------------------------|
+| `test_raw_terminal_roundtrip`   | `tui/terminal.rs:203, 267, 519` (enter → get_winsize → drop round-trip)          |
+| `test_sigwinch_handler`         | `tui/terminal.rs:318, 350, 392` (sigaction install + SIGWINCH delivery)          |
+| `test_sigterm_handler`          | `tui/terminal.rs:406, 476` (SIGTERM → cleanup_terminal_from_signal → _exit)      |
+| `test_sigint_handler`           | `tui/terminal.rs:419, 476` (SIGINT → cleanup_terminal_from_signal → _exit)       |
+| `test_crash_handler`            | `tui/terminal.rs:434` (SIGSEGV → SIG_DFL reset → raise)                          |
+| `test_mmap_file_cache`          | `util/mapped.rs:209`, `util/mappedheap.rs:305`, `util/privmapped.rs:319`         |
+| `test_setuid_setgid_drop`       | webserver master privilege-drop path (CP8 deliverable)                           |
+| `test_fork_workers`             | webserver master worker-spawn path (CP8 deliverable; currently covered transitively by `test_fork_spawn_child_basic`) |
+
+Run the currently-implemented integration tests via:
+
+    HEAVYTHING_LIVE_TESTS=1 cargo test -p heavything --test ffi_boundary
+
+Tests requiring elevated privileges (`test_setuid_setgid_drop`, when added) will additionally be gated on a `HEAVYTHING_PRIVILEGED_TESTS=1` environment variable to prevent accidental invocation in unprivileged CI environments.
 
 ## Unsafe Minimization Principles
 
 The following principles are applied uniformly across the Rust port to keep the unsafe budget well below the 50-site ceiling (per AAP §0.7.4.2):
 
-- **Encapsulate unsafe at type boundaries**: e.g., `RawTerminal` owns all termios unsafe; consumers interact via safe methods. The `unsafe` blocks are members of a small, well-tested newtype whose API surface is entirely safe.
-- **Prefer wrapper crates over raw libc**: `nix::unistd::fork` instead of `libc::fork`; `memmap2::Mmap` instead of raw `mmap`. The `nix` and `memmap2` crates have their own safety-invariant documentation and have been reviewed by the Rust community.
-- **Group related unsafe into single blocks**: consolidate `tcgetattr → cfmakeraw → tcsetattr` into one `unsafe { … }` with one consolidated safety comment. This reduces the block count below what a naive per-call approach would produce.
+- **Encapsulate unsafe at type boundaries**: e.g., `RawTerminal` owns all termios unsafe; consumers interact via safe methods. The nine unsafe blocks in `tui/terminal.rs` are all members of this one newtype plus its helpers; external callers see only the safe API.
+- **Prefer wrapper crates over raw libc**: `nix::unistd::fork` instead of `libc::fork`; `memmap2::Mmap` instead of raw `mmap`; `ring`/`aes` crates for AES (zero direct AES-NI intrinsic unsafe per AAP §0.7.4.1 budget). The `nix` and `memmap2` crates have their own safety-invariant documentation and have been reviewed by the Rust community.
+- **Group related unsafe into single blocks**: consolidate `mem::zeroed → tcgetattr → cfmakeraw → tcsetattr → SAVED_TERMIOS.write` into one `unsafe { … }` with one consolidated safety comment at `tui/terminal.rs:203`. The `install_signal_handlers` function at line 318 batches five `install_one` calls into one block. This reduces the block count below what a naive per-call approach would produce.
 - **Document safety invariants explicitly**: every unsafe block carries a `// SAFETY: …` comment covering all preconditions that make the unsafe operation sound. The comment is reviewed as part of code review; missing or vague SAFETY comments block merge.
+- **Mark marker-trait impls with explicit justification**: the `unsafe impl Send for Mimelike {}` / `unsafe impl Sync for Mimelike {}` pair at `mimelike.rs:384–385` shares a 10-line SAFETY comment block immediately above it explaining the four-point rationale.
 
-If the total count ever exceeds 50, each site over 50 requires a dedicated written justification paragraph in this file (Phase 8 "Other" category) explaining why isolation into a single helper could not reduce the count. The justification must cover: (a) the reason no existing wrapper crate exposes the required primitive, (b) why the consumer cannot be refactored to use an adjacent primitive that _is_ wrapped, and (c) the marginal safety risk the site imposes and the mitigation in place.
+If the total count ever exceeds 50, each site over 50 requires a dedicated written justification paragraph in this file explaining why isolation into a single helper could not reduce the count. The justification must cover: (a) the reason no existing wrapper crate exposes the required primitive, (b) why the consumer cannot be refactored to use an adjacent primitive that _is_ wrapped, and (c) the marginal safety risk the site imposes and the mitigation in place.
 
 ## Audit Maintenance
 
-This document is regenerated whenever `grep -rn 'unsafe' crates/ --include='*.rs'` returns a different set of lines. Re-generate by running the `audit_unsafe` helper script (if present) or manually via:
+This document is regenerated whenever
 
-    grep -rnE '\bunsafe\b' crates/ --include='*.rs' | grep -v '^\s*//'
+    grep -rnE '\bunsafe\s+(fn|impl|\{|extern)' crates/heavything/src/
 
-Verify that every reported line has a matching entry in Phases 2–8 of this document. Any new site without a matching entry is a merge-blocking audit finding.
+returns a different set of lines from the one captured at the head of this document. The verification invocation is:
+
+    grep -rnE '\bunsafe\s+(fn|impl|\{|extern)' crates/heavything/src/ | wc -l
+
+which should currently return `26` (= 23 production + 3 test-only). If it returns a different number, one of two conditions holds:
+
+1. A new production unsafe site was introduced without adding a matching entry in the sections above — this is a merge-blocking audit finding, and the correct remediation is to add the entry (or to refactor the code to eliminate the new site).
+2. An existing unsafe site was removed — update the relevant section to delete the stale entry and decrement the "Total production `unsafe` sites" row of the Audit Summary table.
 
 The maintenance workflow is:
 
 1. Run the grep command above from the workspace root.
-2. For each line in the output, locate the corresponding entry in this file by searching for the file path + approximate line range.
+2. For each line in the output, locate the corresponding entry in this file by searching for the file:line.
 3. If the entry is missing, either (a) add an entry in the correct category section with all six fields, or (b) remove the unsafe block if it is avoidable.
-4. Update the "Total `unsafe` blocks" row of the `## Audit Summary` table to reflect the new count.
-5. If the count exceeds 50, add justification paragraphs under `## Other Unsafe Blocks` for each site beyond 50.
+4. Update the "Total production `unsafe` sites" row of the `## Audit Summary` table to reflect the new count.
+5. If the count exceeds 50, add justification paragraphs under the applicable category header for each site beyond 50.
 6. Commit the regenerated document alongside the code change that introduced the new site.
 
-The approximate line ranges given throughout this document ("approx. line 40–60") are tolerant of ±20 lines of drift; if drift exceeds that, update the range rather than the entry.
+Line numbers in this document are precise at the time of writing and expected to remain stable across patch-level edits. If a refactor shifts a line number by more than 20 lines, update this document rather than relying on the tolerance. The maintenance script (if added in a future checkpoint) will validate line numbers exactly rather than by range.
