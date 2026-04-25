@@ -76,12 +76,12 @@
 //!   with a thin orchestrator over `tokio::runtime::Runtime` whose
 //!   internal `mio` backend already provides `epoll` on Linux.
 //!
-//! Additional networking submodules (`fcgi`, `tls`, `ssh`) are
-//! scheduled in subsequent translation checkpoints per AAP §0.5.1.4
-//! and are not yet declared here. Declaring a `pub mod foo;` without
-//! a backing source file is a hard compile error (rustc E0583), so
-//! premature declarations would break the whole workspace build under
-//! the Gate 2 `RUSTFLAGS="-D warnings"` discipline (AAP §0.8.3).
+//! Additional networking submodules (`tls`) are scheduled in subsequent
+//! translation checkpoints per AAP §0.5.1.4 and are not yet declared
+//! here. Declaring a `pub mod foo;` without a backing source file is a
+//! hard compile error (rustc E0583), so premature declarations would
+//! break the whole workspace build under the Gate 2
+//! `RUSTFLAGS="-D warnings"` discipline (AAP §0.8.3).
 //!
 //! # Error handling
 //!
@@ -133,6 +133,13 @@ pub mod child;
 /// ([`dns::DnsResolver`]).
 pub mod dns;
 
+/// FastCGI client tied directly to the tokio runtime — port of
+/// `fcgiclient.inc`. Exposes [`fcgi::FcgiClient`] for proxying HTTP
+/// requests to upstream FastCGI backends (PHP-FPM, etc.) over either
+/// a Unix domain socket or TCP, plus the [`fcgi::FcgiResult`] outcome
+/// enum and the [`fcgi::FcgiCallback`] one-shot callback type.
+pub mod fcgi;
+
 /// HTTP/1.1 and HTTP/2 aggregator module — contains the header container,
 /// HPACK codec, and sibling submodules for MIME-like parsing, HTTP/1.x
 /// state machines, and server/client request handling. Ports the
@@ -181,3 +188,9 @@ pub use self::child::{ChildProcess, LinkMessage};
 /// extra module hop. Matches the export surface declared in AAP
 /// §0.3.1.2 for `crates/heavything/src/net/dns.rs`.
 pub use self::dns::{DnsError, DnsResolver};
+
+/// Re-export of the public FastCGI client surface so callers can write
+/// `use heavything::net::{FcgiClient, FcgiResult, FcgiCallback};` without
+/// an extra module hop. Matches the export surface declared in AAP
+/// §0.3.1.2 for `crates/heavything/src/net/fcgi.rs`.
+pub use self::fcgi::{FcgiCallback, FcgiClient, FcgiResult};
