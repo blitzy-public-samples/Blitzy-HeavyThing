@@ -27,13 +27,22 @@
 //!   SSH sinks (`tui_render.inc`).
 //! - [`terminal`] — raw-mode terminal singleton + signal handlers
 //!   (`tui_terminal.inc`, AAP §0.7.3).
+//! - [`gridguts`] — private data-grid internals widget consumed by the
+//!   `widgets::datagrid` module (`tui_gridguts.inc`). The module is
+//!   declared `pub` for symmetry with other widget modules, but
+//!   `gridguts` is intentionally **not** re-exported at the crate
+//!   root — this matches the FASM `prolog_silent` convention of
+//!   omitting the symbols from the documented public surface while
+//!   leaving them reachable to sibling translation units that know
+//!   the path.
 //!
-//! The remaining submodules (`gridguts` and the `widgets/` tree) are
+//! The remaining submodules (the rest of the `widgets/` tree) are
 //! added by subsequent translation agents per the AAP file-by-file
 //! transformation plan.
 
 pub mod ansi;
 pub mod geometry;
+pub mod gridguts;
 pub mod lock;
 pub mod object;
 pub mod render;
