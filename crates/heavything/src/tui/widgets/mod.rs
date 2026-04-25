@@ -52,11 +52,14 @@
 //!   [`ssh::TuiSsh`] (I/O-chain descendant) and
 //!   [`ssh::TuiSshRenderer`] (Renderer descendant) types
 //!   (`tui_ssh.inc`).
+//! - [`typist`] — error-prone typewriter animation that emits a string
+//!   character-by-character at a 50–160 ms human-typing cadence with
+//!   QWERTY-aware typo simulation (`tui_typist.inc`).
 //!
 //! Additional widget submodules (`panel`, `text`,
 //! `textbox`, `button`, `form`, `simpleauth`, `alert`,
 //! `progressbox`, `datagrid`, `statusbar`,
-//! `typist`, `splash`, `effects`)
+//! `splash`, `effects`)
 //! are added by subsequent translation agents per the AAP
 //! file-by-file transformation plan.
 
@@ -72,3 +75,4 @@ pub mod progressbar;
 pub mod spacers;
 pub mod spinner;
 pub mod ssh;
+pub mod typist;
