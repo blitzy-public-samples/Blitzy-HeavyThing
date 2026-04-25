@@ -33,6 +33,9 @@
 //!   (`tui_matrix.inc`).
 //! - [`png`] — PNG-to-ANSI-256 image widget with xterm 256-color
 //!   quantization (`tui_png.inc`).
+//! - [`progressbar`] — Background-descendant fill-based progress bar
+//!   with int/double value modes and Forward/Reverse fill direction
+//!   (`tui_progressbar.inc`).
 //! - [`spacers`] — horizontal/vertical spacer + vertical-box layout
 //!   container (`tui_spacers.inc`).
 //! - [`spinner`] — 1×1 animated glyph indicator cycling `-\|/` at a
@@ -45,7 +48,7 @@
 //!
 //! Additional widget submodules (`panel`, `text`,
 //! `textbox`, `button`, `form`, `simpleauth`, `alert`, `bell`,
-//! `progressbar`, `progressbox`, `datagrid`, `statusbar`,
+//! `progressbox`, `datagrid`, `statusbar`,
 //! `newsticker`, `typist`, `splash`, `effects`)
 //! are added by subsequent translation agents per the AAP
 //! file-by-file transformation plan.
@@ -56,6 +59,7 @@ pub mod label;
 pub mod lines;
 pub mod matrix;
 pub mod png;
+pub mod progressbar;
 pub mod spacers;
 pub mod spinner;
 pub mod ssh;
