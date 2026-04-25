@@ -21,6 +21,9 @@
 //!
 //! - [`background`] — solid-color rectangle base for ~12 descendants
 //!   (`tui_background.inc`).
+//! - [`bell`] — 1×1 [`background::TuiBackground`] descendant emitting
+//!   the terminal BEL character (0x07) at a 120 ms cadence for a
+//!   caller-specified number of ring cycles (`tui_bell.inc`).
 //! - [`effect`] — particle-system effect base widget powering the
 //!   six built-in transition effects (`tui_effect.inc`).
 //! - [`label`] — multi-line text label with three text alignments
@@ -51,13 +54,14 @@
 //!   (`tui_ssh.inc`).
 //!
 //! Additional widget submodules (`panel`, `text`,
-//! `textbox`, `button`, `form`, `simpleauth`, `alert`, `bell`,
+//! `textbox`, `button`, `form`, `simpleauth`, `alert`,
 //! `progressbox`, `datagrid`, `statusbar`,
 //! `typist`, `splash`, `effects`)
 //! are added by subsequent translation agents per the AAP
 //! file-by-file transformation plan.
 
 pub mod background;
+pub mod bell;
 pub mod effect;
 pub mod label;
 pub mod lines;
