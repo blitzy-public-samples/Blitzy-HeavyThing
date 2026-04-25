@@ -38,3 +38,4 @@ pub mod lock;
 pub mod object;
 pub mod render;
 pub mod terminal;
+pub mod widgets;
