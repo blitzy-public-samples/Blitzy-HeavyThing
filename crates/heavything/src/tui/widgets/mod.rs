@@ -75,4 +75,5 @@ pub mod progressbar;
 pub mod spacers;
 pub mod spinner;
 pub mod ssh;
+pub mod text;
 pub mod typist;
