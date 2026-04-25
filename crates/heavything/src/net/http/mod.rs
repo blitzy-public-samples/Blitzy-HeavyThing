@@ -33,8 +33,9 @@
 //!   InBodyLength / InBodyChunked) — port of `http1.inc`.
 //! * `mimelike` — MIME-like parser for HTTP messages with gzip threshold and
 //!   chunked-transfer framing (scheduled — port of `mimelike.inc`).
-//! * `cookiejar` — session cookie storage (scheduled — port of
-//!   `cookiejar.inc`).
+//! * [`cookiejar`] — session cookie storage with `Set-Cookie` parsing,
+//!   `Cookie:` header emission, persistence buffer round-trip, and
+//!   longest-path-wins duplicate resolution (port of `cookiejar.inc`).
 //! * `server` — HTTP/1.1 server with the 8-stage dispatch pipeline
 //!   (scheduled — port of `webserver.inc`).
 //! * `client` — HTTP/1.1 connection-pooled client with redirect support
@@ -76,3 +77,11 @@ pub mod http1;
 /// [`MIMELIKE_SETCOOKIE_SPLIT`](crate::config::MIMELIKE_SETCOOKIE_SPLIT).
 /// Port of `mimelike.inc` (3,814 lines / 23 FASM functions).
 pub mod mimelike;
+
+/// HTTP/1.1 cookie storage and matching for automated agents. Provides
+/// [`cookiejar::Cookie`] (single 48-byte FASM-layout cookie) and
+/// [`cookiejar::CookieJar`] (insertion-ordered list with `set` parser,
+/// `get` emitter, longest-path-wins duplicate resolution, and a
+/// 7-field semicolon-delimited persistence buffer format). Port of
+/// `cookiejar.inc` (942 lines / 6 FASM functions).
+pub mod cookiejar;
