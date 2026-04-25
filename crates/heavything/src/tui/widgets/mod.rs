@@ -25,10 +25,12 @@
 //!   quantization (`tui_png.inc`).
 //! - [`spacers`] — horizontal/vertical spacer + vertical-box layout
 //!   container (`tui_spacers.inc`).
+//! - [`spinner`] — 1×1 animated glyph indicator cycling `-\|/` at a
+//!   configurable tick interval (`tui_spinner.inc`).
 //!
 //! Additional widget submodules (`panel`, `lines`, `label`, `text`,
 //! `textbox`, `button`, `form`, `simpleauth`, `alert`, `bell`,
-//! `progressbar`, `progressbox`, `spinner`, `datagrid`, `statusbar`,
+//! `progressbar`, `progressbox`, `datagrid`, `statusbar`,
 //! `newsticker`, `matrix`, `typist`, `splash`, `effect`, `effects`,
 //! `ssh`) are added by subsequent translation agents per the
 //! AAP file-by-file transformation plan.
@@ -36,3 +38,4 @@
 pub mod background;
 pub mod png;
 pub mod spacers;
+pub mod spinner;
