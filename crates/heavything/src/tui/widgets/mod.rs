@@ -23,6 +23,9 @@
 //!   (`tui_background.inc`).
 //! - [`effect`] — particle-system effect base widget powering the
 //!   six built-in transition effects (`tui_effect.inc`).
+//! - [`label`] — multi-line text label with three text alignments
+//!   (Left/Center/Right) and per-character highlight marking
+//!   (`tui_label.inc`).
 //! - [`lines`] — vertical/horizontal line factories producing
 //!   pre-filled [`background::TuiBackground`] widgets (`tui_lines.inc`).
 //! - [`matrix`] — Matrix-rain animation with 100 parallel character
@@ -40,7 +43,7 @@
 //!   [`ssh::TuiSshRenderer`] (Renderer descendant) types
 //!   (`tui_ssh.inc`).
 //!
-//! Additional widget submodules (`panel`, `label`, `text`,
+//! Additional widget submodules (`panel`, `text`,
 //! `textbox`, `button`, `form`, `simpleauth`, `alert`, `bell`,
 //! `progressbar`, `progressbox`, `datagrid`, `statusbar`,
 //! `newsticker`, `typist`, `splash`, `effects`)
@@ -49,6 +52,7 @@
 
 pub mod background;
 pub mod effect;
+pub mod label;
 pub mod lines;
 pub mod matrix;
 pub mod png;
