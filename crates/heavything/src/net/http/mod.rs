@@ -66,3 +66,13 @@ pub mod headers;
 /// (Content-Length countdown or chunked sentinel scan). Port of
 /// `http1.inc`.
 pub mod http1;
+
+/// Dual-use MIME and HTTP/1.1 message parser/composer. Bidirectional
+/// — parses a stream of bytes into a structured [`mimelike::Mimelike`]
+/// or composes a `Mimelike` back into an on-wire byte stream. Handles
+/// chunked Transfer-Encoding, gzip Content-Encoding, quoted-printable
+/// and base64 Content-Transfer-Encoding, multipart messages with
+/// boundary parameter, and Set-Cookie splitting per
+/// [`MIMELIKE_SETCOOKIE_SPLIT`](crate::config::MIMELIKE_SETCOOKIE_SPLIT).
+/// Port of `mimelike.inc` (3,814 lines / 23 FASM functions).
+pub mod mimelike;
