@@ -171,6 +171,19 @@ pub mod bigint;
 /// SSH key exchange method (RFC 4419).
 pub mod dh;
 
+/// X.509 certificate parsing, PEM/DER bridging, SSH host-key loading,
+/// and OCSP request construction — port of `X509.inc` (4,133 lines) per
+/// AAP §0.5.1.3. Provides [`x509::CertChain`], [`x509::PrivateKey`],
+/// [`x509::CertAndKey`], [`x509::OcspResponse`], [`x509::SshHostKey`],
+/// plus the [`x509::load_pem_file`], [`x509::load_ssh_host_keys`],
+/// [`x509::fetch_ocsp`], [`x509::append_der`],
+/// [`x509::to_rustls_certified_key`], [`x509::to_rustls_cert_der`],
+/// [`x509::update_ocsp_response`], and [`x509::set_ocsp_hook`]
+/// functions. Per AAP §0.7.2.3, certificate-chain validation is
+/// **delegated** to `rustls-webpki` at TLS handshake time — this module
+/// does not perform path validation.
+pub mod x509;
+
 // Flat re-export of the primary DRBG type so consumers can write
 // `use heavything::crypto::HmacDrbg;` rather than the longer
 // `use heavything::crypto::hmac_drbg::HmacDrbg;` path. The hash
