@@ -163,6 +163,14 @@ pub mod rng;
 /// `crate::net::ssh::kex`, and `crate::crypto::x509`.
 pub mod bigint;
 
+/// Diffie–Hellman parameter and keypair types — port of
+/// `dh_groups.inc` (44 lines) plus the well-known RFC 3526 MODP
+/// safe-prime groups that replace the omitted `dh_pool_*.inc`
+/// safe-prime pools per AAP §0.3.2.2. Consumed by
+/// `crate::net::ssh::kex` for the `diffie-hellman-group-exchange-sha256`
+/// SSH key exchange method (RFC 4419).
+pub mod dh;
+
 // Flat re-export of the primary DRBG type so consumers can write
 // `use heavything::crypto::HmacDrbg;` rather than the longer
 // `use heavything::crypto::hmac_drbg::HmacDrbg;` path. The hash
