@@ -118,6 +118,7 @@ pub mod newsticker;
 pub mod panel;
 pub mod png;
 pub mod progressbar;
+pub mod progressbox;
 pub mod spacers;
 pub mod spinner;
 pub mod splash;
