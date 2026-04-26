@@ -1,4 +1,3 @@
-
 // HeavyThing x86_64 assembly language library — Rust translation.
 //
 // Rust translation © 2026, licensed under GPL-3.0-or-later.
@@ -89,8 +88,7 @@ use heavything::config;
 use heavything::error::{HttpError, NetError, SshError, TlsError};
 use heavything::net::ssh::server::{SSH_IDENT, SSH_IDENT_BLACKLISTED};
 use heavything::net::{
-    blacklist, build_runtime, check_ulimit, link, url, Blacklist, BoxFuture, IoBase, IoChain,
-    IoLinks, Url,
+    blacklist, build_runtime, check_ulimit, link, url, Blacklist, BoxFuture, IoBase, IoChain, IoLinks, Url,
 };
 
 // ============================================================================
@@ -101,10 +99,7 @@ use heavything::net::{
 /// environment. Gated tests early-return when this is `false` so the
 /// suite remains hermetic in CI.
 fn live_tests_enabled() -> bool {
-    matches!(
-        std::env::var("HEAVYTHING_LIVE_TESTS").ok().as_deref(),
-        Some("1")
-    )
+    matches!(std::env::var("HEAVYTHING_LIVE_TESTS").ok().as_deref(), Some("1"))
 }
 
 // ============================================================================
@@ -413,10 +408,7 @@ fn test_dns_lookup_host_localhost() {
     let addrs = rt
         .block_on(heavything::net::dns::lookup_host("localhost", 80))
         .expect("localhost must resolve via /etc/hosts");
-    assert!(
-        !addrs.is_empty(),
-        "localhost must resolve to at least one socket"
-    );
+    assert!(!addrs.is_empty(), "localhost must resolve to at least one socket");
     let any_loopback = addrs.iter().any(|a| match a.ip() {
         IpAddr::V4(v4) => v4.is_loopback(),
         IpAddr::V6(v6) => v6.is_loopback(),
@@ -475,9 +467,7 @@ fn test_dns_lookup_host_invalid_tld_errors_gated() {
         80,
     ));
     match result {
-        Ok(addrs) => panic!(
-            "RFC 6761 .invalid TLD must not resolve, got {addrs:?}"
-        ),
+        Ok(addrs) => panic!("RFC 6761 .invalid TLD must not resolve, got {addrs:?}"),
         Err(NetError::Dns(_)) | Err(NetError::DnsTimeout) | Err(NetError::Io(_)) => {}
         Err(other) => panic!("expected DNS-class error, got {other}"),
     }
@@ -526,8 +516,7 @@ fn test_tcp_echo_round_trip_on_loopback() {
         // a freshly accepted connection without panicking. It returns
         // `std::io::Result<()>` so we `.expect()` consistent with the
         // rest of this test's idiom.
-        heavything::net::runtime::apply_stream_defaults(&client)
-            .expect("apply_stream_defaults");
+        heavything::net::runtime::apply_stream_defaults(&client).expect("apply_stream_defaults");
         client.write_all(&payload).await.expect("client write");
         client.flush().await.expect("client flush");
         let mut reply = [0u8; 1024];
@@ -607,9 +596,7 @@ fn test_http_server_localhost_round_trip_gated() {
 
     let rt = build_runtime().expect("build_runtime");
     rt.block_on(async {
-        let listener = TcpListener::bind(("127.0.0.1", 0u16))
-            .await
-            .expect("bind");
+        let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.expect("bind");
         let local = listener.local_addr().expect("local_addr");
 
         // The server side: spawn a handler that uses the
@@ -619,8 +606,7 @@ fn test_http_server_localhost_round_trip_gated() {
         let server_task = tokio::spawn(async move {
             let (sock, peer) = listener.accept().await.expect("accept");
             // `handle_connection` returns when the chain closes.
-            let _ = heavything::net::http::server::handle_connection(sock, peer, cfg_for_task)
-                .await;
+            let _ = heavything::net::http::server::handle_connection(sock, peer, cfg_for_task).await;
         });
 
         // The entire client interaction is wrapped in a hard 15s
@@ -967,10 +953,7 @@ fn test_url_error_can_be_constructed_and_displayed() {
         Ok(_) => panic!("empty input must error"),
     };
     let display = format!("{err}");
-    assert!(
-        !display.is_empty(),
-        "UrlError Display output must not be empty"
-    );
+    assert!(!display.is_empty(), "UrlError Display output must not be empty");
     // `UrlError` derives Debug; smoke-test the impl is reachable.
     let debug = format!("{err:?}");
     assert!(!debug.is_empty());
