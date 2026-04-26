@@ -117,6 +117,7 @@ pub mod png;
 pub mod progressbar;
 pub mod spacers;
 pub mod spinner;
+pub mod splash;
 pub mod ssh;
 pub mod statusbar;
 pub mod text;
