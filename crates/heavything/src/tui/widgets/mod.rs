@@ -96,6 +96,7 @@ pub mod bell;
 pub mod datagrid;
 pub mod effect;
 pub mod effects;
+pub mod form;
 pub mod label;
 pub mod lines;
 pub mod matrix;
