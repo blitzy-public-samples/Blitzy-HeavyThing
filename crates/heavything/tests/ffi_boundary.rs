@@ -144,7 +144,30 @@
 //! [`ChildProcess::recv_message`]) plus OS-level observation via
 //! `nix::sys::wait::waitpid` / `nix::sys::signal::kill`.
 
-#![allow(clippy::unwrap_used)]
+// =====================================================================
+// Crate-level attributes
+// =====================================================================
+//
+// `clippy::unwrap_used` and `clippy::expect_used` are allowed at file
+// scope per AAP §0.8.4 "Tests and benchmarks may use `unwrap()`": these
+// integration tests deliberately use `expect(...)` and `unwrap(...)`
+// for setup-time invariants whose violation should crash the test
+// rather than be propagated as `Result`. This keeps test bodies
+// readable and focused on the FFI-boundary logic under test.
+//
+// `#![cfg(target_os = "linux")]` and `#![cfg(target_arch = "x86_64")]`
+// match the platform constraints documented in AAP §0.8.1
+// ("Linux x86_64 only; no cross-platform compatibility required or
+// desired") and mirror the same crate-level gates used by
+// `crates/heavything/src/cpu.rs`. On any non-Linux or non-x86_64
+// target the entire test file compiles down to nothing; this is the
+// safest behavior for a file that pervasively uses `libc`,
+// `nix::unistd`, `nix::sys::prctl`, `memmap2::Mmap::map`, and the
+// CPUID instruction — none of which have meaningful semantics outside
+// `x86_64-unknown-linux-gnu`.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![cfg(target_os = "linux")]
+#![cfg(target_arch = "x86_64")]
 
 use std::io::{Read, Write};
 use std::os::unix::io::{AsRawFd, OwnedFd};
@@ -159,6 +182,7 @@ use nix::unistd::{
     ForkResult, Gid, Pid, Uid,
 };
 
+use heavything::cpu;
 use heavything::error::{InitError, TuiError};
 use heavything::net::child::{
     killall_children, spawn_child, ChildProcess, LinkMessage, LogRecord, LogSeverity,
@@ -2161,3 +2185,402 @@ fn test_cpuid_vendor_string() {
     );
 }
 
+// =============================================================================
+// `test_cpuid_feature_detection_does_not_panic`
+// -----------------------------------------------------------------------------
+// Schema-required test #2 (per AAP §0.7.4.4 + UNSAFE_AUDIT.md). Verifies the
+// `OnceLock` idempotence contract of [`heavything::cpu::detect`]: every call
+// returns a reference to the *same* `&'static CpuFeatures` instance, and
+// reading the published feature fields (e.g. `has_aesni`) does not panic.
+//
+// The corresponding unsafe block lives at `src/cpu.rs::detect_is_intel` where
+// `std::arch::x86_64::__cpuid(0)` is invoked. On stable Rust 1.59+ this
+// function is a *safe* fn on `x86_64-*`, so the call site itself does not
+// require an `unsafe` annotation; the test exists primarily to enforce the
+// `OnceLock` semantics that the rest of the crate relies on for AES-NI / AVX
+// dispatch decisions and to provide a regression backstop should a future
+// refactor accidentally re-introduce per-call CPUID issuance (which would
+// change the returned reference identity).
+// =============================================================================
+
+/// FFI / boundary test for `heavything::cpu::detect` `OnceLock` semantics.
+///
+/// **UNSAFE_AUDIT.md cross-reference**: section "CPUID — `cpu.rs:141`"
+/// (`heavything::cpu::detect_is_intel`). The integration-test mapping table
+/// at `UNSAFE_AUDIT.md:418` lists `test_cpuid_vendor_string` as the primary
+/// instruction-boundary verifier; this test is the schema-mandated
+/// companion that locks down the *cache-shape* contract of `cpu::detect`.
+///
+/// **Reference**: AAP §0.7.4.4 (mandatory test name) + the `OnceLock`
+/// idempotence pattern documented at `src/cpu.rs:130` ("returns same
+/// reference on repeat calls").
+///
+/// **Asserted invariants:**
+/// 1. `cpu::detect()` returns `&'static CpuFeatures` (compile-time
+///    enforced by the function signature).
+/// 2. Two consecutive calls return *identical pointers*
+///    (`std::ptr::eq(a, b)` holds), i.e. the `OnceLock` is populated once
+///    and re-read thereafter — no per-call CPUID re-issuance.
+/// 3. Reading `CpuFeatures::has_aesni` and `CpuFeatures::is_intel` does
+///    not panic and yields a `bool` value (any value is acceptable —
+///    the test asserts only field accessibility, not the host's feature
+///    set, since we cannot assume a specific x86_64 CPU model in CI).
+///
+/// **Skip conditions**: none. This test is universally applicable on
+/// `x86_64-unknown-linux-gnu` (the only target this file compiles on
+/// per the file-scope `#![cfg]` attributes).
+#[test]
+fn test_cpuid_feature_detection_does_not_panic() {
+    // -------------------------------------------------------------------
+    // Step 1 — Two consecutive `detect()` calls must return the SAME
+    // `&'static CpuFeatures` pointer. The `OnceLock` inside `cpu.rs`
+    // guarantees that the first call populates the slot and every
+    // subsequent call returns a borrow of that same value. We verify
+    // this with `std::ptr::eq` (the canonical Rust idiom for raw
+    // pointer-identity comparison; `==` on `&T` would dereference and
+    // compare values rather than addresses).
+    //
+    // This is the same idempotence pattern asserted by the in-crate
+    // unit test `cpu::tests::detect_is_idempotent` at
+    // `src/cpu.rs:detect_is_idempotent`. We re-assert it here from the
+    // integration-test boundary to lock down the *public* semantic
+    // contract: external callers depend on reference identity for
+    // `Arc::ptr_eq`-style cache invalidation patterns at higher layers
+    // (e.g., `crypto::aes` AES-NI dispatch decisions captured at
+    // initialization time).
+    // -------------------------------------------------------------------
+    let a: &'static cpu::CpuFeatures = cpu::detect();
+    let b: &'static cpu::CpuFeatures = cpu::detect();
+    assert!(
+        std::ptr::eq(a, b),
+        "cpu::detect() must be idempotent (OnceLock semantics): \
+         first call returned {:p}, second call returned {:p}",
+        a,
+        b,
+    );
+
+    // -------------------------------------------------------------------
+    // Step 2 — Read the documented feature fields. The values themselves
+    // are hardware-dependent (we make NO assumption about the host CPU's
+    // feature set in CI: it could be a shared cloud VM with masked
+    // features, or a bare-metal host with AES-NI enabled), but the
+    // *fields must be readable as `bool`* without panicking. This
+    // verifies the `CpuFeatures` struct shape contract.
+    //
+    // We bind both fields to `_`-prefixed bindings to suppress the
+    // `unused_variables` warning while still ensuring the field load
+    // is not optimized away by the compiler. The `let _x: bool = ...`
+    // pattern with an explicit type annotation also catches any
+    // accidental future change to the field type (e.g. `bool` -> `u8`).
+    // -------------------------------------------------------------------
+    let _has_aesni: bool = a.has_aesni;
+    let _is_intel: bool = a.is_intel;
+
+    // -------------------------------------------------------------------
+    // Step 3 — Sanity-check that the cached `CpuFeatures` is not
+    // suspiciously default-zero. `l1_size` is set to a safe default of
+    // 64 by `cpu::detect_l1_size` (per `src/cpu.rs:l1_size_default_is_64`)
+    // even on hardware where leaf 4 / leaf 0x80000006 fail; it should
+    // therefore always be non-zero. This catches a hypothetical future
+    // bug where `OnceLock::get_or_init` was bypassed and a zero-init
+    // `CpuFeatures` was returned.
+    // -------------------------------------------------------------------
+    assert!(
+        a.l1_size > 0,
+        "cpu::detect().l1_size must be non-zero (safe default 64); got {}",
+        a.l1_size,
+    );
+}
+
+// =============================================================================
+// `test_vdso_module_loads`
+// -----------------------------------------------------------------------------
+// Schema-required test #9 (per AAP §0.7.4.4). Smoke-test that the
+// `heavything::util::vdso` module loads and its time-source primitives behave
+// monotonically. Per AAP §0.5.1.7 / §0.7.4 this module is largely an
+// API-parity stub on top of `std::time::Instant` because Rust's stdlib
+// already resolves vDSO symbols (`__vdso_clock_gettime`) on Linux without
+// any application action.
+//
+// No `unsafe` block lives in `util/vdso.rs` itself in the Rust port (the
+// vDSO acceleration is delegated to `libc` which resolves the symbols at
+// process start); the module is included here for **boundary-coverage
+// completeness** and to catch any regression that would re-introduce manual
+// `/proc/self/auxv` parsing or hand-rolled ELF walking of the vDSO page
+// (which the FASM `vdso.inc` did, but which the Rust port does not).
+// =============================================================================
+
+/// Smoke test for `heavything::util::vdso` time-source primitives.
+///
+/// **UNSAFE_AUDIT.md cross-reference**: this module has zero unsafe
+/// blocks per AAP §0.5.1.7 ("API-preservation stub; Rust `std::time`
+/// uses vDSO automatically"). The test verifies the time-source
+/// semantics function correctly — it is a CONTRACT test rather than an
+/// FFI-boundary test, but it lives here to keep all
+/// `vdso/cpu/termios/mmap/fork/setuid` boundary verification in a
+/// single integration-test crate.
+///
+/// **Reference**: AAP §0.7.4.4 mandatory test name +
+/// `src/util/vdso.rs::PROCESS_START` `OnceLock` initialization.
+///
+/// **Asserted invariants:**
+/// 1. `vdso::init()` is callable and infallible.
+/// 2. `Instant::now()` (which Rust resolves through the Linux vDSO)
+///    is monotonically non-decreasing across two reads separated by
+///    a brief sleep — the canonical property of `CLOCK_MONOTONIC`.
+/// 3. `vdso::now_ns()` returns a non-decreasing `u64` after a sleep,
+///    matching the contract documented at `src/util/vdso.rs:164`.
+/// 4. `vdso::wall_unix_secs()` returns a value larger than the
+///    epoch-2020 sentinel `1_577_836_800`, matching the example in
+///    `src/util/vdso.rs:90`.
+///
+/// **Skip conditions**: none.
+#[test]
+fn test_vdso_module_loads() {
+    // -------------------------------------------------------------------
+    // Step 1 — Explicit `vdso::init()` is idempotent and infallible.
+    // The function returns `()` per AAP §0.5.1.7 "preserves FASM's
+    // integer-based timing API" (it merely seeds an internal
+    // `OnceLock<Instant>`).
+    // -------------------------------------------------------------------
+    heavything::util::vdso::init();
+    heavything::util::vdso::init(); // idempotent — second call is a no-op
+
+    // -------------------------------------------------------------------
+    // Step 2 — Verify the standard-library `Instant` monotonicity that
+    // backs `vdso::now_*`. On Linux x86_64 this resolves to
+    // `__vdso_clock_gettime(CLOCK_MONOTONIC, ...)` via libc.
+    //
+    // We sleep for 1 ms which is generous compared to vDSO clock
+    // resolution (~1ns on modern Intel). The assertion `now2 >= now1`
+    // (rather than strict `>`) is defensive against the unlikely case
+    // of clock granularity coarser than 1 ms in a virtualized
+    // environment.
+    // -------------------------------------------------------------------
+    let now1: Instant = Instant::now();
+    std::thread::sleep(Duration::from_millis(1));
+    let now2: Instant = Instant::now();
+    assert!(
+        now2 >= now1,
+        "Instant::now() must be monotonically non-decreasing; \
+         second read {:?} is earlier than first read {:?}",
+        now2,
+        now1,
+    );
+
+    // -------------------------------------------------------------------
+    // Step 3 — Cross-verify against the `heavything::util::vdso::now_ns`
+    // wrapper. After a 1ms sleep the second reading must be greater
+    // than or equal to the first; the difference should be a positive
+    // u64 nanosecond delta.
+    // -------------------------------------------------------------------
+    let ns1: u64 = heavything::util::vdso::now_ns();
+    std::thread::sleep(Duration::from_millis(1));
+    let ns2: u64 = heavything::util::vdso::now_ns();
+    assert!(
+        ns2 >= ns1,
+        "vdso::now_ns() must be monotonically non-decreasing; \
+         second read {} ns is earlier than first read {} ns",
+        ns2,
+        ns1,
+    );
+
+    // -------------------------------------------------------------------
+    // Step 4 — Verify the wall-clock helper returns a sane Unix-epoch
+    // value. The 2020-01-01 sentinel (`1_577_836_800`) matches the
+    // example documented at `src/util/vdso.rs:90`. Any value at or
+    // before that sentinel indicates an uninitialized / corrupted
+    // `CLOCK_REALTIME` source — a system-administration issue rather
+    // than a code bug, but worth flagging if the test ever runs on
+    // such a machine.
+    // -------------------------------------------------------------------
+    let wall_secs: u64 = heavything::util::vdso::wall_unix_us() / 1_000_000;
+    assert!(
+        wall_secs > 1_577_836_800,
+        "vdso::wall_unix_us() returned a Unix-epoch value at or before \
+         2020-01-01 ({} s); host clock is misconfigured",
+        wall_secs,
+    );
+}
+
+// =============================================================================
+// `test_exit_code_constants`
+// -----------------------------------------------------------------------------
+// Schema-required test #10 (per AAP §0.7.4.4). The four exit-code constants
+// `EXIT_HEAP_MMAP_FAIL = 99`, `EXIT_PROFILER_OVERFLOW = 98`,
+// `EXIT_ULIMIT_TOO_LOW = 97`, and `EXIT_EPOLL_CREATE_FAIL = 96` form part
+// of the **observable interface** of the HeavyThing port per AAP §0.1.1
+// ("Exit codes 96–99 ... are part of the observable interface and must be
+// produced by the Rust code under equivalent failure conditions"). They
+// match the FASM `ht.inc` lines 38–41 byte-for-byte.
+//
+// This test pins the constants to their canonical values so a future
+// refactor that accidentally renumbered them would be caught at
+// integration-test time before propagating to a production binary that
+// downstream operators / monitoring tooling rely on for failure-mode
+// triage.
+// =============================================================================
+
+/// Verifies the four FASM-compatible exit-code constants exposed by
+/// `heavything` lib.rs match the canonical assembly values.
+///
+/// **UNSAFE_AUDIT.md cross-reference**: not directly an unsafe site;
+/// the constants are exit-code mappings that downstream `process::exit`
+/// and (forked-child) `libc::_exit` calls use. Listed in this file
+/// because the schema requires it and because the unsafe sites that
+/// EMIT these codes (`runtime::check_ulimit` for 97, mmap failures for
+/// 99) are tested elsewhere in this binary.
+///
+/// **Reference**: AAP §0.1.1 "Exit codes 96–99" + `src/lib.rs:119–132`.
+///
+/// **Asserted invariants:**
+/// * `heavything::EXIT_HEAP_MMAP_FAIL == 99` — `heap.inc` mmap failure
+/// * `heavything::EXIT_PROFILER_OVERFLOW == 98` — profiler stack overrun
+/// * `heavything::EXIT_ULIMIT_TOO_LOW == 97` — `RLIMIT_NOFILE` < 4096
+/// * `heavything::EXIT_EPOLL_CREATE_FAIL == 96` — `epoll_create` /
+///   tokio runtime construction failure
+/// * The four constants form a contiguous descending sequence
+///   {99, 98, 97, 96} so future operators can document the "9x exit
+///   codes are HeavyThing init failures" convention without surprises.
+///
+/// **Skip conditions**: none.
+#[test]
+fn test_exit_code_constants() {
+    // Step 1 — Pin each constant to its canonical AAP §0.1.1 value.
+    assert_eq!(
+        heavything::EXIT_HEAP_MMAP_FAIL,
+        99,
+        "EXIT_HEAP_MMAP_FAIL must be 99 (heap.inc mmap/mremap failure)",
+    );
+    assert_eq!(
+        heavything::EXIT_PROFILER_OVERFLOW,
+        98,
+        "EXIT_PROFILER_OVERFLOW must be 98 (profiler.inc sample-stack overrun)",
+    );
+    assert_eq!(
+        heavything::EXIT_ULIMIT_TOO_LOW,
+        97,
+        "EXIT_ULIMIT_TOO_LOW must be 97 (RLIMIT_NOFILE < EPOLL_MINFDS)",
+    );
+    assert_eq!(
+        heavything::EXIT_EPOLL_CREATE_FAIL,
+        96,
+        "EXIT_EPOLL_CREATE_FAIL must be 96 (epoll_create / tokio Runtime::new fail)",
+    );
+
+    // Step 2 — The four constants must be distinct and form a
+    // contiguous descending sequence so the "9x = HeavyThing init
+    // failure" convention is unambiguous to downstream operators.
+    let codes = [
+        heavything::EXIT_HEAP_MMAP_FAIL,
+        heavything::EXIT_PROFILER_OVERFLOW,
+        heavything::EXIT_ULIMIT_TOO_LOW,
+        heavything::EXIT_EPOLL_CREATE_FAIL,
+    ];
+    let max = *codes.iter().max().expect("non-empty array");
+    let min = *codes.iter().min().expect("non-empty array");
+    assert_eq!(max, 99, "max exit code in the FASM-compatible set must be 99",);
+    assert_eq!(min, 96, "min exit code in the FASM-compatible set must be 96",);
+    // Verify all four values are distinct (set semantics).
+    let mut sorted = codes.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        4,
+        "the four EXIT_* constants must be distinct (got {:?})",
+        codes,
+    );
+}
+
+// =============================================================================
+// `test_isatty_smoke`
+// -----------------------------------------------------------------------------
+// Schema-required test #11 (per AAP §0.7.4.4). Confirms that `libc::isatty`
+// is linkable, callable, and returns one of the two POSIX-mandated values
+// (`0` for "not a terminal" or `1` for "is a terminal"). This is the
+// FFI-linkage smoke test for the `libc` crate's terminal-detection
+// primitive used pervasively throughout the test suite as a TTY-skip gate
+// (see `test_raw_terminal_roundtrip` and `test_sigwinch_handler`).
+//
+// The value returned varies based on test-execution environment: the
+// `cargo test` harness typically captures stdout via a pipe, so isatty
+// returns 0; running interactively in a real terminal returns 1. The test
+// asserts only that the return value is one of those two — not which one.
+// =============================================================================
+
+/// Smoke test for `libc::isatty` FFI linkage and return-value contract.
+///
+/// **UNSAFE_AUDIT.md cross-reference**: this is a `libc` FFI boundary
+/// invocation that mirrors the `stdin_is_tty()` helper used by every
+/// TTY-gated test in this file (e.g., `test_raw_terminal_roundtrip`).
+/// Verifying it works at the integration-test layer ensures the
+/// `libc::isatty` symbol is correctly resolved at link time and that
+/// the `libc::STDIN_FILENO` constant is reachable.
+///
+/// **Reference**: AAP §0.7.4.4 + POSIX `isatty(3)` specification
+/// ("isatty() returns 1 if fd is an open file descriptor referring to a
+/// terminal; otherwise 0 is returned, and errno is set").
+///
+/// **Asserted invariants:**
+/// 1. `libc::isatty(libc::STDIN_FILENO)` returns 0 or 1 (no other
+///    values are POSIX-permitted).
+/// 2. The call does not panic, abort, or trigger UB.
+/// 3. `libc::STDIN_FILENO` is the canonical value `0`.
+///
+/// **Skip conditions**: none. The test passes regardless of whether
+/// stdin is a TTY because we only assert the return value is in
+/// `{0, 1}`.
+#[test]
+fn test_isatty_smoke() {
+    // Step 1 — Sanity-check the well-known fd constant. POSIX mandates
+    // STDIN_FILENO == 0; this assertion catches any bizarre future
+    // libc-crate refactor that breaks the constant.
+    assert_eq!(
+        libc::STDIN_FILENO,
+        0,
+        "libc::STDIN_FILENO must be 0 (POSIX standard fd number)",
+    );
+
+    // Step 2 — Call isatty on stdin. The result varies by environment:
+    //   * `cargo test` (stdout piped to harness): returns 0
+    //   * Interactive terminal: returns 1
+    // We only assert "in {0, 1}" — not a specific value — so the test
+    // is environment-independent.
+    //
+    // SAFETY: `libc::isatty` is an FFI call to a POSIX-standard
+    // function. It reads the TTY attributes of the given fd via the
+    // `tcgetattr` path internally and is safe to call on any integer
+    // fd value (including invalid fds, for which it returns 0 with
+    // errno set to EBADF). `STDIN_FILENO` (= 0) is a process-lifetime
+    // valid fd: the kernel guarantees it remains open from `execve`
+    // through process exit unless explicitly closed by the program,
+    // which Cargo's test harness does not do.
+    let r: libc::c_int = unsafe { libc::isatty(libc::STDIN_FILENO) };
+    assert!(
+        r == 0 || r == 1,
+        "libc::isatty(STDIN_FILENO) must return 0 or 1; got {} \
+         (errno after call: {})",
+        r,
+        std::io::Error::last_os_error(),
+    );
+
+    // Step 3 — Independently invoke isatty on a known-invalid fd to
+    // exercise the error path. POSIX `isatty(3)` specifies that for
+    // an invalid fd the return value is 0 and `errno` is set to
+    // `EBADF`. We do not assert errno (that would couple the test to
+    // the calling thread's errno state which may have been clobbered
+    // by intermediate runtime activity); we assert only the return
+    // value, which is the externally-observable contract.
+    //
+    // SAFETY: `libc::isatty` accepts any integer fd and returns 0 for
+    // invalid fds. Passing the sentinel value -1 (universally
+    // recognized as an invalid fd in POSIX) is a documented usage
+    // pattern and triggers no UB.
+    let r_invalid: libc::c_int = unsafe { libc::isatty(-1) };
+    assert_eq!(
+        r_invalid, 0,
+        "libc::isatty(-1) must return 0 for an invalid fd; got {}",
+        r_invalid,
+    );
+}
