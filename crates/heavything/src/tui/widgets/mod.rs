@@ -100,10 +100,10 @@
 //!   panel + centered message + single-line editor with Enter
 //!   intercept callback) (`tui_textbox.inc`).
 //!
-//! Additional widget submodules (`simpleauth`, `alert`, `progressbox`)
-//! are added by subsequent translation agents per the AAP
-//! file-by-file transformation plan.
+//! Additional widget submodules (`simpleauth`) are added by subsequent
+//! translation agents per the AAP file-by-file transformation plan.
 
+pub mod alert;
 pub mod background;
 pub mod bell;
 pub mod button;
