@@ -967,23 +967,24 @@ pub(crate) struct PreWorker {
 /// 2. `fork()`.
 /// 3. **Parent branch**: close the child end of the pair, mark the
 ///    parent end non-blocking, push a [`PreWorker`] onto the result.
-/// 4. **Child branch**: drop the parent end; invoke the worker's
-///    main loop. Because `crate::worker` is authored by a separate
-///    agent and not yet present in the workspace, the child branch
-///    currently exits 1 via [`child_branch_placeholder`] — a
-///    downstream agent will replace this stub with the actual worker
-///    entry point.
+/// 4. **Child branch**: drop the parent end; clone each inherited
+///    listener fd into an [`OwnedFd`] so the worker can own its end
+///    of the dup'd file descriptor table independently of master's
+///    `Vec<TcpListener>`; then hand control to [`crate::worker::run`]
+///    which never returns on the happy path.
 ///
 /// On any fork or socketpair failure prints the FASM byte-identical
 /// `.err_forkfail` string (`"Fatal: fork and/or socketpair failed."`)
 /// and exits 1. Mirrors `master.inc` line 154.
 ///
 /// Listener fds passed in are inherited by every child via `fork(2)`
-/// automatically; the slice itself is borrow-only and is dropped by
-/// the caller after this function returns.
+/// automatically; in addition we explicitly `dup(2)`-clone them via
+/// [`std::net::TcpListener::try_clone`] so each child holds an
+/// independently owned copy that can be promoted to a tokio
+/// `TcpListener` inside the worker's runtime.
 fn fork_workers(
     cpucount: u32,
-    _listeners: &[std::net::TcpListener],
+    listeners: &[std::net::TcpListener],
     config: &Config,
 ) -> Result<Vec<PreWorker>> {
     let mut pre_workers: Vec<PreWorker> = Vec::with_capacity(cpucount as usize);
@@ -1044,42 +1045,72 @@ fn fork_workers(
                 });
             }
             ForkResult::Child => {
-                // Worker child: drop parent end and transfer child_fd
-                // to the worker's main loop.
+                // Worker child: drop parent end and transfer
+                // child_fd plus listener FDs to the worker's main
+                // loop. `crate::worker::run` never returns on the
+                // happy path (it terminates the process via
+                // `process::exit(0)` when the master link closes,
+                // mirroring the assembly's `worker_linkerror`
+                // semantics at `worker.inc` line ~125).
                 drop(parent_fd);
-                // `child_branch_placeholder` returns `!` (calls
-                // `process::exit`) so this match arm diverges; control
-                // never returns to the surrounding loop in the child.
-                child_branch_placeholder(child_fd, config, index);
+
+                // Clone each inherited listener's FD via `dup(2)`
+                // and convert into [`OwnedFd`] so the worker owns
+                // them independently of the slice borrow. The
+                // child already inherited the same FDs via
+                // `fork(2)` and they would also work directly, but
+                // the worker's signature takes `Vec<OwnedFd>` and
+                // the borrowed slice cannot satisfy that without
+                // an explicit dup-clone. The cost is one extra
+                // `dup(2)` per listener per worker — negligible
+                // versus the lifetime of a webserver process.
+                let listener_fds: Vec<OwnedFd> = match listeners
+                    .iter()
+                    .map(|l| l.try_clone().map(OwnedFd::from))
+                    .collect::<std::io::Result<Vec<OwnedFd>>>()
+                {
+                    Ok(fds) => fds,
+                    Err(e) => {
+                        // Listener clone failed in the child. We
+                        // exit 1 with a diagnostic; this matches
+                        // the FASM behaviour where any
+                        // post-fork-prep failure in `workerthread`
+                        // exited the worker silently. The `_` in
+                        // `_index` and `_e` in production builds
+                        // would be silenced; we keep them visible
+                        // here for debug builds.
+                        eprintln!(
+                            "webserver: worker #{index} failed to clone \
+                             listener fds: {e}"
+                        );
+                        let _ = config;
+                        process::exit(1);
+                    }
+                };
+
+                // Hand off to the worker. `worker::run` returns
+                // only on a setup error (PR_SET_PDEATHSIG, RNG
+                // reseed, or runtime construction failure); on
+                // happy-path master-link-EOF it calls
+                // `process::exit(0)` directly.
+                match crate::worker::run(config.clone(), child_fd, listener_fds) {
+                    Ok(()) => {
+                        // Unreachable in practice — the worker
+                        // event loop only exits via
+                        // `process::exit`. Defensive Ok-arm in
+                        // case future refactors return cleanly.
+                        process::exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("webserver: worker #{index} setup failed: {e:#}");
+                        process::exit(1);
+                    }
+                }
             }
         }
     }
 
     Ok(pre_workers)
-}
-
-/// Stand-in for the worker's main entry until `crate::worker` is
-/// authored.
-///
-/// In `daemonize_master`-detached mode stderr has been closed, so the
-/// diagnostic message is silently discarded — matching the FASM
-/// behaviour where `epoll_child`'s child path immediately jumps to
-/// `workerthread` with no console output.
-///
-/// When the downstream agent adds `crates/webserver/src/worker.rs`,
-/// this function should be replaced with `crate::worker::run(config,
-/// child_fd, index)`.
-fn child_branch_placeholder(child_fd: OwnedFd, _config: &Config, index: u32) -> ! {
-    // The fd is dropped explicitly so the worker's address space
-    // does not leak it across the exit syscall.
-    drop(child_fd);
-    eprintln!(
-        "webserver: worker process #{index} child branch reached but \
-         crates/webserver/src/worker.rs is not yet authored. The downstream \
-         agent that owns worker.rs will replace this stub with the worker \
-         entry. Exiting 1."
-    );
-    process::exit(1);
 }
 
 // ============================================================================

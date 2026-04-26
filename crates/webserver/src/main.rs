@@ -53,6 +53,7 @@
 
 mod arguments;
 mod master;
+mod worker;
 
 use std::process::ExitCode;
 
