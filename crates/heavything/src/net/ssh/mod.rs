@@ -111,3 +111,9 @@ pub mod compression;
 /// of `ssh.inc` (`.got_kexinit`, `.got_kexgexreq`, `.got_kexgexgroup`,
 /// `.got_kexgexinit`, `.got_kexgexreply`, `.keycalc`).
 pub mod kex;
+
+
+/// Top-level SSH state machine — port of the `ssh.inc` per-connection
+/// protocol logic, integrating the [`auth`], [`cipher`], [`compression`],
+/// and [`kex`] submodules into a single [`server::SshSession`] type.
+pub mod server;
