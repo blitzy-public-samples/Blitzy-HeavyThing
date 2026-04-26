@@ -17,88 +17,67 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! HTTP/1.1 and HTTP/2 aggregator module — header management, HPACK codec,
-//! MIME-like parsing, and the HTTP/1.x and HTTP/2 request/response state
-//! machines.
+//! HTTP/1.x and HTTP/2 subsystem for HeavyThing.
 //!
-//! This subsystem translates the HTTP-related `.inc` assembly files from the
-//! HeavyThing library into idiomatic Rust per AAP §0.5.1.4. The complete
-//! suite of siblings planned for the subsystem is:
+//! This module aggregates the six HTTP-related submodules that collectively
+//! port the FASM HeavyThing HTTP stack:
 //!
-//! * [`headers`] — HTTP/1.x + HTTP/2 header container, HPACK encoder/decoder,
-//!   the RFC 7541 static table, and the complete Huffman codec (port of
-//!   `httpheaders.inc`).
-//! * [`http1`] — HTTP/1.x parser state-machine driver with five-state
-//!   dispatch (InHeaders / PartialHeadersDirect / PartialHeadersBuffer /
-//!   InBodyLength / InBodyChunked) — port of `http1.inc`.
-//! * `mimelike` — MIME-like parser for HTTP messages with gzip threshold and
-//!   chunked-transfer framing (scheduled — port of `mimelike.inc`).
-//! * [`cookiejar`] — session cookie storage with `Set-Cookie` parsing,
-//!   `Cookie:` header emission, persistence buffer round-trip, and
-//!   longest-path-wins duplicate resolution (port of `cookiejar.inc`).
-//! * `server` — HTTP/1.1 server with the 8-stage dispatch pipeline
-//!   (scheduled — port of `webserver.inc`).
-//! * [`client`] — HTTP/1.1 connection-pooled client with redirect support
-//!   (port of `webclient.inc`).
-//! * `fcgi` — FastCGI client over Unix domain socket (scheduled — port of
-//!   `fcgiclient.inc`).
+//! - [`cookiejar`] — port of `cookiejar.inc`: session cookie storage for the
+//!   webclient (automated-agent-focused; not security-minded per FASM comment).
 //!
-//! The crate-wide [`HttpError`](crate::error::HttpError) error type is
-//! surfaced through [`crate::error`] and consumed by all HTTP submodules
-//! via `From<_> for HttpError` conversions, enabling `?`-propagation across
-//! the subsystem (AAP §0.8.3: thiserror for library-level typed errors).
+//! - [`headers`] — port of `httpheaders.inc`: HTTP/1.x header parse/compose plus
+//!   full HPACK (RFC 7541) encoder/decoder with all 4 Huffman tables preserved
+//!   byte-identically from FASM.  Provides 59 standard header name constants,
+//!   the 61-entry HPACK static table, and the [`headers::HttpHeaders`] container.
 //!
-//! Per AAP §0.7.4.1 this subsystem contains **zero** `unsafe` blocks;
-//! correctness derives entirely from the standard library, the `Cow`
-//! zero-copy storage idiom, and the type system. All public APIs honor
-//! AAP §0.8.3's no-panic / no-silent-loss discipline by returning
-//! typed error values on bounded operations.
+//! - [`http1`] — port of `http1.inc`: HTTP/1.x state-machine driver that
+//!   consumes bytes from an [`crate::net::io::IoChain`] and produces parsed
+//!   request or response messages.
+//!
+//! - [`mimelike`] — port of `mimelike.inc`: dual-use MIME + HTTP/1.x message
+//!   parser (author's 20-year-refined parser).  Handles fixed-length,
+//!   chunked, and multipart bodies, plus gzip/deflate encoding and quoted-
+//!   printable decoding.  [`mimelike::Mimelike`] is the canonical message
+//!   container used by both [`server`] and [`client`].
+//!
+//! - [`client`] — port of `webclient.inc`: browser-style persistent HTTP/1.1
+//!   client with host-based connection pooling, cookie jar integration,
+//!   automatic redirect following, and DNS caching.
+//!
+//! - [`server`] — port of `webserver.inc`: HTTP/1.1 server with the full
+//!   8-stage dispatch pipeline (Method → MIME parse → Size → Host → FuncMap →
+//!   FastCGI → Redirect → File serve), mmap file hotlist cache, HSTS header
+//!   emission, and BREACH mitigation via the X-NB header.
+//!
+//! # Architectural note
+//!
+//! Per AAP §0.5.2.1, this module deliberately does NOT re-export any of its
+//! children's types via `pub use`.  Consumers access types via the fully-
+//! qualified paths (`crate::net::http::server::WebServer`, etc.) to keep
+//! use-sites self-documenting.
+//!
+//! # Dependency flow within this subsystem
+//!
+//! ```text
+//!            headers (foundational leaf — no intra-subsystem deps)
+//!               ▲
+//!               │
+//!           mimelike (uses headers)
+//!               ▲
+//!               │
+//!      ┌────────┴────────┐
+//!   client                 server
+//!   (uses mimelike,        (uses mimelike,
+//!    headers, http1,       headers, http1,
+//!    cookiejar,            plus memmap2 + rng)
+//!    dns, url)
+//! ```
+//!
+//! [`crate::net::io::IoChain`]: crate::net::io::IoChain
 
-/// HTTP headers container with HPACK (RFC 7541) encoder/decoder,
-/// the 61-entry static table, the complete Huffman codec, and
-/// HTTP/1.x wire-format parse + compose helpers — port of
-/// `httpheaders.inc`.
-pub mod headers;
-
-/// HTTP/1.x parser state-machine driver with five-state dispatch
-/// (InHeaders / PartialHeadersDirect / PartialHeadersBuffer /
-/// InBodyLength / InBodyChunked). Wraps [`headers::HttpHeaders`] as the
-/// first step of the pipeline and handles body-phase consumption
-/// (Content-Length countdown or chunked sentinel scan). Port of
-/// `http1.inc`.
-pub mod http1;
-
-/// Dual-use MIME and HTTP/1.1 message parser/composer. Bidirectional
-/// — parses a stream of bytes into a structured [`mimelike::Mimelike`]
-/// or composes a `Mimelike` back into an on-wire byte stream. Handles
-/// chunked Transfer-Encoding, gzip Content-Encoding, quoted-printable
-/// and base64 Content-Transfer-Encoding, multipart messages with
-/// boundary parameter, and Set-Cookie splitting per
-/// [`MIMELIKE_SETCOOKIE_SPLIT`](crate::config::MIMELIKE_SETCOOKIE_SPLIT).
-/// Port of `mimelike.inc` (3,814 lines / 23 FASM functions).
-pub mod mimelike;
-
-/// HTTP/1.1 cookie storage and matching for automated agents. Provides
-/// [`cookiejar::Cookie`] (single 48-byte FASM-layout cookie) and
-/// [`cookiejar::CookieJar`] (insertion-ordered list with `set` parser,
-/// `get` emitter, longest-path-wins duplicate resolution, and a
-/// 7-field semicolon-delimited persistence buffer format). Port of
-/// `cookiejar.inc` (942 lines / 6 FASM functions).
-pub mod cookiejar;
-
-/// HTTP/1.1 server with the 8-stage dispatch pipeline, mmap-based file
-/// hotlist cache, HSTS + BREACH header emission, three-mode response
-/// send dispatch, keep-alive pipelining, 30-second idle timeout, and
-/// Common Log Format access logs. Port of `webserver.inc` (5,670 lines
-/// / ~55 FASM functions).
-pub mod server;
-
-/// HTTP/1.1 browser-style persistent client with host-keyed connection
-/// pooling, automatic redirect following (with cycle guard), `Set-Cookie`
-/// integration via [`cookiejar::CookieJar`], TLS via
-/// [`crate::net::tls::TlsClient`], and a 120-second per-connection read
-/// timeout. Three-layer object hierarchy ([`client::WebClient`] →
-/// [`client::WcHost`] → [`client::WcIo`] driving a [`client::WcRequest`])
-/// preserved verbatim from the FASM source. Port of `webclient.inc`
-/// (2,042 lines / 29 FASM functions).
 pub mod client;
+pub mod cookiejar;
+pub mod headers;
+pub mod http1;
+pub mod mimelike;
+pub mod server;
