@@ -96,8 +96,11 @@
 //!   shot press animation that completes by firing a click event
 //!   (`tui_button.inc`).
 //!
-//! Additional widget submodules (`textbox`, `form`, `simpleauth`,
-//! `alert`, `progressbox`, `splash`)
+//! - [`textbox`] — Panel-wrapper modal text-input dialog (titled
+//!   panel + centered message + single-line editor with Enter
+//!   intercept callback) (`tui_textbox.inc`).
+//!
+//! Additional widget submodules (`simpleauth`, `alert`, `progressbox`)
 //! are added by subsequent translation agents per the AAP
 //! file-by-file transformation plan.
 
@@ -121,4 +124,5 @@ pub mod splash;
 pub mod ssh;
 pub mod statusbar;
 pub mod text;
+pub mod textbox;
 pub mod typist;
