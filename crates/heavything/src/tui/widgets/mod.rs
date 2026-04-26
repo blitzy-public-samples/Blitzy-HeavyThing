@@ -74,6 +74,11 @@
 //!   [`ssh::TuiSsh`] (I/O-chain descendant) and
 //!   [`ssh::TuiSshRenderer`] (Renderer descendant) types
 //!   (`tui_ssh.inc`).
+//! - [`statusbar`] — height-1 horizontal-layout status bar containing
+//!   a 100%-width left-aligned status label, an optional 9-character
+//!   right-aligned uptime label refreshed every 5 seconds via a
+//!   tokio-driven interval task, and caller-inserted additional
+//!   labels (`tui_statusbar.inc`).
 //! - [`text`] — multi-line text display / editable text-area widget
 //!   with cursor management, viewline composition (left/right
 //!   alignment), word-wrap modes, and 15+ key handlers
@@ -87,7 +92,7 @@
 //!   (`tui_panel.inc`).
 //!
 //! Additional widget submodules (`textbox`, `button`, `form`,
-//! `simpleauth`, `alert`, `progressbox`, `statusbar`, `splash`)
+//! `simpleauth`, `alert`, `progressbox`, `splash`)
 //! are added by subsequent translation agents per the AAP
 //! file-by-file transformation plan.
 
@@ -107,5 +112,6 @@ pub mod progressbar;
 pub mod spacers;
 pub mod spinner;
 pub mod ssh;
+pub mod statusbar;
 pub mod text;
 pub mod typist;
