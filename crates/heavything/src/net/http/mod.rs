@@ -38,8 +38,8 @@
 //!   longest-path-wins duplicate resolution (port of `cookiejar.inc`).
 //! * `server` — HTTP/1.1 server with the 8-stage dispatch pipeline
 //!   (scheduled — port of `webserver.inc`).
-//! * `client` — HTTP/1.1 connection-pooled client with redirect support
-//!   (scheduled — port of `webclient.inc`).
+//! * [`client`] — HTTP/1.1 connection-pooled client with redirect support
+//!   (port of `webclient.inc`).
 //! * `fcgi` — FastCGI client over Unix domain socket (scheduled — port of
 //!   `fcgiclient.inc`).
 //!
@@ -92,3 +92,13 @@ pub mod cookiejar;
 /// Common Log Format access logs. Port of `webserver.inc` (5,670 lines
 /// / ~55 FASM functions).
 pub mod server;
+
+/// HTTP/1.1 browser-style persistent client with host-keyed connection
+/// pooling, automatic redirect following (with cycle guard), `Set-Cookie`
+/// integration via [`cookiejar::CookieJar`], TLS via
+/// [`crate::net::tls::TlsClient`], and a 120-second per-connection read
+/// timeout. Three-layer object hierarchy ([`client::WebClient`] →
+/// [`client::WcHost`] → [`client::WcIo`] driving a [`client::WcRequest`])
+/// preserved verbatim from the FASM source. Port of `webclient.inc`
+/// (2,042 lines / 29 FASM functions).
+pub mod client;
