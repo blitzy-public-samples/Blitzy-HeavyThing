@@ -91,13 +91,19 @@
 //!   a "guts" interior child where user widgets are placed
 //!   (`tui_panel.inc`).
 //!
-//! Additional widget submodules (`textbox`, `button`, `form`,
-//! `simpleauth`, `alert`, `progressbox`, `splash`)
+//! - [`button`] — Background-descendant clickable button with focus
+//!   and press visual states; pressing Space triggers a 300 ms one-
+//!   shot press animation that completes by firing a click event
+//!   (`tui_button.inc`).
+//!
+//! Additional widget submodules (`textbox`, `form`, `simpleauth`,
+//! `alert`, `progressbox`, `splash`)
 //! are added by subsequent translation agents per the AAP
 //! file-by-file transformation plan.
 
 pub mod background;
 pub mod bell;
+pub mod button;
 pub mod datagrid;
 pub mod effect;
 pub mod effects;
