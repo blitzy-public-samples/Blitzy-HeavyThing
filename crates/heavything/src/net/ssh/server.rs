@@ -89,36 +89,30 @@ use tokio::sync::mpsc;
 use crate::config;
 use crate::ds::buffer::Buffer;
 use crate::error::{NetError, SshError, TuiError};
-use crate::tui::widgets::ssh::SshTransport;
 use crate::net::blacklist::{key_from_socket_addr, Blacklist};
 use crate::net::io::{
-    default_connected, default_destroy, default_error, default_send, default_timeout, BoxFuture,
-    IoChain, IoLinks,
+    default_connected, default_destroy, default_error, default_send, default_timeout, BoxFuture, IoChain,
+    IoLinks,
 };
 use crate::net::ssh::auth::{
     build_client_service_request, build_client_userauth_request, build_random_ignore_payload,
-    build_userauth_failure_payload, handle_ignore, handle_service_request,
-    handle_userauth_failure, handle_userauth_info_request, handle_userauth_request,
-    AuthArgs, AuthCallback, AuthOutcome, CLIENT_SERVICENAME as AUTH_CLIENT_SERVICENAME,
-    SESSION_STR, SSH_MSG_CHANNEL_OPEN, SSH_MSG_DEBUG, SSH_MSG_IGNORE,
-    SSH_MSG_SERVICE_ACCEPT, SSH_MSG_SERVICE_REQUEST, SSH_MSG_USERAUTH_BANNER,
+    build_userauth_failure_payload, handle_ignore, handle_service_request, handle_userauth_failure,
+    handle_userauth_info_request, handle_userauth_request, AuthArgs, AuthCallback, AuthOutcome,
+    CLIENT_SERVICENAME as AUTH_CLIENT_SERVICENAME, SESSION_STR, SSH_MSG_CHANNEL_OPEN, SSH_MSG_DEBUG,
+    SSH_MSG_IGNORE, SSH_MSG_SERVICE_ACCEPT, SSH_MSG_SERVICE_REQUEST, SSH_MSG_USERAUTH_BANNER,
     SSH_MSG_USERAUTH_FAILURE, SSH_MSG_USERAUTH_INFO_REQUEST, SSH_MSG_USERAUTH_INFO_RESPONSE,
     SSH_MSG_USERAUTH_REQUEST, SSH_MSG_USERAUTH_SUCCESS,
 };
-use crate::net::ssh::cipher::{
-    frame_packet_into, CipherState, MAC_SIZE, MAX_PACKET_SIZE, MIN_PADDING,
-};
-use crate::net::ssh::compression::{
-    negotiate_compression, CompressionState, DeflateStream, InflateStream,
-};
+use crate::net::ssh::cipher::{frame_packet_into, CipherState, MAC_SIZE, MAX_PACKET_SIZE, MIN_PADDING};
+use crate::net::ssh::compression::{negotiate_compression, CompressionState, DeflateStream, InflateStream};
 use crate::net::ssh::kex::{
-    append_mpint, append_string, append_u32_be, build_kexinit, encode_mpint,
-    parse_kexinit, sign_dss, sign_rsa, verify_signature, DhExchange, GexRange, HostKey,
-    KexHashBuilder, KexState, SessionKeys, COMP_ALGS_FORCED, COMP_ALGS_NONE,
-    COMP_ALGS_PREFER, HOST_KEY_ALGS_RSA_DSS,
-    SSH_MSG_KEXINIT, SSH_MSG_KEX_DH_GEX_GROUP, SSH_MSG_KEX_DH_GEX_INIT,
-    SSH_MSG_KEX_DH_GEX_REPLY, SSH_MSG_KEX_DH_GEX_REQUEST, SSH_MSG_NEWKEYS,
+    append_mpint, append_string, append_u32_be, build_kexinit, encode_mpint, parse_kexinit, sign_dss,
+    sign_rsa, verify_signature, DhExchange, GexRange, HostKey, KexHashBuilder, KexState, SessionKeys,
+    COMP_ALGS_FORCED, COMP_ALGS_NONE, COMP_ALGS_PREFER, HOST_KEY_ALGS_RSA_DSS, SSH_MSG_KEXINIT,
+    SSH_MSG_KEX_DH_GEX_GROUP, SSH_MSG_KEX_DH_GEX_INIT, SSH_MSG_KEX_DH_GEX_REPLY, SSH_MSG_KEX_DH_GEX_REQUEST,
+    SSH_MSG_NEWKEYS,
 };
+use crate::tui::widgets::ssh::SshTransport;
 
 // ---------------------------------------------------------------------------
 // SSH protocol message-type constants not re-exported from the sibling
@@ -643,9 +637,7 @@ impl SshServer {
         // Blacklist gate.
         let key = key_from_socket_addr(peer);
         if self.blacklist.contains(key) {
-            session
-                .stage
-                .store(SshStage::Goaway as u32, Ordering::SeqCst);
+            session.stage.store(SshStage::Goaway as u32, Ordering::SeqCst);
         }
         Ok(session)
     }
@@ -663,15 +655,12 @@ impl SshSession {
     /// (typically `sshtalk`'s `main`) is expected to handle by emitting
     /// stderr + exiting with code 1 (preserving FASM `sshtalk.asm`
     /// behavior).
-    pub fn new_server(
-        config: &SshConfig,
-        blacklist: Option<Arc<Blacklist>>,
-    ) -> Result<Arc<Self>, SshError> {
+    pub fn new_server(config: &SshConfig, blacklist: Option<Arc<Blacklist>>) -> Result<Arc<Self>, SshError> {
         // Verify host keys are loadable. Empty vector still means we
         // load successfully but the disk had no keys, which we treat
         // as a configuration failure (matches sshtalk semantics).
-        let _x509_keys = crate::crypto::x509::load_ssh_host_keys()
-            .map_err(|e| SshError::HostKeys(format!("{:?}", e)))?;
+        let _x509_keys =
+            crate::crypto::x509::load_ssh_host_keys().map_err(|e| SshError::HostKeys(format!("{:?}", e)))?;
         // The x509 → kex::HostKey extraction interface is intentionally
         // minimal at this layer; concrete signing-capable host-key
         // entries are populated downstream by the binary that owns the
@@ -905,7 +894,6 @@ fn encode_socket_addr_into(buf: &mut [u8; 110], peer: &std::net::SocketAddr) -> 
     }
 }
 
-
 // ===========================================================================
 // IoChain trait impl for SshSession
 // ===========================================================================
@@ -955,12 +943,13 @@ impl IoChain for SshSession {
                 // Send the blacklisted banner then forward the connect
                 // signal up so the topmost layer sees the connection
                 // before tear-down occurs.
-                let _ = self.send_to_child(Bytes::from_static(SSH_IDENT_BLACKLISTED)).await;
+                let _ = self
+                    .send_to_child(Bytes::from_static(SSH_IDENT_BLACKLISTED))
+                    .await;
             } else if self.client_mode == ClientMode::Server {
                 // Send our identification banner.
                 let _ = self.send_to_child(Bytes::from_static(SSH_IDENT)).await;
-                self.stage
-                    .store(SshStage::Idents as u32, Ordering::SeqCst);
+                self.stage.store(SshStage::Idents as u32, Ordering::SeqCst);
             }
             // Spawn the outbound pump task so SshTransport::send_bytes
             // can deliver bytes through the cipher state machine.
@@ -1053,9 +1042,7 @@ impl SshSession {
                     return Ok(());
                 }
             }
-            let take = (data.len() - offset)
-                .min(CHANNEL_DATA_CHUNK)
-                .min(window as usize);
+            let take = (data.len() - offset).min(CHANNEL_DATA_CHUNK).min(window as usize);
             let mut payload = Vec::with_capacity(9 + take);
             payload.push(SSH_MSG_CHANNEL_DATA);
             append_u32_be(&mut payload, chan);
@@ -1085,9 +1072,9 @@ impl SshSession {
                 .deflate
                 .lock()
                 .map_err(|_| NetError::Ssh(SshError::Compression("deflate poisoned".into())))?;
-            let stream = deflate_guard.as_mut().ok_or_else(|| {
-                NetError::Ssh(SshError::Compression("deflate not initialized".into()))
-            })?;
+            let stream = deflate_guard
+                .as_mut()
+                .ok_or_else(|| NetError::Ssh(SshError::Compression("deflate not initialized".into())))?;
             let compressed = stream.compress_packet(body0, rest)?;
             // Copy the borrowed slice immediately — the next call to
             // `compress_packet` would overwrite the internal outbuf.
@@ -1169,10 +1156,7 @@ impl SshSession {
     /// on success (banner consumed, stage advances), `Ok(false)` if
     /// insufficient data, `Err` if the banner is malformed.
     fn try_parse_ident(&self) -> Result<bool, NetError> {
-        let mut buf = self
-            .accbuf
-            .lock()
-            .map_err(|_| NetError::Ssh(SshError::Cipher))?;
+        let mut buf = self.accbuf.lock().map_err(|_| NetError::Ssh(SshError::Cipher))?;
         let bytes = buf.as_slice();
         // Find the first CR LF. Per RFC 4253 §4.2 the ident MUST end with
         // CR LF (0x0d 0x0a). We tolerate up to 65535 bytes of pre-banner
@@ -1214,8 +1198,7 @@ impl SshSession {
         buf.extend_from_slice(&remainder);
         drop(buf);
         // Advance stage and send our KEXINIT.
-        self.stage
-            .store(SshStage::WantKexInit as u32, Ordering::SeqCst);
+        self.stage.store(SshStage::WantKexInit as u32, Ordering::SeqCst);
         // Build and dispatch KEXINIT — but dispatch is async and we are
         // sync; defer to the async caller via a sentinel.
         Ok(true)
@@ -1254,10 +1237,7 @@ impl SshSession {
         if self.peek_len.load(Ordering::SeqCst) == 0 {
             // Need at least one block to learn the packet length.
             let accbuf_avail = {
-                let buf = self
-                    .accbuf
-                    .lock()
-                    .map_err(|_| NetError::Ssh(SshError::Cipher))?;
+                let buf = self.accbuf.lock().map_err(|_| NetError::Ssh(SshError::Cipher))?;
                 buf.len()
             };
             if accbuf_avail < block_size {
@@ -1266,10 +1246,7 @@ impl SshSession {
             // Drain the first block from accbuf (consuming it — the cipher
             // state advances and we cannot recover the ciphertext to retry).
             let mut header_block: Vec<u8> = {
-                let mut buf = self
-                    .accbuf
-                    .lock()
-                    .map_err(|_| NetError::Ssh(SshError::Cipher))?;
+                let mut buf = self.accbuf.lock().map_err(|_| NetError::Ssh(SshError::Cipher))?;
                 let block = buf.as_slice()[..block_size].to_vec();
                 buf.consume(block_size)
                     .map_err(|_| NetError::Ssh(SshError::Cipher))?;
@@ -1283,12 +1260,9 @@ impl SshSession {
                 remote.cbc_decrypt_in_place(&mut header_block)?;
             }
             // Parse pkt_len from the decrypted header.
-            let pkt_len = u32::from_be_bytes([
-                header_block[0],
-                header_block[1],
-                header_block[2],
-                header_block[3],
-            ]) as usize;
+            let pkt_len =
+                u32::from_be_bytes([header_block[0], header_block[1], header_block[2], header_block[3]])
+                    as usize;
             if pkt_len < (block_size - 4) || pkt_len > MAX_INBOUND_PACKET {
                 return Err(NetError::Ssh(SshError::KeyExchange(format!(
                     "invalid SSH packet length {}",
@@ -1337,10 +1311,7 @@ impl SshSession {
         let remaining_packet_bytes = total_wire - already_decrypted;
         let needed_from_accbuf = remaining_packet_bytes + mac_size;
         let accbuf_len = {
-            let buf = self
-                .accbuf
-                .lock()
-                .map_err(|_| NetError::Ssh(SshError::Cipher))?;
+            let buf = self.accbuf.lock().map_err(|_| NetError::Ssh(SshError::Cipher))?;
             buf.len()
         };
         if accbuf_len < needed_from_accbuf {
@@ -1351,10 +1322,7 @@ impl SshSession {
         // ----- Phase C: drain remainder + MAC from accbuf, decrypt,
         // append to packetbuf.
         let (mut remainder_ct, mac_received): (Vec<u8>, Option<[u8; MAC_SIZE]>) = {
-            let mut buf = self
-                .accbuf
-                .lock()
-                .map_err(|_| NetError::Ssh(SshError::Cipher))?;
+            let mut buf = self.accbuf.lock().map_err(|_| NetError::Ssh(SshError::Cipher))?;
             let rest = buf.as_slice()[..remaining_packet_bytes].to_vec();
             let mac = if mac_size > 0 {
                 let m: [u8; MAC_SIZE] = buf.as_slice()
@@ -1435,9 +1403,9 @@ impl SshSession {
                 .inflate
                 .lock()
                 .map_err(|_| NetError::Ssh(SshError::Compression("inflate poisoned".into())))?;
-            let stream = inflate_guard.as_mut().ok_or_else(|| {
-                NetError::Ssh(SshError::Compression("inflate not initialized".into()))
-            })?;
+            let stream = inflate_guard
+                .as_mut()
+                .ok_or_else(|| NetError::Ssh(SshError::Compression("inflate not initialized".into())))?;
             let inflated = stream.decompress_packet(&payload)?;
             inflated.to_vec()
         } else {
@@ -1469,7 +1437,6 @@ impl SshSession {
     }
 }
 
-
 // ===========================================================================
 // Dispatch table — 29 SSH_MSG_* handler routes (FASM `.got_*` labels)
 // ===========================================================================
@@ -1484,9 +1451,7 @@ impl SshSession {
     /// jump table.
     async fn dispatch_message(&self, payload: &[u8]) -> Result<(), NetError> {
         if payload.is_empty() {
-            return Err(NetError::Ssh(SshError::KeyExchange(
-                "empty SSH packet".into(),
-            )));
+            return Err(NetError::Ssh(SshError::KeyExchange("empty SSH packet".into())));
         }
         let msg_type = payload[0];
         let body = &payload[1..];
@@ -1536,8 +1501,7 @@ impl SshSession {
     /// the IoChain `Drop` propagate the destroy signal.
     async fn handle_disconnect(&self, _body: &[u8]) -> Result<(), NetError> {
         self.dead.store(true, Ordering::SeqCst);
-        self.stage
-            .store(SshStage::TornDown as u32, Ordering::SeqCst);
+        self.stage.store(SshStage::TornDown as u32, Ordering::SeqCst);
         Ok(())
     }
 
@@ -1559,8 +1523,7 @@ impl SshSession {
         let result = handle_service_request(body).map_err(NetError::Ssh)?;
         self.encrypt_and_send(&result.accept_payload).await?;
         if result.advance_stage {
-            self.stage
-                .store(SshStage::WantUserauth as u32, Ordering::SeqCst);
+            self.stage.store(SshStage::WantUserauth as u32, Ordering::SeqCst);
         }
         Ok(())
     }
@@ -1579,26 +1542,19 @@ impl SshSession {
         if self.client_mode == ClientMode::Server {
             return Ok(());
         }
-        let username = self
-            .username
-            .lock()
-            .ok()
-            .and_then(|g| g.clone());
+        let username = self.username.lock().ok().and_then(|g| g.clone());
         let password = self.password.lock().ok().and_then(|g| g.clone());
         let req: Vec<u8> = match (&username, &password) {
             (Some(u), Some(p)) => {
-                let username_str = std::str::from_utf8(u)
-                    .map_err(|_| NetError::Ssh(SshError::Auth))?;
-                let pw_str = std::str::from_utf8(p)
-                    .map_err(|_| NetError::Ssh(SshError::Auth))?;
+                let username_str = std::str::from_utf8(u).map_err(|_| NetError::Ssh(SshError::Auth))?;
+                let pw_str = std::str::from_utf8(p).map_err(|_| NetError::Ssh(SshError::Auth))?;
                 build_client_userauth_request(&AuthArgs::UsernameAndPassword {
                     username: username_str,
                     password: pw_str,
                 })
             }
             (Some(u), None) => {
-                let username_str = std::str::from_utf8(u)
-                    .map_err(|_| NetError::Ssh(SshError::Auth))?;
+                let username_str = std::str::from_utf8(u).map_err(|_| NetError::Ssh(SshError::Auth))?;
                 build_client_userauth_request(&AuthArgs::UsernameOnly {
                     username: username_str,
                 })
@@ -1606,8 +1562,7 @@ impl SshSession {
             _ => build_client_userauth_request(&AuthArgs::DefaultTaketwo),
         };
         self.encrypt_and_send(&req).await?;
-        self.stage
-            .store(SshStage::WantUserauth as u32, Ordering::SeqCst);
+        self.stage.store(SshStage::WantUserauth as u32, Ordering::SeqCst);
         Ok(())
     }
 
@@ -1621,12 +1576,10 @@ impl SshSession {
         append_u32_be(&mut payload, 0); // language tag empty
         self.encrypt_and_send(&payload).await?;
         self.dead.store(true, Ordering::SeqCst);
-        self.stage
-            .store(SshStage::TornDown as u32, Ordering::SeqCst);
+        self.stage.store(SshStage::TornDown as u32, Ordering::SeqCst);
         Ok(())
     }
 }
-
 
 // ===========================================================================
 // Key exchange handlers (FASM `.got_kexinit` through `.got_newkeys`)
@@ -1648,8 +1601,7 @@ impl SshSession {
         let lists = parse_kexinit(payload)?;
 
         // Compression negotiation (FASM line 4904-4929).
-        let negotiated =
-            negotiate_compression(payload, self.force_compression);
+        let negotiated = negotiate_compression(payload, self.force_compression);
         if let Ok(mut g) = self.compression_state.lock() {
             *g = negotiated;
         }
@@ -1689,8 +1641,7 @@ impl SshSession {
         // Stage transition: server awaits KEX_DH_GEX_REQUEST(_OLD);
         // client must send KEX_DH_GEX_REQUEST itself and await GROUP.
         if self.client_mode == ClientMode::Server {
-            self.stage
-                .store(SshStage::WantKexGexReq as u32, Ordering::SeqCst);
+            self.stage.store(SshStage::WantKexGexReq as u32, Ordering::SeqCst);
         } else {
             // Client: send SSH_MSG_KEX_DH_GEX_REQUEST(34) with default
             // (min, n, max) = (2048, 4096, 16384).
@@ -1751,10 +1702,7 @@ impl SshSession {
     /// `SSH_MSG_KEX_DH_GEX_REQUEST_OLD` (30) — server-side (old-style GEX).
     /// Client supplies only `n`; we hash only `n` in the exchange-hash
     /// (FASM `.got_kexgexreq_old`, line ~3811).
-    async fn handle_kex_gex_request_old(
-        &self,
-        body: &[u8],
-    ) -> Result<(), NetError> {
+    async fn handle_kex_gex_request_old(&self, body: &[u8]) -> Result<(), NetError> {
         if self.client_mode != ClientMode::Server {
             return Ok(());
         }
@@ -1850,11 +1798,9 @@ impl SshSession {
                 .kex
                 .lock()
                 .map_err(|_| NetError::Ssh(SshError::KeyExchange("kex lock".into())))?;
-            g.dh
-                .take()
-                .ok_or_else(|| NetError::Ssh(SshError::KeyExchange(
-                    "no DH state for KEX_DH_GEX_INIT".into(),
-                )))?
+            g.dh.take().ok_or_else(|| {
+                NetError::Ssh(SshError::KeyExchange("no DH state for KEX_DH_GEX_INIT".into()))
+            })?
         };
         dh.set_peer_and_compute(e_bytes)?;
 
@@ -1891,16 +1837,9 @@ impl SshSession {
         // Derive 6 session keys.
         let shared = dh
             .shared_mpint()
-            .ok_or_else(|| NetError::Ssh(SshError::KeyExchange(
-                "DH shared not set".into(),
-            )))?;
+            .ok_or_else(|| NetError::Ssh(SshError::KeyExchange("DH shared not set".into())))?;
         let k_encoded = encode_mpint(shared);
-        let session_id_value = self
-            .kex
-            .lock()
-            .ok()
-            .and_then(|g| g.session_id)
-            .unwrap_or(h);
+        let session_id_value = self.kex.lock().ok().and_then(|g| g.session_id).unwrap_or(h);
         let pending = SessionKeys::derive(&k_encoded, &h, &session_id_value, false);
         if let Ok(mut g) = self.kex.lock() {
             g.pending = Some(pending);
@@ -1929,8 +1868,7 @@ impl SshSession {
         self.activate_local_cipher()?;
         self.local_enc.store(true, Ordering::SeqCst);
 
-        self.stage
-            .store(SshStage::WantNewKeys as u32, Ordering::SeqCst);
+        self.stage.store(SshStage::WantNewKeys as u32, Ordering::SeqCst);
         Ok(())
     }
 
@@ -1954,11 +1892,9 @@ impl SshSession {
                 .kex
                 .lock()
                 .map_err(|_| NetError::Ssh(SshError::KeyExchange("kex lock".into())))?;
-            g.dh
-                .take()
-                .ok_or_else(|| NetError::Ssh(SshError::KeyExchange(
-                    "no DH state for KEX_DH_GEX_REPLY".into(),
-                )))?
+            g.dh.take().ok_or_else(|| {
+                NetError::Ssh(SshError::KeyExchange("no DH state for KEX_DH_GEX_REPLY".into()))
+            })?
         };
         dh.set_peer_and_compute(f_bytes)?;
 
@@ -1980,16 +1916,9 @@ impl SshSession {
         // Derive session keys (client-mode routing).
         let shared = dh
             .shared_mpint()
-            .ok_or_else(|| NetError::Ssh(SshError::KeyExchange(
-                "DH shared not set".into(),
-            )))?;
+            .ok_or_else(|| NetError::Ssh(SshError::KeyExchange("DH shared not set".into())))?;
         let k_encoded = encode_mpint(shared);
-        let session_id_value = self
-            .kex
-            .lock()
-            .ok()
-            .and_then(|g| g.session_id)
-            .unwrap_or(h);
+        let session_id_value = self.kex.lock().ok().and_then(|g| g.session_id).unwrap_or(h);
         let pending = SessionKeys::derive(&k_encoded, &h, &session_id_value, true);
         if let Ok(mut g) = self.kex.lock() {
             g.pending = Some(pending);
@@ -2001,8 +1930,7 @@ impl SshSession {
         self.encrypt_and_send(&newkeys).await?;
         self.activate_local_cipher()?;
         self.local_enc.store(true, Ordering::SeqCst);
-        self.stage
-            .store(SshStage::WantNewKeys as u32, Ordering::SeqCst);
+        self.stage.store(SshStage::WantNewKeys as u32, Ordering::SeqCst);
         Ok(())
     }
 
@@ -2034,12 +1962,10 @@ impl SshSession {
         if self.client_mode != ClientMode::Server {
             let req = build_client_service_request();
             self.encrypt_and_send(&req).await?;
-            self.stage
-                .store(SshStage::WantService as u32, Ordering::SeqCst);
+            self.stage.store(SshStage::WantService as u32, Ordering::SeqCst);
         } else {
             // Server: await SERVICE_REQUEST from client.
-            self.stage
-                .store(SshStage::WantService as u32, Ordering::SeqCst);
+            self.stage.store(SshStage::WantService as u32, Ordering::SeqCst);
         }
         Ok(())
     }
@@ -2058,10 +1984,7 @@ impl SshSession {
     /// of the auth decision (FASM `ssh_msg_ignore_randomized`).
     ///
     /// FASM `ssh.inc` `.got_userauth_request` (line ~5060).
-    async fn handle_userauth_request_msg(
-        &self,
-        body: &[u8],
-    ) -> Result<(), NetError> {
+    async fn handle_userauth_request_msg(&self, body: &[u8]) -> Result<(), NetError> {
         if self.client_mode != ClientMode::Server {
             return Ok(());
         }
@@ -2081,13 +2004,8 @@ impl SshSession {
         self.encrypt_and_send(&ignore_packet).await?;
 
         // Invoke the auth callback.
-        let cb_clone = self
-            .auth_cb
-            .lock()
-            .ok()
-            .and_then(|g| g.clone());
-        let (parsed, outcome) =
-            handle_userauth_request(body, cb_clone.as_ref()).map_err(NetError::Ssh)?;
+        let cb_clone = self.auth_cb.lock().ok().and_then(|g| g.clone());
+        let (parsed, outcome) = handle_userauth_request(body, cb_clone.as_ref()).map_err(NetError::Ssh)?;
 
         // Store parsed username for downstream channel/exec handling.
         if let Ok(mut g) = self.username.lock() {
@@ -2111,8 +2029,7 @@ impl SshSession {
                 if became_active {
                     self.ensure_compression_streams()?;
                 }
-                self.stage
-                    .store(SshStage::WantChannel as u32, Ordering::SeqCst);
+                self.stage.store(SshStage::WantChannel as u32, Ordering::SeqCst);
             }
             AuthOutcome::Denied | AuthOutcome::NoCallback => {
                 // SSH_MSG_USERAUTH_FAILURE = type 51 followed by the
@@ -2129,10 +2046,7 @@ impl SshSession {
 
     /// `SSH_MSG_USERAUTH_FAILURE` (51) — client-side. Server rejected
     /// our credentials; mark the session dead.
-    async fn handle_userauth_failure_msg(
-        &self,
-        _body: &[u8],
-    ) -> Result<(), NetError> {
+    async fn handle_userauth_failure_msg(&self, _body: &[u8]) -> Result<(), NetError> {
         Err(NetError::Ssh(handle_userauth_failure()))
     }
 
@@ -2160,8 +2074,7 @@ impl SshSession {
         append_u32_be(&mut open, self.advertised_window_initial);
         append_u32_be(&mut open, self.advertised_max_packet);
         self.encrypt_and_send(&open).await?;
-        self.stage
-            .store(SshStage::WantChannel as u32, Ordering::SeqCst);
+        self.stage.store(SshStage::WantChannel as u32, Ordering::SeqCst);
         Ok(())
     }
 
@@ -2170,27 +2083,16 @@ impl SshSession {
     /// from session state.
     ///
     /// FASM line 5234 onwards.
-    async fn handle_userauth_info_request_msg(
-        &self,
-        body: &[u8],
-    ) -> Result<(), NetError> {
+    async fn handle_userauth_info_request_msg(&self, body: &[u8]) -> Result<(), NetError> {
         if self.client_mode == ClientMode::Server {
             return Ok(());
         }
-        let password_owned = self
-            .password
-            .lock()
-            .ok()
-            .and_then(|g| g.clone());
+        let password_owned = self.password.lock().ok().and_then(|g| g.clone());
         let password_str = match password_owned.as_deref() {
-            Some(p) => Some(
-                std::str::from_utf8(p)
-                    .map_err(|_| NetError::Ssh(SshError::Auth))?,
-            ),
+            Some(p) => Some(std::str::from_utf8(p).map_err(|_| NetError::Ssh(SshError::Auth))?),
             None => None,
         };
-        let frame = handle_userauth_info_request(body, password_str)
-            .map_err(NetError::Ssh)?;
+        let frame = handle_userauth_info_request(body, password_str).map_err(NetError::Ssh)?;
         // `UserauthInfoResponseFrame` is a tuple struct wrapping the
         // full ready-to-send packet bytes (see `auth.rs` line 814).
         self.encrypt_and_send(&frame.0).await?;
@@ -2200,10 +2102,7 @@ impl SshSession {
     /// `SSH_MSG_USERAUTH_INFO_RESPONSE` (61) — server-side keyboard-
     /// interactive response handling. Same wire form as
     /// `USERAUTH_REQUEST` for our purposes.
-    async fn handle_userauth_info_response_msg(
-        &self,
-        _body: &[u8],
-    ) -> Result<(), NetError> {
+    async fn handle_userauth_info_response_msg(&self, _body: &[u8]) -> Result<(), NetError> {
         // Server-side keyboard-interactive is not implemented (FASM
         // path at line 5240 only generates challenges client-side).
         // Reply with FAILURE per RFC 4252 §5.4.
@@ -2254,24 +2153,9 @@ impl SshSession {
                 "CHANNEL_OPEN: body too short".into(),
             )));
         }
-        let sender_chan = u32::from_be_bytes([
-            after_type[0],
-            after_type[1],
-            after_type[2],
-            after_type[3],
-        ]);
-        let init_window = u32::from_be_bytes([
-            after_type[4],
-            after_type[5],
-            after_type[6],
-            after_type[7],
-        ]);
-        let max_pkt = u32::from_be_bytes([
-            after_type[8],
-            after_type[9],
-            after_type[10],
-            after_type[11],
-        ]);
+        let sender_chan = u32::from_be_bytes([after_type[0], after_type[1], after_type[2], after_type[3]]);
+        let init_window = u32::from_be_bytes([after_type[4], after_type[5], after_type[6], after_type[7]]);
+        let max_pkt = u32::from_be_bytes([after_type[8], after_type[9], after_type[10], after_type[11]]);
 
         if channel_type == SESSION_STR {
             // Accept session channel.
@@ -2286,8 +2170,7 @@ impl SshSession {
             append_u32_be(&mut conf, self.advertised_max_packet);
             self.encrypt_and_send(&conf).await?;
             self.channel_id.store(0, Ordering::SeqCst);
-            self.stage
-                .store(SshStage::Channel as u32, Ordering::SeqCst);
+            self.stage.store(SshStage::Channel as u32, Ordering::SeqCst);
             // Suppress unused max_pkt warning — we accept whatever the
             // peer offers and chunk our outbound traffic to our own
             // configured CHANNEL_DATA_CHUNK.
@@ -2308,10 +2191,7 @@ impl SshSession {
     /// `SSH_MSG_CHANNEL_OPEN_CONFIRMATION` (91) — client-side. Server
     /// accepted our channel-open; record peer channel id + window and
     /// transition. If we are a session client, send pty-req + shell.
-    async fn handle_channel_open_confirm(
-        &self,
-        body: &[u8],
-    ) -> Result<(), NetError> {
+    async fn handle_channel_open_confirm(&self, body: &[u8]) -> Result<(), NetError> {
         if self.client_mode == ClientMode::Server {
             return Ok(());
         }
@@ -2326,21 +2206,18 @@ impl SshSession {
         let _peer_max_pkt = u32::from_be_bytes([body[12], body[13], body[14], body[15]]);
         self.remote_channel_id.store(peer_chan, Ordering::SeqCst);
         self.remote_window.store(peer_window, Ordering::SeqCst);
-        self.stage
-            .store(SshStage::Channel as u32, Ordering::SeqCst);
+        self.stage.store(SshStage::Channel as u32, Ordering::SeqCst);
 
         // Send pty-req + shell (or exec) per ClientMode.
         match self.client_mode {
             ClientMode::SessionClient => {
                 self.send_pty_req().await?;
                 self.send_shell_req().await?;
-                self.stage
-                    .store(SshStage::Interactive as u32, Ordering::SeqCst);
+                self.stage.store(SshStage::Interactive as u32, Ordering::SeqCst);
             }
             ClientMode::SftpClient => {
                 self.send_subsystem_req(b"sftp").await?;
-                self.stage
-                    .store(SshStage::Interactive as u32, Ordering::SeqCst);
+                self.stage.store(SshStage::Interactive as u32, Ordering::SeqCst);
             }
             ClientMode::Server => {}
         }
@@ -2348,32 +2225,23 @@ impl SshSession {
     }
 
     /// `SSH_MSG_CHANNEL_OPEN_FAILURE` (92) — peer rejected our open.
-    async fn handle_channel_open_failure(
-        &self,
-        _body: &[u8],
-    ) -> Result<(), NetError> {
+    async fn handle_channel_open_failure(&self, _body: &[u8]) -> Result<(), NetError> {
         self.dead.store(true, Ordering::SeqCst);
-        self.stage
-            .store(SshStage::TornDown as u32, Ordering::SeqCst);
+        self.stage.store(SshStage::TornDown as u32, Ordering::SeqCst);
         Ok(())
     }
 
     /// `SSH_MSG_CHANNEL_WINDOW_ADJUST` (93) — peer is granting us more
     /// outbound window space. Increment `remote_window`.
-    async fn handle_channel_window_adjust(
-        &self,
-        body: &[u8],
-    ) -> Result<(), NetError> {
+    async fn handle_channel_window_adjust(&self, body: &[u8]) -> Result<(), NetError> {
         if body.len() < 8 {
             return Err(NetError::Ssh(SshError::KeyExchange(
                 "WINDOW_ADJUST: body too short".into(),
             )));
         }
         let _chan = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
-        let bytes_to_add =
-            u32::from_be_bytes([body[4], body[5], body[6], body[7]]);
-        self.remote_window
-            .fetch_add(bytes_to_add, Ordering::SeqCst);
+        let bytes_to_add = u32::from_be_bytes([body[4], body[5], body[6], body[7]]);
+        self.remote_window.fetch_add(bytes_to_add, Ordering::SeqCst);
         Ok(())
     }
 
@@ -2387,8 +2255,7 @@ impl SshSession {
             )));
         }
         let _chan = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
-        let data_len =
-            u32::from_be_bytes([body[4], body[5], body[6], body[7]]) as usize;
+        let data_len = u32::from_be_bytes([body[4], body[5], body[6], body[7]]) as usize;
         if body.len() < 8 + data_len {
             return Err(NetError::Ssh(SshError::KeyExchange(
                 "CHANNEL_DATA: data length exceeds payload".into(),
@@ -2397,9 +2264,7 @@ impl SshSession {
         let data = &body[8..8 + data_len];
         // Deliver to consumer via channel_tx; ignore send error
         // (consumer may have already dropped the receiver).
-        let _ = self
-            .channel_tx
-            .send(Bytes::copy_from_slice(data));
+        let _ = self.channel_tx.send(Bytes::copy_from_slice(data));
 
         // Decrement local window; replenish if it drops below threshold.
         let new_local = self
@@ -2422,10 +2287,7 @@ impl SshSession {
     /// `SSH_MSG_CHANNEL_EXTENDED_DATA` (95) — peer is sending stderr-
     /// type data. Treated identically to CHANNEL_DATA for our purposes
     /// (we only have one application data sink).
-    async fn handle_channel_extended_data(
-        &self,
-        body: &[u8],
-    ) -> Result<(), NetError> {
+    async fn handle_channel_extended_data(&self, body: &[u8]) -> Result<(), NetError> {
         if body.len() < 12 {
             return Err(NetError::Ssh(SshError::KeyExchange(
                 "EXTENDED_DATA: body too short".into(),
@@ -2456,8 +2318,7 @@ impl SshSession {
         close.push(SSH_MSG_CHANNEL_CLOSE);
         append_u32_be(&mut close, self.remote_channel_id.load(Ordering::SeqCst));
         let _ = self.encrypt_and_send(&close).await;
-        self.stage
-            .store(SshStage::TornDown as u32, Ordering::SeqCst);
+        self.stage.store(SshStage::TornDown as u32, Ordering::SeqCst);
         Ok(())
     }
 
@@ -2487,10 +2348,7 @@ impl SshSession {
             // pty-req: string TERM, u32 cols, u32 rows, u32 widthpx, u32 heightpx, string modes
             self.parse_pty_req(after_want)?;
             handled = true;
-        } else if req_type == b"shell"
-            || req_type == b"exec"
-            || req_type == b"subsystem"
-        {
+        } else if req_type == b"shell" || req_type == b"exec" || req_type == b"subsystem" {
             if req_type == b"exec" || req_type == b"subsystem" {
                 // exec / subsystem: string command/name
                 let (command, _rest) = read_string(after_want)?;
@@ -2498,8 +2356,7 @@ impl SshSession {
                     *g = Some(command);
                 }
             }
-            self.stage
-                .store(SshStage::Interactive as u32, Ordering::SeqCst);
+            self.stage.store(SshStage::Interactive as u32, Ordering::SeqCst);
             handled = true;
         } else if req_type == b"window-change" {
             self.parse_window_change(after_want)?;
@@ -2535,11 +2392,7 @@ impl SshSession {
     /// `.keycalc_client` (client) — the difference is the V_C/V_S and
     /// I_C/I_S swap (server hashes peer's first, client hashes its own
     /// first).
-    fn compute_exchange_hash(
-        &self,
-        host_key_blob: &[u8],
-        dh: &DhExchange,
-    ) -> Result<[u8; 32], NetError> {
+    fn compute_exchange_hash(&self, host_key_blob: &[u8], dh: &DhExchange) -> Result<[u8; 32], NetError> {
         let g = self
             .kex
             .lock()
@@ -2548,21 +2401,15 @@ impl SshSession {
         let remote_ident = g
             .remote_ident
             .as_ref()
-            .ok_or_else(|| NetError::Ssh(SshError::KeyExchange(
-                "remote ident not yet observed".into(),
-            )))?;
+            .ok_or_else(|| NetError::Ssh(SshError::KeyExchange("remote ident not yet observed".into())))?;
         let local_kexinit = g
             .local_kexinit
             .as_ref()
-            .ok_or_else(|| NetError::Ssh(SshError::KeyExchange(
-                "local KEXINIT not built".into(),
-            )))?;
+            .ok_or_else(|| NetError::Ssh(SshError::KeyExchange("local KEXINIT not built".into())))?;
         let remote_kexinit = g
             .remote_kexinit
             .as_ref()
-            .ok_or_else(|| NetError::Ssh(SshError::KeyExchange(
-                "remote KEXINIT not observed".into(),
-            )))?;
+            .ok_or_else(|| NetError::Ssh(SshError::KeyExchange("remote KEXINIT not observed".into())))?;
 
         let mut hb = KexHashBuilder::new();
         if self.client_mode == ClientMode::Server {
@@ -2601,9 +2448,7 @@ impl SshSession {
             // Server side: remote_public is e, local_public is f.
             let e_bytes = dh
                 .remote_public_mpint()
-                .ok_or_else(|| NetError::Ssh(SshError::KeyExchange(
-                    "remote public e missing".into(),
-                )))?;
+                .ok_or_else(|| NetError::Ssh(SshError::KeyExchange("remote public e missing".into())))?;
             hb.update_mpint(e_bytes);
             hb.update_mpint(dh.local_public_mpint());
         } else {
@@ -2611,16 +2456,12 @@ impl SshSession {
             hb.update_mpint(dh.local_public_mpint());
             let f_bytes = dh
                 .remote_public_mpint()
-                .ok_or_else(|| NetError::Ssh(SshError::KeyExchange(
-                    "remote public f missing".into(),
-                )))?;
+                .ok_or_else(|| NetError::Ssh(SshError::KeyExchange("remote public f missing".into())))?;
             hb.update_mpint(f_bytes);
         }
         let shared = dh
             .shared_mpint()
-            .ok_or_else(|| NetError::Ssh(SshError::KeyExchange(
-                "shared secret K not computed".into(),
-            )))?;
+            .ok_or_else(|| NetError::Ssh(SshError::KeyExchange("shared secret K not computed".into())))?;
         hb.update_mpint(shared);
 
         Ok(hb.finalize())
@@ -2633,13 +2474,8 @@ impl SshSession {
     /// into `local_cipher`.
     fn activate_local_cipher(&self) -> Result<(), NetError> {
         let pending = {
-            let g = self
-                .kex
-                .lock()
-                .map_err(|_| NetError::Ssh(SshError::Cipher))?;
-            g.pending
-                .as_ref()
-                .map(|p| (p.key_local, p.iv_local, p.mac_local))
+            let g = self.kex.lock().map_err(|_| NetError::Ssh(SshError::Cipher))?;
+            g.pending.as_ref().map(|p| (p.key_local, p.iv_local, p.mac_local))
         };
         let (key, iv, mac) = pending.ok_or_else(|| {
             NetError::Ssh(SshError::KeyExchange(
@@ -2655,10 +2491,7 @@ impl SshSession {
     /// Activate the inbound cipher with pending session keys.
     fn activate_remote_cipher(&self) -> Result<(), NetError> {
         let pending = {
-            let g = self
-                .kex
-                .lock()
-                .map_err(|_| NetError::Ssh(SshError::Cipher))?;
+            let g = self.kex.lock().map_err(|_| NetError::Ssh(SshError::Cipher))?;
             g.pending
                 .as_ref()
                 .map(|p| (p.key_remote, p.iv_remote, p.mac_remote))
@@ -2742,18 +2575,8 @@ impl SshSession {
                 "pty-req body too short".into(),
             )));
         }
-        let cols = u32::from_be_bytes([
-            after_term[0],
-            after_term[1],
-            after_term[2],
-            after_term[3],
-        ]);
-        let rows = u32::from_be_bytes([
-            after_term[4],
-            after_term[5],
-            after_term[6],
-            after_term[7],
-        ]);
+        let cols = u32::from_be_bytes([after_term[0], after_term[1], after_term[2], after_term[3]]);
+        let rows = u32::from_be_bytes([after_term[4], after_term[5], after_term[6], after_term[7]]);
         let cols = cols.min(PTY_MAX_COLS);
         let rows = rows.min(PTY_MAX_ROWS);
         self.width.store(cols, Ordering::SeqCst);
@@ -2773,18 +2596,8 @@ impl SshSession {
                 "window-change body too short".into(),
             )));
         }
-        let cols = u32::from_be_bytes([
-            after_want[0],
-            after_want[1],
-            after_want[2],
-            after_want[3],
-        ]);
-        let rows = u32::from_be_bytes([
-            after_want[4],
-            after_want[5],
-            after_want[6],
-            after_want[7],
-        ]);
+        let cols = u32::from_be_bytes([after_want[0], after_want[1], after_want[2], after_want[3]]);
+        let rows = u32::from_be_bytes([after_want[4], after_want[5], after_want[6], after_want[7]]);
         let cols = cols.min(PTY_MAX_COLS);
         let rows = rows.min(PTY_MAX_ROWS);
         self.width.store(cols, Ordering::SeqCst);
@@ -2847,7 +2660,6 @@ fn host_key_public_blob(host_key: &HostKey) -> Vec<u8> {
     host_key.public_ssh_blob().to_vec()
 }
 
-
 // ===========================================================================
 // Public lifecycle entry points (FASM `ssh$cleanexit` / `ssh$client_windowsize`)
 // ===========================================================================
@@ -2905,8 +2717,7 @@ impl SshSession {
             // TornDown so callers can re-invoke clean_exit safely.
             let _ = self.encrypt_and_send(&packet).await;
             self.dead.store(true, Ordering::SeqCst);
-            self.stage
-                .store(SshStage::TornDown as u32, Ordering::SeqCst);
+            self.stage.store(SshStage::TornDown as u32, Ordering::SeqCst);
         } else {
             self.send_disconnect(reason_code, reason_str)
                 .await
@@ -2939,8 +2750,7 @@ impl SshSession {
         //   uint32       width  (pixels) — set to 0
         //   uint32       height (pixels) — set to 0
         let req_name = b"window-change";
-        let mut payload =
-            Vec::<u8>::with_capacity(1 + 4 + 4 + req_name.len() + 1 + 4 + 4 + 4 + 4);
+        let mut payload = Vec::<u8>::with_capacity(1 + 4 + 4 + req_name.len() + 1 + 4 + 4 + 4 + 4);
         payload.push(SSH_MSG_CHANNEL_REQUEST);
         append_u32_be(&mut payload, chan);
         append_string(&mut payload, req_name);
@@ -2991,7 +2801,6 @@ impl SshSession {
         });
     }
 }
-
 
 // ===========================================================================
 // Drop — FASM ssh$destroy (lines 378-466) port: zeroize key material,
@@ -3084,11 +2893,9 @@ impl Drop for SshSession {
         // Mark dead + transition stage so any concurrent reads observe
         // a defined terminal state.
         self.dead.store(true, Ordering::SeqCst);
-        self.stage
-            .store(SshStage::TornDown as u32, Ordering::SeqCst);
+        self.stage.store(SshStage::TornDown as u32, Ordering::SeqCst);
     }
 }
-
 
 // ===========================================================================
 // SshChannel — outward-facing handle implementing SshTransport
@@ -3146,11 +2953,7 @@ impl SshChannel {
     /// the peer. The bytes are already decrypted + decompressed +
     /// MAC-verified by the time they arrive at the receiver.
     pub fn take_receiver(&self) -> Option<mpsc::UnboundedReceiver<Bytes>> {
-        self.session
-            .channel_rx
-            .lock()
-            .ok()
-            .and_then(|mut g| g.take())
+        self.session.channel_rx.lock().ok().and_then(|mut g| g.take())
     }
 
     /// Initiate orderly shutdown of the session: marks the session
@@ -3217,12 +3020,8 @@ impl SshTransport for SshChannel {
         // Update cached dimensions synchronously for in-process
         // observers. We use u32 to match `width`/`height` field
         // types.
-        self.session
-            .width
-            .store(cols as u32, Ordering::SeqCst);
-        self.session
-            .height
-            .store(rows as u32, Ordering::SeqCst);
+        self.session.width.store(cols as u32, Ordering::SeqCst);
+        self.session.height.store(rows as u32, Ordering::SeqCst);
         // Delegate the wire packet to a spawned task. We tolerate
         // the case where there is no tokio runtime (e.g., in unit
         // tests) by checking for runtime presence first.
@@ -3283,7 +3082,6 @@ impl SshTransport for SshChannel {
     }
 }
 
-
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -3307,10 +3105,7 @@ mod tests {
     fn ssh_ident_blacklisted_byte_exact() {
         // Variant emitted to peers that hit the blacklist (FASM
         // `ssh.inc` line 86 region).
-        assert_eq!(
-            SSH_IDENT_BLACKLISTED,
-            b"SSH-2.0-HeavyThing (blacklisted)\r\n"
-        );
+        assert_eq!(SSH_IDENT_BLACKLISTED, b"SSH-2.0-HeavyThing (blacklisted)\r\n");
         // Trailing CRLF preserved exactly.
         assert!(SSH_IDENT_BLACKLISTED.ends_with(b"\r\n"));
     }
@@ -3408,10 +3203,7 @@ mod tests {
 
     #[test]
     fn new_client_with_credentials_stores_them() {
-        let session = SshSession::new_client(
-            Some(b"alice".to_vec()),
-            Some(b"hunter2".to_vec()),
-        );
+        let session = SshSession::new_client(Some(b"alice".to_vec()), Some(b"hunter2".to_vec()));
         let username = session.username.lock().unwrap().clone();
         let password = session.password.lock().unwrap().clone();
         assert_eq!(username.as_deref(), Some(b"alice".as_ref()));
@@ -3484,12 +3276,7 @@ mod tests {
             // Encode (cols, rows) into a u64 for atomic capture.
             OBSERVED.store(((c as u64) << 32) | r as u64, Ordering::SeqCst);
         });
-        let cb = session
-            .wsize_cb
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("wsize installed");
+        let cb = session.wsize_cb.lock().unwrap().clone().expect("wsize installed");
         cb(132, 50);
         let v = OBSERVED.load(Ordering::SeqCst);
         assert_eq!((v >> 32) as u32, 132);
@@ -3504,12 +3291,7 @@ mod tests {
         session.set_eof_callback(|| {
             FIRED.store(true, Ordering::SeqCst);
         });
-        let cb = session
-            .eof_cb
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("eof installed");
+        let cb = session.eof_cb.lock().unwrap().clone().expect("eof installed");
         cb();
         assert!(FIRED.load(Ordering::SeqCst));
     }
@@ -3608,10 +3390,7 @@ mod tests {
         let channel = SshChannel::new(session.clone());
         channel.close();
         assert!(session.dead.load(Ordering::SeqCst));
-        assert_eq!(
-            session.stage.load(Ordering::SeqCst),
-            SshStage::TornDown as u32
-        );
+        assert_eq!(session.stage.load(Ordering::SeqCst), SshStage::TornDown as u32);
     }
 
     #[test]
@@ -3664,4 +3443,3 @@ mod tests {
         assert!(SSH_SESSION_COUNT.load(Ordering::SeqCst) >= 1);
     }
 }
-

@@ -446,20 +446,46 @@ pub fn init_args(args: Vec<String>) -> Result<InitContext, InitError> {
     }
 
     // -----------------------------------------------------------------------
-    // Stages 11–20 — TLS PEM hot-reload, TLS session cache, SSH
-    // blacklist, TUI splash logo, TUI status bar, URL init,
-    // webserver init, FastCGI init, webclient DNS init.
+    // Stages 11–14, 16–20 — TLS PEM hot-reload, TLS session cache,
+    // SSH blacklist, TUI splash logo, URL init, webserver init,
+    // FastCGI init, webclient DNS init.
     // FASM source: `ht.inc` lines 552–602.
     //
-    // ALL DEFERRED to first call into each subsystem. Per AAP
-    // §0.5.1, every submodule wraps its initialisation in
+    // DEFERRED to first call into each subsystem. Per AAP §0.5.1,
+    // every submodule wraps its initialisation in
     // `OnceLock::get_or_init` to give idempotent lazy init that
     // mirrors FASM's `if used` dead-code elimination semantics
-    // while remaining idiomatic Rust. This avoids paying
-    // start-up cost for subsystems an individual binary does not
-    // exercise (e.g. `hnwatch` does not bind a TLS listener; it
-    // only opens a TLS *client* connection to news.ycombinator.com).
+    // while remaining idiomatic Rust. This avoids paying start-up
+    // cost for subsystems an individual binary does not exercise
+    // (e.g. `hnwatch` does not bind a TLS listener; it only opens a
+    // TLS *client* connection to news.ycombinator.com).
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // Stage 15 — TUI status bar (global uptime formatter).
+    // FASM source: `ht.inc` lines ~582 (`tui_statusbar` init slot).
+    //
+    // Cannot be deferred to first-call because the timer-driven
+    // tick path in `crate::tui::widgets::statusbar::timer_tick`
+    // reads `UPTIME_FORMATTER.get()` (NOT `get_or_init`) and
+    // silently returns `None` on a cold cache, leaving the uptime
+    // label inert with no panic and no log line — a soft-fail mode
+    // that makes the contract violation invisible at runtime.
+    //
+    // The eager call here honours the contract documented at
+    // `crates/heavything/src/tui/widgets/statusbar.rs` line 230
+    // (*"Call this exactly once during application startup, ideally
+    // from `heavything::init` Stage 15 (per AAP §0.4.1.3)"*).
+    //
+    // `global_init` is idempotent (`OnceLock::get_or_init` under
+    // the hood), has no failure mode, and cannot panic — so it is
+    // safe to call here unconditionally on every `init_args`
+    // invocation.
+    // -----------------------------------------------------------------------
+    #[cfg(feature = "tui")]
+    {
+        crate::tui::widgets::statusbar::global_init();
+    }
 
     Ok(InitContext { args, env, uname })
 }

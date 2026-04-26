@@ -230,6 +230,22 @@ pub enum NetError {
     /// HTTP error; see [`HttpError`] for details.
     #[error("HTTP error: {0}")]
     Http(#[from] HttpError),
+
+    /// A code path that is not implemented in this baseline port has
+    /// been reached. Used by defensive stubs (e.g. `Wsbp` back-path
+    /// proxy methods in `crate::net::http::server`) where the FASM
+    /// reference includes a feature that is out-of-scope for the
+    /// three in-scope showcase binaries (`sshtalk`, `hnwatch`,
+    /// `webserver`).
+    ///
+    /// Producing a typed error rather than panicking via `todo!()`
+    /// or `unimplemented!()` lets a crafted input or accidental
+    /// configuration surface as a graceful runtime failure instead
+    /// of a process abort, in line with secure-by-default
+    /// principles. The static string identifies the unimplemented
+    /// site so the caller can log or surface it diagnostically.
+    #[error("feature not implemented: {0}")]
+    NotImplemented(&'static str),
 }
 
 // ============================================================================
@@ -464,6 +480,18 @@ mod tests {
         let t = TlsError::Handshake("bad proto".into());
         let ne: NetError = t.into();
         assert!(matches!(ne, NetError::Tls(_)));
+    }
+
+    #[test]
+    fn net_error_not_implemented_carries_static_message() {
+        let ne = NetError::NotImplemented("wsbp::send_request");
+        assert!(matches!(ne, NetError::NotImplemented(_)));
+        // The Display impl from `thiserror` should include the static
+        // site identifier so logs / diagnostics can identify the
+        // unimplemented call site without panic / abort semantics.
+        let rendered = ne.to_string();
+        assert!(rendered.contains("wsbp::send_request"));
+        assert!(rendered.contains("not implemented"));
     }
 
     #[test]

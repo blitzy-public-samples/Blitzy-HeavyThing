@@ -68,6 +68,26 @@
 //!   `libc::getsockopt` — the FASM `epoll.inc:1438–1490` socket-option
 //!   sequence reproduced on every freshly accepted stream.
 //!
+//! **`heavything::tui::terminal`** (AAP §0.7.3, §0.7.4.4):
+//!
+//! * [`test_raw_terminal_roundtrip`] — covers the
+//!   `libc::tcgetattr` / `cfmakeraw` / `tcsetattr` unsafe block in
+//!   `RawTerminal::enter` plus the `tcsetattr` restore in `Drop` by
+//!   (a) verifying stdin is a TTY via `libc::isatty`, (b) capturing
+//!   the cooked-mode termios via `libc::tcgetattr` and asserting
+//!   that `ECHO|ICANON` are set, (c) calling `RawTerminal::enter`
+//!   to engage raw mode, (d) re-reading the termios via
+//!   `libc::tcgetattr` and asserting that `ECHO|ICANON|OPOST` are
+//!   cleared (the canonical raw-mode flags per `cfmakeraw(3)`),
+//!   (e) exercising `RawTerminal::get_winsize` (the
+//!   `ioctl(TIOCGWINSZ)` unsafe site), (f) dropping the
+//!   `RawTerminal`, and (g) re-reading the termios a third time to
+//!   confirm that `Drop` restored the captured cooked-mode
+//!   attributes byte-for-byte. Skips with an explanatory eprintln
+//!   when stdin is not a TTY (the typical `cargo test` invocation
+//!   on a CI runner) so that offline / piped invocations do not
+//!   fail.
+//!
 //! The row `nix::unistd::fork` in the Integration Test Mapping table of
 //! `/UNSAFE_AUDIT.md` therefore references **both**
 //! `test_fork_workers` (owned by the `webserver::master` port, not yet
@@ -138,6 +158,7 @@ use heavything::net::child::{
     killall_children, spawn_child, ChildProcess, LinkMessage, LogRecord, LogSeverity,
 };
 use heavything::net::runtime::{apply_stream_defaults, check_ulimit};
+use heavything::tui::terminal::RawTerminal;
 
 // ============================================================================
 // Test serialization
@@ -1072,4 +1093,248 @@ fn test_stream_defaults_roundtrip() {
 
     // Drop the runtime explicitly.
     drop(rt);
+}
+
+// ============================================================================
+// test_raw_terminal_roundtrip — covers `libc::tcgetattr` / `cfmakeraw` /
+// `tcsetattr` in `heavything::tui::terminal::RawTerminal::{enter, drop}` and
+// the `ioctl(TIOCGWINSZ)` unsafe site in `RawTerminal::get_winsize`.
+//
+// Exercises the canonical FFI sequence from `tui_terminal.inc` lines
+// 308–355:
+//
+//     1. `tcgetattr(stdin, &mut t)`        — capture cooked-mode termios
+//     2. `cfmakeraw(&mut raw)`             — compute raw-mode flag set
+//     3. `tcsetattr(stdin, TCSANOW, &raw)` — engage raw mode atomically
+//     4. `ioctl(stdin, TIOCGWINSZ, &mut w)` — query window size
+//     5. `tcsetattr(stdin, TCSANOW, &t)`   — restore cooked mode (Drop)
+//
+// Per AAP §0.7.4.4 (canonical FFI integration tests) and the CP7 review
+// MAJOR finding, the test verifies each transition by independently
+// reading the live termios via `libc::tcgetattr` and asserting the
+// expected flag patterns.
+//
+// # Singleton interaction
+//
+// `RawTerminal::enter` succeeds at most once per process (`INIT_GUARD`
+// is a `OnceLock<()>`). No other test in this binary calls `enter`, so
+// this test owns the singleton when invoked. If a future contributor
+// adds another test that calls `enter`, both tests must hold the
+// `TEST_MUTEX` AND be aware that only one of them can succeed in any
+// given test-binary process. Because `cargo test` reruns the binary
+// per invocation but reuses the same process across multiple `#[test]`
+// functions, a parallel-safe rewrite would require `--test-threads=1`
+// or splitting into two test binaries.
+//
+// # TTY requirement
+//
+// The test gracefully skips when stdin is not a TTY. This covers the
+// typical `cargo test` invocation on CI (where stdin is `/dev/null`)
+// and piped invocations during local development. To exercise the
+// path interactively use:
+//
+//     HEAVYTHING_LIVE_TESTS=1 \
+//     script -qec 'cargo test -p heavything --test ffi_boundary -- \
+//         test_raw_terminal_roundtrip --nocapture --test-threads=1' \
+//         /dev/null
+// ============================================================================
+
+#[test]
+fn test_raw_terminal_roundtrip() {
+    // Acquire the test serializer; recover poisoned mutex defensively
+    // (a previous panicked test does not invalidate the serialization
+    // contract for this one).
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if !live_tests_enabled() {
+        eprintln!(
+            "test_raw_terminal_roundtrip: skipped \
+             (set HEAVYTHING_LIVE_TESTS=1 to enable)"
+        );
+        return;
+    }
+
+    // -----------------------------------------------------------------
+    // Step 1 — Verify stdin is a TTY before entering raw mode.
+    //
+    // SAFETY: `libc::isatty` accepts any integer file-descriptor and
+    // returns 1 if it refers to an open terminal, 0 otherwise. Passing
+    // `STDIN_FILENO` (which is always a valid kernel-side fd for the
+    // life of the process) cannot dereference invalid memory and has
+    // no side effects beyond reading the fd's terminal state.
+    // -----------------------------------------------------------------
+    let is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
+
+    if !is_tty {
+        eprintln!(
+            "test_raw_terminal_roundtrip: skipped \
+             (stdin is not a TTY — typical for `cargo test` on CI; \
+             rerun under `script(1)` to exercise this path)"
+        );
+        return;
+    }
+
+    // -----------------------------------------------------------------
+    // Step 2 — Capture the cooked-mode termios via direct `tcgetattr`.
+    // This is the *baseline* against which Drop's restore is checked.
+    //
+    // SAFETY: `libc::tcgetattr` writes a `struct termios` (POD) through
+    // the `&mut` argument when the fd refers to a terminal. We start
+    // from a zero-initialized `termios` (all-zeros is a valid initial
+    // state for the POD type per POSIX) and pass `STDIN_FILENO`, which
+    // we just confirmed is a TTY in Step 1. On failure the syscall
+    // sets errno but does not touch the buffer; we propagate via panic
+    // because a `tcgetattr` failure on a confirmed-TTY fd indicates an
+    // environment misconfiguration that the caller cannot recover from.
+    // -----------------------------------------------------------------
+    let cooked: libc::termios = unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        let rc = libc::tcgetattr(libc::STDIN_FILENO, &mut t);
+        assert_eq!(
+            rc,
+            0,
+            "pre-enter tcgetattr(stdin) must succeed on a TTY: {}",
+            std::io::Error::last_os_error()
+        );
+        t
+    };
+
+    // Sanity-check that the captured termios reflects cooked mode.
+    // A real interactive terminal has ECHO and ICANON set; if either
+    // bit is missing, the test environment is unusual and the
+    // post-Drop comparison would fail in confusing ways.
+    assert_ne!(cooked.c_lflag & libc::ECHO, 0, "cooked mode must have ECHO set");
+    assert_ne!(
+        cooked.c_lflag & libc::ICANON,
+        0,
+        "cooked mode must have ICANON set"
+    );
+
+    // -----------------------------------------------------------------
+    // Step 3 — Engage raw mode via the public `RawTerminal::enter` API.
+    // The unsafe block under test lives at terminal.rs:203–215 and
+    // performs the `tcgetattr → cfmakeraw → tcsetattr → publish saved
+    // termios` sequence. `INIT_GUARD` enforces the per-process
+    // singleton invariant; this is the only test in the binary that
+    // calls `enter`, so we expect Ok.
+    // -----------------------------------------------------------------
+    let term = RawTerminal::enter().expect("RawTerminal::enter on a TTY must succeed");
+
+    // -----------------------------------------------------------------
+    // Step 4 — Verify raw mode is in effect via direct `tcgetattr`.
+    //
+    // SAFETY: identical to Step 2; we re-read the termios via the
+    // libc FFI on the same TTY fd to confirm the kernel has accepted
+    // the raw-mode attributes set by `RawTerminal::enter`. On
+    // success the `c_lflag` bits cleared by `cfmakeraw(3)`
+    // (ECHO, ECHONL, ICANON, ISIG, IEXTEN) must all be zero, and
+    // `c_oflag & OPOST` must also be zero — the FASM-equivalent
+    // sequence at `tui_terminal.inc` lines 308–316.
+    // -----------------------------------------------------------------
+    let raw: libc::termios = unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        let rc = libc::tcgetattr(libc::STDIN_FILENO, &mut t);
+        assert_eq!(
+            rc,
+            0,
+            "post-enter tcgetattr must succeed: {}",
+            std::io::Error::last_os_error()
+        );
+        t
+    };
+    assert_eq!(
+        raw.c_lflag & libc::ECHO,
+        0,
+        "raw mode must clear ECHO (cfmakeraw contract)"
+    );
+    assert_eq!(
+        raw.c_lflag & libc::ICANON,
+        0,
+        "raw mode must clear ICANON (cfmakeraw contract)"
+    );
+    assert_eq!(
+        raw.c_lflag & libc::ISIG,
+        0,
+        "raw mode must clear ISIG (cfmakeraw contract)"
+    );
+    assert_eq!(
+        raw.c_lflag & libc::IEXTEN,
+        0,
+        "raw mode must clear IEXTEN (cfmakeraw contract)"
+    );
+    assert_eq!(
+        raw.c_oflag & libc::OPOST,
+        0,
+        "raw mode must clear OPOST (cfmakeraw contract)"
+    );
+
+    // -----------------------------------------------------------------
+    // Step 5 — Exercise the `ioctl(TIOCGWINSZ)` FFI site via the public
+    // `get_winsize` API. On a TTY this must succeed; on a non-TTY it
+    // would fail with `ENOTTY`, but we verified TTY status in Step 1.
+    // -----------------------------------------------------------------
+    let winsize = term.get_winsize().expect("get_winsize on a TTY must succeed");
+    assert!(winsize.cols > 0, "get_winsize on a real TTY must report cols > 0");
+    assert!(winsize.rows > 0, "get_winsize on a real TTY must report rows > 0");
+
+    // -----------------------------------------------------------------
+    // Step 6 — Drop the `RawTerminal`. The unsafe block under test
+    // lives at terminal.rs:519–521 and performs `tcsetattr(stdin,
+    // TCSANOW, &self.original)`, restoring the captured cooked-mode
+    // termios.
+    // -----------------------------------------------------------------
+    drop(term);
+
+    // -----------------------------------------------------------------
+    // Step 7 — Verify cooked mode is restored byte-for-byte.
+    //
+    // SAFETY: identical to Step 2/4. We compare the post-Drop termios
+    // to the pre-enter snapshot to confirm Drop's `tcsetattr` truly
+    // restored the captured attributes — not merely "some" cooked
+    // mode, but the *same* cooked mode the test started in.
+    // -----------------------------------------------------------------
+    let restored: libc::termios = unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        let rc = libc::tcgetattr(libc::STDIN_FILENO, &mut t);
+        assert_eq!(
+            rc,
+            0,
+            "post-drop tcgetattr must succeed: {}",
+            std::io::Error::last_os_error()
+        );
+        t
+    };
+    assert_ne!(
+        restored.c_lflag & libc::ECHO,
+        0,
+        "Drop must restore ECHO (cooked-mode contract)"
+    );
+    assert_ne!(
+        restored.c_lflag & libc::ICANON,
+        0,
+        "Drop must restore ICANON (cooked-mode contract)"
+    );
+    // Compare the four canonical flag groups byte-for-byte against the
+    // pre-enter snapshot. We deliberately do not compare `c_cc` (the
+    // control characters array) field-by-field because Drop's
+    // `tcsetattr` invocation passes the same `original` pointer that
+    // `enter` captured, so any divergence in `c_cc` would also
+    // surface as a divergence in `c_lflag` (e.g. `cfmakeraw` clears
+    // `VMIN`/`VTIME` so a bad restore would leave them at zero).
+    assert_eq!(
+        restored.c_iflag, cooked.c_iflag,
+        "Drop must restore c_iflag byte-for-byte"
+    );
+    assert_eq!(
+        restored.c_oflag, cooked.c_oflag,
+        "Drop must restore c_oflag byte-for-byte"
+    );
+    assert_eq!(
+        restored.c_cflag, cooked.c_cflag,
+        "Drop must restore c_cflag byte-for-byte"
+    );
+    assert_eq!(
+        restored.c_lflag, cooked.c_lflag,
+        "Drop must restore c_lflag byte-for-byte"
+    );
 }

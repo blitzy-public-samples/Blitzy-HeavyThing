@@ -730,8 +730,10 @@ pub struct WebServerConfig {
     hotlist_timer: Mutex<Option<JoinHandle<()>>>,
     /// Optional sockaddr for the `wsbp` back-path proxy. AAP Phase 10
     /// stub: configuration parsing accepts and stores the value, but
-    /// the actual proxy implementation is left as `todo!()` per
-    /// agent-action-plan directive.
+    /// the actual proxy implementation returns
+    /// [`NetError::NotImplemented`] (or a logged fall-through for
+    /// non-`Result` signatures) per agent-action-plan directive.
+    /// See [`Wsbp::send_request`].
     back_path: Mutex<Option<SocketAddr>>,
     /// `Cache-Control: max-age` value in seconds. Zero disables the
     /// header.
@@ -2931,8 +2933,17 @@ impl Wsbp {
     /// Construct a new back-path proxy bound to `target`.
     ///
     /// **Stubbed**: returns a value, but every method that would
-    /// drive traffic through the proxy panics with `todo!()`. See the
-    /// module docstring for rationale.
+    /// drive traffic through the proxy returns a graceful
+    /// [`NetError::NotImplemented`] (or, for the `receive` /
+    /// `error` paths whose signatures cannot return `Result`,
+    /// emits a syslog warning and falls through defensively).
+    /// See the module docstring for rationale; see
+    /// AAP §0.7 Phase 10 for the deferred-implementation
+    /// schedule. The earlier `todo!()` / `unimplemented!()`
+    /// panic markers were replaced after CP7 review to honour
+    /// secure-by-default principles — a crafted input or
+    /// accidental `set_back_path()` configuration should not
+    /// abort the worker process.
     pub fn new(target: SocketAddr) -> Arc<Self> {
         Arc::new(Self {
             target,
@@ -2956,34 +2967,55 @@ impl Wsbp {
     /// **Stubbed.** Active back-path serving is out of scope for the
     /// sshtalk/hnwatch/webserver Gate 1/4/5 verification; full
     /// implementation is deferred per AAP §0.7 Phase 10.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`NetError::NotImplemented`] with a static
+    /// site identifier. Replaces the prior `unimplemented!()` panic
+    /// (CP7 review INFO #1) so the back-path proxy fails closed
+    /// rather than aborting the worker.
     pub async fn send_request(self: Arc<Self>, _request: Arc<Mimelike>) -> Result<(), NetError> {
-        unimplemented!(
-            "wsbp::send_request: back-path proxy is not implemented in the \
-             baseline port. set_back_path() should not be called by sshtalk, \
-             hnwatch, or webserver. Implement this when porting back-path \
-             traffic per FASM L3465-3667."
-        );
+        Err(NetError::NotImplemented(
+            "wsbp::send_request: back-path proxy not implemented \
+             (FASM L3465-3667 deferred per AAP §0.7 Phase 10)",
+        ))
     }
 
     /// FASM `wsbp$receive`: handle a chunk of inbound bytes from
     /// the backend connection (forward upstream to client).
     ///
     /// **Stubbed.** See [`Self::send_request`].
+    ///
+    /// # Returns
+    ///
+    /// Always returns `false` (defensive fall-through). Because the
+    /// signature returns `bool` and not `Result`, this path emits a
+    /// `syslog::warning` so an accidental invocation is at least
+    /// observable. Replaces the prior `unimplemented!()` panic
+    /// (CP7 review INFO #1).
     pub async fn receive(self: Arc<Self>, _data: Bytes) -> bool {
-        unimplemented!(
-            "wsbp::receive: back-path proxy is not implemented in the \
-             baseline port. See FASM L3465-3667."
+        crate::util::syslog::warning(
+            "wsbp::receive: back-path proxy not implemented; \
+             dropping inbound bytes (FASM L3465-3667 deferred per \
+             AAP §0.7 Phase 10)",
         );
+        false
     }
 
     /// FASM `wsbp$error`: handle a backend connection error
     /// (emit 502 Bad Gateway upstream).
     ///
     /// **Stubbed.** See [`Self::send_request`].
+    ///
+    /// Because the signature returns `()`, this path emits a
+    /// `syslog::warning` so an accidental invocation is observable.
+    /// Replaces the prior `unimplemented!()` panic (CP7 review
+    /// INFO #1).
     pub async fn error(self: Arc<Self>, _err: NetError) {
-        unimplemented!(
-            "wsbp::error: back-path proxy is not implemented in the \
-             baseline port. See FASM L3465-3667."
+        crate::util::syslog::warning(
+            "wsbp::error: back-path proxy not implemented; \
+             swallowing backend error (FASM L3465-3667 deferred per \
+             AAP §0.7 Phase 10)",
         );
     }
 }
