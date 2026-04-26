@@ -119,6 +119,7 @@ pub mod panel;
 pub mod png;
 pub mod progressbar;
 pub mod progressbox;
+pub mod simpleauth;
 pub mod spacers;
 pub mod spinner;
 pub mod splash;
