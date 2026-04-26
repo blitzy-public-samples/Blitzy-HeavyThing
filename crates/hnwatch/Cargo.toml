@@ -64,3 +64,10 @@ indexmap = { workspace = true }
 # https://hacker-news.firebaseio.com/v0/{topic}.json and
 # https://hacker-news.firebaseio.com/v0/item/{id}.json.
 url = { workspace = true }
+
+# Bytes buffer — used by `eventstream.rs` to accumulate partial SSE
+# lines between TLS reads. `BytesMut::extend_from_slice` + `Buf::advance`
+# replace the FASM `buffer$append` / `buffer$nextline` primitives from
+# `eventstream.inc` lines 408 + 411–419 per AAP §0.5.1.7 mapping of
+# `buffer.inc` → simpler `BytesMut`-backed line extractor.
+bytes = { workspace = true }
