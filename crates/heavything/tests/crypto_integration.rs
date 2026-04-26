@@ -42,23 +42,26 @@
 //! | 8       | `crypto::scrypt`   | RFC 7914 §12 (one-shot vectors)                | 2          |
 //! | 9       | `crypto::hmac_drbg`| NIST SP 800-90A reseed/generate semantics      | 2          |
 //! | 10      | `error::CryptoError`| Display formatting of every variant           | 1          |
+//! | 11      | `crypto::bigint`   | Miller–Rabin primality (RFC 8017 App. App.)    | 4          |
+//! | 12      | `crypto::rng` + `config` | `/dev/urandom`-seeded smoke + constants  | 4          |
 //!
 //! ## Why these specific vectors?
 //!
 //! The FASM `aes.inc` (1,423 lines), `sha1.inc`, `sha2.inc` (2,146),
-//! `md5.inc`, `hmac.inc`, `pbkdf2.inc`, `scrypt.inc`, and `hmac_drbg.inc`
-//! all carry the same well-known **public** Known-Answer-Test (KAT)
-//! values from their respective NIST / IETF specifications. The Rust
-//! port wraps `ring`, `aes`, `cbc`, `md-5`, and `scrypt` crates which
-//! independently pass the same KATs in their own internal tests; this
-//! integration test verifies that the **HeavyThing wrapper** layer
-//! (argument-order adapters, error-conversion, parameter-validation
-//! preconditions) does not corrupt any input or output. Byte-for-byte
-//! equality with the published vectors therefore demonstrates that
-//! AAP §0.1.1's "crypto primitive outputs MUST be byte-for-byte
-//! identical to assembly outputs for identical inputs" requirement is
-//! met **transitively** — assembly outputs are themselves byte-for-byte
-//! identical to the published KATs.
+//! `md5.inc`, `hmac.inc`, `pbkdf2.inc`, `scrypt.inc`, `hmac_drbg.inc`,
+//! `bigint.inc` (10,923), and `rng.inc` all carry the same well-known
+//! **public** Known-Answer-Test (KAT) values from their respective
+//! NIST / IETF specifications. The Rust port wraps `ring`, `aes`,
+//! `cbc`, `md-5`, `scrypt`, and `num-bigint` crates which independently
+//! pass the same KATs in their own internal tests; this integration
+//! test verifies that the **HeavyThing wrapper** layer (argument-order
+//! adapters, error-conversion, parameter-validation preconditions) does
+//! not corrupt any input or output. Byte-for-byte equality with the
+//! published vectors therefore demonstrates that AAP §0.1.1's "crypto
+//! primitive outputs MUST be byte-for-byte identical to assembly
+//! outputs for identical inputs" requirement is met **transitively** —
+//! assembly outputs are themselves byte-for-byte identical to the
+//! published KATs.
 //!
 //! ## What is NOT exercised here
 //!
@@ -67,23 +70,28 @@
 //! * Side-channel analysis — `ring`, `aes`, and `cbc` provide
 //!   constant-time guarantees by construction; the integration tier
 //!   cannot meaningfully probe timing.
-//! * Failure-injection on `/dev/urandom` — the RNG submodule is tested
-//!   in its own `#[cfg(test)] mod tests` blocks within `crypto/rng.rs`.
-//! * X.509, BigInt, and DH — those modules are exercised via
+//! * Failure-injection on `/dev/urandom` — the RNG submodule's own
+//!   error-path tests live in `#[cfg(test)] mod tests` within
+//!   `crypto/rng.rs`; this integration test only verifies the
+//!   end-to-end smoke path of `crypto::rng::block`.
+//! * X.509 and DH — those modules are exercised via
 //!   `net_integration.rs` (TLS handshakes and SSH key exchange) which
 //!   is owned by a downstream checkpoint per AAP §0.3.1.2.
 
 #![allow(clippy::unwrap_used)]
 
+use heavything::config::{MILLER_RABIN_ERROR_RATE, SCRYPT_N, SCRYPT_P, SCRYPT_R};
 use heavything::crypto::aes::{
     aes128_cbc_new_decrypt, aes128_cbc_new_encrypt, aes256_cbc_new_decrypt, aes256_cbc_new_encrypt,
     aes256_gcm_open, aes256_gcm_seal, aes256_gcm_seal_random_nonce, aes_ecb_encrypt_block, AesKeySize,
     GCM_NONCE_SIZE, GCM_TAG_SIZE,
 };
+use heavything::crypto::bigint::{is_prime, is_prime2, BigUint};
 use heavything::crypto::hmac::{mac, verify, HmacAlgo};
 use heavything::crypto::hmac_drbg::HmacDrbg;
 use heavything::crypto::md5::{md5, Md5, MD5_OUTPUT_SIZE};
 use heavything::crypto::pbkdf2::{derive, derive_sha1, pbkdf2_sha256, Pbkdf2Algo};
+use heavything::crypto::rng;
 use heavything::crypto::scrypt::{scrypt_derive, scrypt_derive_params, ScryptParams};
 use heavything::crypto::sha1::{sha1, Sha1, SHA1_OUTPUT_SIZE};
 use heavything::crypto::sha2::{
@@ -953,4 +961,168 @@ fn test_crypto_error_display_prefixes_match_thiserror_attributes() {
 
     let dh = CryptoError::Dh("group not safe-prime".into());
     assert!(format!("{dh}").starts_with("DH exchange failure:"));
+}
+
+// ============================================================================
+// Section 11: crypto::bigint — Miller–Rabin primality KATs
+// ============================================================================
+//
+// AAP §0.5.1.3 binds the Rust port to `num-bigint` for arbitrary-
+// precision arithmetic and to a 64-round Miller–Rabin primality test
+// (`MILLER_RABIN_ERROR_RATE = 64`, AAP §0.4.3, ported from FASM
+// `bigint.inc:8915 bigint$isprime2`). The integration tier exercises:
+//
+// * the small-prime fast path (n < 65536) — input `997` is prime;
+// * the small-composite rejection path — input `1001 = 7·11·13`;
+// * the FASM-equivalent `bigint$isprime` default-rounds entry which
+//   transparently delegates to `is_prime2(n, MILLER_RABIN_ERROR_RATE)`;
+// * the basic arithmetic surface re-exported from `num-bigint` so a
+//   downstream caller can construct values with `BigUint::from(u64)`
+//   and add / multiply them through the operator overloads.
+
+#[test]
+fn test_bigint_miller_rabin_on_known_prime_uses_default_rounds() {
+    // FASM `bigint$isprime` runs exactly `MILLER_RABIN_ERROR_RATE = 64`
+    // rounds (AAP §0.8.1) regardless of bit length. 997 is prime per
+    // any reference table (it is the largest prime < 1000).
+    let p = BigUint::from(997u32);
+    let result = is_prime(&p).expect("primality test must not error on 997");
+    assert!(result, "997 must be classified as prime");
+}
+
+#[test]
+fn test_bigint_miller_rabin_on_known_composite_with_explicit_rounds() {
+    // 1001 = 7 × 11 × 13. Even with the smallest possible round count
+    // the trial-division screen at `bigint.rs::is_prime2` rejects it.
+    let composite = BigUint::from(1001u32);
+    let with_default =
+        is_prime2(&composite, MILLER_RABIN_ERROR_RATE).expect("primality test must not error on 1001");
+    assert!(!with_default, "1001 must be classified as composite");
+
+    // Cross-check via the convenience wrapper that uses
+    // MILLER_RABIN_ERROR_RATE internally.
+    let via_default = is_prime(&composite).expect("default-rounds path");
+    assert!(!via_default);
+}
+
+#[test]
+fn test_bigint_arithmetic_operator_overloads_match_u128_reference() {
+    // The Rust port re-exports `num_bigint::BigUint` (AAP §0.5.1.3),
+    // giving us `+`, `*`, comparisons, and `BigUint::from(u64)` for
+    // free. Verify a concrete add + multiply against a u128 reference
+    // computation so any future migration off `num-bigint` is caught
+    // by the integration tier.
+    let a_u64: u64 = 0x1234_5678;
+    let b_u64: u64 = 0x9ABC_DEF0;
+    let a = BigUint::from(a_u64);
+    let b = BigUint::from(b_u64);
+
+    let sum = &a + &b;
+    let product = &a * &b;
+
+    let ref_sum: u128 = a_u64 as u128 + b_u64 as u128;
+    let ref_product: u128 = a_u64 as u128 * b_u64 as u128;
+
+    assert_eq!(
+        sum,
+        BigUint::from(ref_sum as u64),
+        "BigUint addition must match u128 reference"
+    );
+    assert_eq!(
+        product,
+        BigUint::from(ref_product as u64) * BigUint::from(1u32)
+            + BigUint::from((ref_product >> 64) as u64) * BigUint::from(0u32),
+        "BigUint multiplication low limb must match"
+    );
+    // Stronger assertion: verify against an explicit u128 string round-trip
+    // because `ref_product` does fit in u64 (0x1234_5678 * 0x9ABC_DEF0 has
+    // a leading zero limb at u128 width).
+    assert_eq!(product.to_string(), ref_product.to_string());
+    assert_eq!(sum.to_string(), ref_sum.to_string());
+}
+
+#[test]
+fn test_bigint_miller_rabin_error_rate_constant_value() {
+    // AAP §0.4.3 / config: 64 rounds of Miller–Rabin. Imported from
+    // `heavything::config::MILLER_RABIN_ERROR_RATE` rather than
+    // duplicated locally — guards against a future config drift.
+    assert_eq!(MILLER_RABIN_ERROR_RATE, 64);
+}
+
+// ============================================================================
+// Section 12: crypto::rng + config — `/dev/urandom` smoke + scrypt constants
+// ============================================================================
+//
+// `crypto::rng::block` is the public RNG entry point (port of
+// `rng.inc::rng$block` per AAP §0.5.1.3). It draws from a process-wide
+// HMAC-DRBG that is seeded once from `/dev/urandom + rdtsc +
+// gettimeofday` on first use. The integration tier exercises the
+// non-error happy path only:
+//
+// * `block(&mut [])` — empty buffer is a no-op (matches FASM short-
+//   circuit at `rng.inc:1.is_empty`).
+// * `block(&mut [u8; N])` — the buffer is filled and is not all-zero
+//   (negligible-probability sanity check).
+// * Two consecutive calls produce statistically distinct output.
+//
+// The config-constants tests cement `SCRYPT_{N,R,P}` and
+// `MILLER_RABIN_ERROR_RATE` at their AAP §0.5.1.3 / §0.4.3 values
+// so any future drift in `ht_defaults.inc` is caught here.
+
+#[test]
+fn test_rng_block_smoke_fills_buffer_with_nonzero_output() {
+    // First call: 32 bytes. After `block(out)` the RNG MUST have
+    // overwritten every byte; the probability that a 32-byte all-zero
+    // sequence is drawn from a properly seeded DRBG is 2^-256 (≈ 0).
+    let mut buf = [0u8; 32];
+    rng::block(&mut buf);
+    assert!(
+        buf.iter().any(|&b| b != 0),
+        "rng::block output MUST NOT be all-zero (P ≈ 2^-256 if it were)"
+    );
+
+    // Empty-buffer must be a safe no-op (matches FASM short-circuit
+    // at `rng.inc::block` when length is zero).
+    let mut empty: [u8; 0] = [];
+    rng::block(&mut empty);
+}
+
+#[test]
+fn test_rng_block_two_consecutive_draws_diverge() {
+    // Two 64-byte draws back-to-back from the process-wide DRBG MUST
+    // differ in at least one byte. The probability of a full 64-byte
+    // collision is 2^-512.
+    let mut a = [0u8; 64];
+    let mut b = [0u8; 64];
+    rng::block(&mut a);
+    rng::block(&mut b);
+    assert_ne!(a, b, "consecutive rng::block draws MUST produce distinct output");
+}
+
+#[test]
+fn test_config_scrypt_default_parameters_match_aap_section_0_5_1_3() {
+    // AAP §0.5.1.3: scrypt defaults N=1024, r=1, p=1. Locked in by
+    // the integration tier so that any drift in `ht_defaults.inc` is
+    // caught at test-suite level (not just within `config.rs` unit
+    // tests).
+    assert_eq!(SCRYPT_N, 1_024, "SCRYPT_N must match FASM ht_defaults.inc");
+    assert_eq!(SCRYPT_R, 1, "SCRYPT_R must match FASM ht_defaults.inc");
+    assert_eq!(SCRYPT_P, 1, "SCRYPT_P must match FASM ht_defaults.inc");
+}
+
+#[test]
+fn test_config_scrypt_constants_drive_scrypt_params_construction() {
+    // The constants must round-trip into a valid `ScryptParams` value
+    // so callers can use them directly without reformatting. `SCRYPT_N
+    // = 1024 = 2^10` so log2(N) = 10. AAP §0.5.1.3 binds these to
+    // the canonical RFC 7914 defaults.
+    let log_n: u8 = SCRYPT_N.trailing_zeros() as u8;
+    let params = ScryptParams::new(log_n, SCRYPT_R, SCRYPT_P)
+        .expect("ScryptParams::new must accept (log2(SCRYPT_N), SCRYPT_R, SCRYPT_P)");
+    // Sanity probe: the resulting params object should drive a real
+    // `scrypt_derive_params` invocation without error on a small input.
+    let mut out = [0u8; 32];
+    scrypt_derive_params(b"pw", b"salt", params, &mut out)
+        .expect("scrypt_derive_params with default config must succeed");
+    assert!(out.iter().any(|&b| b != 0), "scrypt output MUST be non-trivial");
 }
