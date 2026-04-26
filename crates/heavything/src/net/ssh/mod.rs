@@ -155,10 +155,8 @@
 //! - RFC 4253 — The Secure Shell (SSH) Transport Layer Protocol
 //! - RFC 4252 — The Secure Shell (SSH) Authentication Protocol
 //! - RFC 4254 — The Secure Shell (SSH) Connection Protocol
-//! - RFC 4419 — Diffie-Hellman Group Exchange for the SSH Transport Layer
-//!              Protocol
-//! - RFC 4256 — Generic Message Exchange Authentication for SSH
-//!              (keyboard-interactive)
+//! - RFC 4419 — Diffie-Hellman Group Exchange for the SSH Transport Layer Protocol
+//! - RFC 4256 — Generic Message Exchange Authentication for SSH (keyboard-interactive)
 //! - HeavyThing FASM source: `ssh.inc` (the ported files preserve GPLv3
 //!   attribution to 2 Ton Digital / Jeff Marrison)
 

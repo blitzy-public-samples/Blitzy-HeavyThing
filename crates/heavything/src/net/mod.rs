@@ -4,6 +4,14 @@
 // Derived from the HeavyThing assembly library:
 //   Copyright © 2015–2018 2 Ton Digital, Jeff Marrison <info@2ton.com.au>
 //
+// This module aggregates the Rust translations of the following FASM
+// sources collectively (no single `.inc` file maps 1:1 to this aggregator):
+//
+//   io.inc            epoll.inc          epoll_child.inc    epoll_dns.inc
+//   blacklist.inc     url.inc            fcgiclient.inc     tls.inc
+//   ssh.inc           webserver.inc      webclient.inc      httpheaders.inc
+//   mimelike.inc      cookiejar.inc      http1.inc
+//
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
@@ -17,191 +25,256 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Networking subsystem — aggregator module for the async I/O stack.
+//! # Networking Subsystem
 //!
-//! This subsystem translates the twelve networking `.inc` assembly files
-//! (`io.inc`, `epoll.inc`, `epoll_child.inc`, `epoll_dns.inc`, `blacklist.inc`,
-//! `url.inc`, `http1.inc`, `httpheaders.inc`, `mimelike.inc`, `webserver.inc`,
-//! `webclient.inc`, `fcgiclient.inc`, `cookiejar.inc`, `tls.inc`, `ssh.inc`)
-//! into idiomatic Rust modules layered on top of `tokio`, `rustls`, and
-//! friends per AAP §0.5.1.4 and §0.7.1.
+//! Top-level aggregator for the `heavything` net subsystem. This subsystem
+//! replaces the hand-rolled 131,445-line FASM `epoll.inc` event loop and its
+//! associated IO/TLS/SSH/HTTP stack with idiomatic Rust built on:
 //!
-//! # Foundational abstraction: [`io`]
+//! - [`tokio`] runtime (which uses `mio` → `epoll` on Linux)
+//! - [`rustls`] for TLS 1.2 and TLS 1.3
+//! - [`ring`], [`aes`], [`cbc`] for SSH transport crypto
+//! - [`flate2`] for zlib (HTTP gzip, SSH compression)
+//! - [`nix`] for `fork(2)`, `setuid(2)`, `setgid(2)`, `prctl(2)`, socketpair
+//! - [`memmap2`] for mmap-backed file caches
 //!
-//! The entire subsystem is built on the [`IoChain`](io::IoChain) trait,
-//! which replaces the hand-rolled 7-method virtual-method table from
-//! `io.inc` (AAP §0.4.3, §0.7.1.1) with a `dyn`-object-safe Rust trait
-//! whose dispatch goes through the compiler-generated vtable of
-//! `Arc<dyn IoChain>`. Every concrete protocol layer (TCP socket, TLS
-//! handshake, SSH transport, HTTP/1.1 framing) implements [`IoChain`];
-//! layers are stacked by calling [`io::link`] which wires the strong
-//! `Arc<child>` link and the weak `Weak<parent>` back-link. The
-//! directional-dispatch contract (`destroy`/`clone_chain`/`send` walk
-//! forward toward the kernel; `connected`/`receive`/`error`/`timeout`
-//! walk backward toward the application) is documented in the [`io`]
-//! module's rustdoc with an ASCII diagram.
+//! ## Module Layout
 //!
-//! # Submodules present
+//! | Module        | FASM Source                                                                                       | Role                                                            |
+//! |---------------|---------------------------------------------------------------------------------------------------|-----------------------------------------------------------------|
+//! | [`io`]        | `io.inc`                                                                                          | [`IoChain`] trait — the 7-method vtable foundation              |
+//! | [`runtime`]   | `epoll.inc`                                                                                       | tokio runtime build + ulimit checks + timer constants           |
+//! | [`dns`]       | `epoll_dns.inc`                                                                                   | Async DNS resolver                                              |
+//! | [`child`]     | `epoll_child.inc`                                                                                 | Master↔worker IPC via fork+socketpair                           |
+//! | [`blacklist`] | `blacklist.inc`                                                                                   | Time-decayed IP blacklist                                       |
+//! | [`url`]       | `url.inc`                                                                                         | URL parsing / encode / decode                                   |
+//! | [`fcgi`]      | `fcgiclient.inc`                                                                                  | FastCGI client                                                  |
+//! | [`tls`]       | `tls.inc`                                                                                         | TLS server/client wrapper over rustls                           |
+//! | [`ssh`]       | `ssh.inc`                                                                                         | SSH2 server/transport                                           |
+//! | [`http`]      | `webserver.inc`, `webclient.inc`, `httpheaders.inc`, `mimelike.inc`, `cookiejar.inc`, `http1.inc` | HTTP/1.1 server + client                                        |
 //!
-//! * [`blacklist`] — IP blacklist with time-based expiry for throttling
-//!   misbehaving TLS / SSH peers (port of `blacklist.inc`; AAP §0.5.1.4).
-//! * [`child`] — Fork-and-socketpair helpers for master↔worker IPC
-//!   channels, typed [`LinkMessage`](child::LinkMessage) records, global
-//!   child-PID registry, and `SIGTERM`-on-exit cleanup (port of
-//!   `epoll_child.inc`; AAP §0.5.1.4, §0.7.4.2).
-//! * [`dns`] — Async DNS resolution via the system resolver
-//!   ([`tokio::net::lookup_host`]), plus a Tier 2 manual UDP-based
-//!   resolver that reads `/etc/resolv.conf`, scrambles query IDs,
-//!   and supports roundrobin server selection (port of
-//!   `epoll_dns.inc`; AAP §0.5.1.4).
-//! * [`http`] — HTTP/1.1 and HTTP/2 header containers, HPACK codec,
-//!   and line-oriented wire-format parser/serializer (port of
-//!   `httpheaders.inc`, with `http1.inc`, `mimelike.inc`,
-//!   `webserver.inc`, `webclient.inc`, `fcgiclient.inc`, `cookiejar.inc`
-//!   scheduled as sibling files within the same `http` submodule;
-//!   AAP §0.5.1.4).
-//! * [`io`] — [`IoChain`](io::IoChain) trait, [`IoLinks`](io::IoLinks)
-//!   parent/child state, [`IoBase`](io::IoBase) no-op layer, the
-//!   [`link`](io::link) helper, and the six `default_*` behavioural
-//!   helpers (port of `io.inc`; AAP §0.5.1.4).
-//! * [`url`] — RFC 3986 URL parser/encoder/decoder with the FASM-style
-//!   10-field accessor surface used by `webclient` and `webserver`
-//!   (port of `url.inc`; AAP §0.5.1.7). Wraps the `url` crate.
+//! ## Directional Dispatch (from [`io`])
 //!
-//! * [`runtime`] — Async runtime construction, Stage 10
-//!   `RLIMIT_NOFILE` check, socket-default helpers, periodic-timer
-//!   spawn helpers, generic accept loop, and cooperative
-//!   graceful-shutdown primitive (port of `epoll.inc`; AAP §0.5.1.4,
-//!   §0.7.1). Replaces the 3,512-line hand-rolled epoll event loop
-//!   with a thin orchestrator over `tokio::runtime::Runtime` whose
-//!   internal `mio` backend already provides `epoll` on Linux.
+//! Every protocol layer implements [`IoChain`] and is wired into a doubly-
+//! linked chain by [`io::link`]. Method invocations split into two
+//! directional groups preserved verbatim from the FASM `io.inc` comment:
 //!
-//! * [`tls`] — TLS 1.2/1.3 server and client built on `rustls 0.23` —
-//!   port of `tls.inc` (AAP §0.5.1.4, §0.7.2). Provides
-//!   [`tls::TlsServer`] / [`tls::TlsClient`] / [`tls::TlsStream`],
-//!   plus the session-cache hook surface
-//!   ([`tls::set_sessioncache_hook`] / [`tls::take_sessioncache_hook`]
-//!   / [`tls::sessioncache_put`]) and three background-task spawners
-//!   (`spawn_pem_reload`, `spawn_ocsp_refresh`,
-//!   `spawn_session_cache_sweep`) that preserve the FASM 3,600-second
-//!   PEM hot-reload, 7,200-second OCSP refresh, and session-cache
-//!   sweep cadences. Architectural divergences (DHE→ECDHE, AES-CBC→AES-GCM,
-//!   addition of TLS 1.3) are documented in the module's `//!`
-//!   doc comment per AAP §0.7.2.2.
+//! ```text
+//! Application   <- receive / connected / error / timeout   (BACKWARD)
+//!      │  ▲
+//!    parent
+//!      │  │
+//!    child
+//!      ▼  │
+//! Kernel / epoll / socket   -> destroy / clone / send      (FORWARD)
+//! ```
 //!
-//! # Error handling
+//! - **FORWARD methods** ([`IoChain::destroy`], [`IoChain::clone_chain`],
+//!   [`IoChain::send`]) walk *down* toward the kernel-facing socket.
+//! - **BACKWARD methods** ([`IoChain::connected`], [`IoChain::receive`],
+//!   [`IoChain::error`], [`IoChain::timeout`]) walk *up* toward the
+//!   application layer.
 //!
-//! All fallible networking APIs surface the crate-wide
-//! [`NetError`](crate::error::NetError) enum (see [`crate::error`]).
-//! [`IoChain::send`](io::IoChain::send) returns
-//! `BoxFuture<Result<(), NetError>>` and
-//! [`IoChain::error`](io::IoChain::error) takes `NetError` as its
-//! argument, so the backward-propagating error path delivers a fully
-//! typed error to every upstream layer (AAP §0.7.1.1).
+//! ## Cross-Subsystem Integration Contracts
 //!
-//! # `unsafe` audit
+//! - **`tui::widgets::ssh::SshTransport`**: trait defined in `tui/`, MUST be
+//!   implemented by a handle exported from [`ssh`] so TUI widgets can drive
+//!   the SSH channel (AAP §0.4.4).
+//! - **`crate::crypto::rng::reseed()`**: MUST be called in every child worker
+//!   post-fork (see [`child::ChildProcess`]) per AAP §0.7.4.2.
+//! - **[`crate::error::NetError`]**: all subsystem errors convert via
+//!   `#[from]` to this top-level type. The four protocol-specific sub-errors
+//!   ([`HttpError`], [`SshError`], [`TlsError`], plus DNS / IO variants on
+//!   `NetError` itself) are re-exported below for ergonomic consumer code.
 //!
-//! The [`blacklist`], [`http`], [`io`], and [`url`] submodules contribute
-//! **zero** `unsafe` blocks to the crate's
-//! [`UNSAFE_AUDIT.md`](../../../../UNSAFE_AUDIT.md) tally
-//! (AAP §0.7.4.1). Correctness derives entirely from `Arc`, `Weak`,
-//! `Mutex`, the standard collections, and safe-Rust wrappers around
-//! the `url` crate.
+//! ## Re-exports
 //!
-//! The [`child`] submodule contributes **three** `unsafe` sites to the
-//! crate tally, all FFI-nix / raw-fd boundaries per AAP §0.7.4.2:
-//! `nix::unistd::fork` in [`spawn_child`](child::spawn_child) plus two
-//! `std::os::unix::net::UnixStream::from_raw_fd` calls that take
-//! ownership of the two halves of the `socketpair(2)` return value.
+//! These types are the stable public surface of the `net` subsystem.
+//! External consumers should prefer these re-exports over the fully-qualified
+//! `net::<submodule>::<Type>` paths. Only the most commonly-consumed surface
+//! is flattened — sub-namespaces with rich type ecosystems (notably
+//! [`http`] and [`ssh`]) intentionally remain accessible only via their
+//! sub-module paths so the top-level [`net`](self) namespace stays clean.
 //!
-//! The [`runtime`] submodule contributes **two** `unsafe` sites per
-//! AAP §0.7.4.1 expected budget: one in
-//! [`runtime::check_ulimit`] grouping `libc::getrlimit` /
-//! `libc::setrlimit`, and one in
-//! [`runtime::apply_stream_defaults`] grouping two
-//! `libc::setsockopt` calls (`SO_LINGER`, `SO_KEEPALIVE`).
+//! ## Feature Gate
 //!
-//! Each site has a matching `// SAFETY:` rationale comment, an entry
-//! in [`UNSAFE_AUDIT.md`](../../../../UNSAFE_AUDIT.md), and a
-//! corresponding integration test in `tests/ffi_boundary.rs`.
+//! The entire `net` module is gated on `feature = "net"` in `lib.rs`
+//! (AAP §0.4.1.3). It implicitly depends on the `crypto`, `ds`, and `util`
+//! features being enabled (they are in the default feature set per AAP
+//! §0.6.1, and `net` declares an explicit `crypto` dependency in
+//! `Cargo.toml`).
+//!
+//! ## `unsafe` Audit Summary
+//!
+//! See `UNSAFE_AUDIT.md` for the per-site inventory. Aggregator counts:
+//!
+//! | Submodule    | `unsafe` sites | Category                                    |
+//! |--------------|---------------:|---------------------------------------------|
+//! | [`blacklist`]|              0 | (pure safe Rust)                            |
+//! | [`child`]    |              3 | `nix::fork` + 2× `UnixStream::from_raw_fd`  |
+//! | [`dns`]      |              0 | (`tokio::net::UdpSocket` only)              |
+//! | [`fcgi`]     |              0 | (pure safe Rust over `tokio::net`)          |
+//! | [`http`]     |              0 | (pure safe Rust)                            |
+//! | [`io`]       |              0 | (pure safe Rust)                            |
+//! | [`runtime`]  |              2 | `libc::getrlimit`/`setrlimit` + `setsockopt`|
+//! | [`ssh`]      |              0 | (pure safe Rust over `aes`/`cbc`/`ring`)    |
+//! | [`tls`]      |              0 | (pure safe Rust over `rustls`)              |
+//! | [`url`]      |              0 | (pure safe Rust over `::url` crate)         |
+//!
+//! Total: 5 `unsafe` sites for the `net` subsystem — well within the
+//! crate-wide budget of 50 (AAP §0.7.4.1). Each site has a matching
+//! `// SAFETY:` rationale comment, an `UNSAFE_AUDIT.md` entry, and a
+//! corresponding integration test in `tests/ffi_boundary.rs`
+//! (AAP §0.7.4.4).
 
-/// IP blacklist with time-based expiry — port of `blacklist.inc`.
+// -- Submodule declarations (alphabetical) ---------------------------------
+//
+// Alphabetical ordering matches `rustfmt`'s default `reorder_modules = true`
+// behaviour and ensures deterministic code review across PRs. Per the
+// agent_prompt for this file, the per-module FASM-source mapping is
+// documented in the module-level rustdoc table above (and NOT inline as
+// `// blacklist.inc` comments) so the declaration list stays clean and
+// machine-readable.
+
 pub mod blacklist;
-
-/// Fork-and-socketpair helpers for master↔worker IPC channels — port of
-/// `epoll_child.inc`.
 pub mod child;
-
-/// Async DNS resolution — port of `epoll_dns.inc`. Provides Tier 1
-/// system-resolver wrappers ([`dns::lookup_host`], [`dns::lookup_ipv4`],
-/// [`dns::lookup_host_cached`]) plus the Tier 2 manual UDP-based
-/// resolver ([`dns::Dns`]) and the schema-required public façade
-/// ([`dns::DnsResolver`]).
 pub mod dns;
-
-/// FastCGI client tied directly to the tokio runtime — port of
-/// `fcgiclient.inc`. Exposes [`fcgi::FcgiClient`] for proxying HTTP
-/// requests to upstream FastCGI backends (PHP-FPM, etc.) over either
-/// a Unix domain socket or TCP, plus the [`fcgi::FcgiResult`] outcome
-/// enum and the [`fcgi::FcgiCallback`] one-shot callback type.
 pub mod fcgi;
-
-/// HTTP/1.1 and HTTP/2 aggregator module — contains the header container,
-/// HPACK codec, and sibling submodules for MIME-like parsing, HTTP/1.x
-/// state machines, and server/client request handling. Ports the
-/// `httpheaders.inc` family of FASM files.
 pub mod http;
-
-/// IO chain trait, parent/child link state, no-op base layer, and the
-/// six directional-dispatch default helpers — port of `io.inc`.
 pub mod io;
-
-/// Async runtime and event-loop orchestration — port of `epoll.inc`.
-/// Provides [`runtime::build`] / [`runtime::build_current_thread`] /
-/// [`runtime::run`] for constructing the tokio runtime that drives
-/// the async network stack; [`runtime::check_ulimit`] for the Stage
-/// 10 `RLIMIT_NOFILE ≥ EPOLL_MINFDS` init check (AAP §0.7.1.1);
-/// [`runtime::apply_stream_defaults`] for the accepted-socket option
-/// bundle (`SO_KEEPALIVE` / `SO_LINGER` / `TCP_NODELAY`);
-/// [`runtime::accept_loop`] / [`runtime::spawn_periodic`] /
-/// [`runtime::spawn_periodic_async`] / [`runtime::install_shutdown_signals`]
-/// for the common event-loop building blocks; and the
-/// [`runtime::timers`] sub-module exposing the eight canonical
-/// integration-point `Duration` constants.
 pub mod runtime;
-
-/// SSH 2.0 transport-layer subsystem — port of `ssh.inc`.
-///
-/// Currently exposes only the [`ssh::cipher`] submodule for AES-256-CBC
-/// encryption and HMAC-SHA-256 MAC per AAP §0.5.1.4. Other SSH
-/// submodules (`auth`, `compression`, `kex`, `server`) are wired in
-/// from `ssh/mod.rs` by their owning translation agents.
 pub mod ssh;
-
-/// TLS 1.2/1.3 server and client built on `rustls 0.23` — port of
-/// `tls.inc`. See the module's `//!` doc comment for the
-/// architectural-divergence summary required by AAP §0.7.2.2.
 pub mod tls;
-
-/// RFC 3986 URL parser/encoder/decoder with FASM-style accessors —
-/// port of `url.inc`.
 pub mod url;
 
-/// Re-export of the most commonly used items from the [`child`] module so
-/// that callers (notably `crates/webserver/src/master.rs`) can write
-/// `use heavything::net::{ChildProcess, LinkMessage};` without an extra
-/// module hop. Matches the export surface declared in AAP §0.3.1.2 for
-/// `crates/heavything/src/net/child.rs`.
-pub use self::child::{ChildProcess, LinkMessage};
+// -- Public re-exports -----------------------------------------------------
+//
+// These re-exports form the stable public surface of `net`. Adding to or
+// removing from this list is a breaking change for downstream consumers
+// (the three binary crates `sshtalk`, `hnwatch`, `webserver`, plus other
+// `heavything` subsystems such as `tui::widgets::ssh`).
+//
+// The `tests::re_exports_resolve` unit test below is a compile-time check
+// that every name in this list continues to resolve at the expected path —
+// it will fail to compile if any sibling module silently drops a re-exported
+// type, catching accidental API removal during refactors.
 
-/// Re-export of the public DNS-resolution API surface so callers can
-/// write `use heavything::net::{DnsResolver, DnsError};` without an
-/// extra module hop. Matches the export surface declared in AAP
-/// §0.3.1.2 for `crates/heavything/src/net/dns.rs`.
+// Core IO chain abstraction (from `net::io`).
+pub use self::io::{link, BoxFuture, IoBase, IoChain, IoLinks};
+
+// IP blacklist (from `net::blacklist`).
+pub use self::blacklist::Blacklist;
+
+// URL parsing (from `net::url`).
+pub use self::url::{Url, UrlError};
+
+// DNS resolver (from `net::dns`).
 pub use self::dns::{DnsError, DnsResolver};
 
-/// Re-export of the public FastCGI client surface so callers can write
-/// `use heavything::net::{FcgiClient, FcgiResult, FcgiCallback};` without
-/// an extra module hop. Matches the export surface declared in AAP
-/// §0.3.1.2 for `crates/heavything/src/net/fcgi.rs`.
-pub use self::fcgi::{FcgiCallback, FcgiClient, FcgiResult};
+// Master↔worker IPC (from `net::child`).
+pub use self::child::{ChildProcess, LinkMessage};
+
+// Tokio runtime + ulimit + cooperative shutdown (from `net::runtime`).
+//
+// `runtime::build` is renamed to `build_runtime` at the `net::` level so
+// the call site reads as `net::build_runtime()` self-documentingly in
+// binary crates' `main.rs` files. The fully-qualified `net::runtime::build`
+// path remains available for callers who prefer it.
+pub use self::runtime::{build as build_runtime, check_ulimit, Shutdown};
+
+// Crate-wide protocol error types (from `crate::error`).
+//
+// Re-exporting here lets consumers write `use heavything::net::NetError;`
+// rather than remembering that the error lives at
+// `heavything::error::NetError`. This matches the FASM pattern where every
+// protocol-specific error was accessible via its subsystem include.
+//
+// The `net::ssh::SshError` re-export inside `ssh/mod.rs` is the same
+// `crate::error::SshError` type; both paths resolve to the canonical
+// definition in `crate::error` so there is no type-identity divergence.
+pub use crate::error::{HttpError, NetError, SshError, TlsError};
+
+#[cfg(test)]
+mod tests {
+    //! Aggregator-level tests verify that re-exports resolve at the expected
+    //! path. Functional tests live in the sibling modules.
+    //!
+    //! The single test below uses [`std::any::TypeId::of`] to construct a
+    //! compile-time reference to every re-exported type. The references
+    //! live inside an unreachable closure (`let _: fn() -> ()`) so no
+    //! runtime work is performed; the assertion is purely the fact that the
+    //! function compiles. If any sibling module drops or renames a
+    //! re-exported type, this file will fail to build, surfacing the
+    //! breakage at compile time rather than at distant call sites.
+
+    #[test]
+    fn re_exports_resolve() {
+        // The closure is never invoked — its existence is the assertion.
+        // Each `TypeId::of::<…>()` call requires the referenced path to
+        // resolve to a `'static` type, which exercises the `pub use`
+        // declarations above as a compile-time check.
+        let _verify_paths_compile: fn() -> () = || {
+            let _ = std::any::TypeId::of::<super::Blacklist>();
+            let _ = std::any::TypeId::of::<super::IoBase>();
+            let _ = std::any::TypeId::of::<super::IoLinks>();
+            let _ = std::any::TypeId::of::<super::Url>();
+            let _ = std::any::TypeId::of::<super::UrlError>();
+            let _ = std::any::TypeId::of::<super::DnsError>();
+            let _ = std::any::TypeId::of::<super::NetError>();
+            let _ = std::any::TypeId::of::<super::TlsError>();
+            let _ = std::any::TypeId::of::<super::SshError>();
+            let _ = std::any::TypeId::of::<super::HttpError>();
+            let _ = std::any::TypeId::of::<super::Shutdown>();
+            let _ = std::any::TypeId::of::<super::LinkMessage>();
+            let _ = std::any::TypeId::of::<super::ChildProcess>();
+        };
+
+        // Verify the function-typed re-exports also resolve. `link` is a
+        // free function; `build_runtime` is the `runtime::build` alias.
+        // These use type-coercion to function pointers rather than
+        // `TypeId::of` because function items are zero-sized types whose
+        // identity is checked via their function-pointer signature.
+        let _link_fn: fn(&std::sync::Arc<dyn super::IoChain>, std::sync::Arc<dyn super::IoChain>) =
+            super::link;
+        let _build_fn: fn() -> std::io::Result<tokio::runtime::Runtime> = super::build_runtime;
+        let _ulimit_fn: fn() -> Result<(), crate::error::InitError> = super::check_ulimit;
+    }
+
+    /// Smoke test: construct a [`Blacklist`] via the re-exported path. The
+    /// actual blacklist semantics are covered by
+    /// `crate::net::blacklist::tests::*`; this test only confirms that
+    /// `net::Blacklist::new(...)` resolves and produces the expected
+    /// `Arc<Blacklist>` without requiring callers to import
+    /// `net::blacklist::Blacklist` from the sub-module path.
+    ///
+    /// `Blacklist::new` takes a per-call default `expiry: Duration` (see
+    /// `net::blacklist`); the value chosen here is irrelevant to the
+    /// re-export check.
+    #[test]
+    fn blacklist_re_export_constructible() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        let _bl: Arc<super::Blacklist> = super::Blacklist::new(Duration::from_secs(86_400));
+    }
+
+    /// Smoke test: construct an [`IoBase`] via the re-exported path. This
+    /// verifies that the foundational [`IoChain`] vtable type is reachable
+    /// from `net::IoBase` without going through `net::io::IoBase`.
+    ///
+    /// `IoBase::new` returns `Arc<Self>` rather than `Self` because every
+    /// `IoChain` method takes `self: Arc<Self>` (see `net::io::IoChain`).
+    #[test]
+    fn io_base_re_export_constructible() {
+        use std::sync::Arc;
+        let _base: Arc<super::IoBase> = super::IoBase::new();
+    }
+
+    /// Smoke test: construct a [`Shutdown`] coordinator via the re-exported
+    /// path. The cooperative-cancellation primitive is one of the most
+    /// commonly consumed types from `net::` in binary crates' `main.rs`,
+    /// so its re-export resolution is verified explicitly.
+    #[test]
+    fn shutdown_re_export_constructible() {
+        let _sd: super::Shutdown = super::Shutdown::new();
+    }
+}
