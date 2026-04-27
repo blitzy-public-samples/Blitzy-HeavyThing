@@ -123,6 +123,11 @@ const URL_POSTFACE: &str = ".json";
 /// streaming-phase launches use the host extracted from the 307 Location
 /// header (which typically resolves to a different region-specific
 /// firebaseio sub-domain).
+///
+/// The minimal Rust port routes the connect phase via `HnModel`'s
+/// shared HTTP client and consequently never references this constant
+/// directly — preserved for FASM-baseline parity per AAP §0.8.2.
+#[allow(dead_code)]
 const FIREBASE_DOMAIN: &str = "hacker-news.firebaseio.com";
 
 /// HTTPS port for the Firebase REST API. Hard-coded in `eventstream.inc`
@@ -313,8 +318,14 @@ enum StreamPhase {
 /// Mirrors the FASM convention where `eventstream_redirect$received`
 /// returns 1 (destroy current comms) at line 301 after the redirect is
 /// followed, vs. 0 (keep alive) for `eventstream$received` at line 457.
+///
+/// The minimal Rust port follows redirects synchronously inside the
+/// connect phase (no streaming branch is wired yet), so only `Done`
+/// is currently constructed. `Continue` is preserved for FASM-baseline
+/// parity per AAP §0.8.2.
 enum ControlFlow {
     /// Keep reading more bytes on the current connection.
+    #[allow(dead_code)]
     Continue,
     /// Redirect followed — the relaunch task is now driving a new
     /// streaming connection; this connection's job is done.

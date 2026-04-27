@@ -542,6 +542,13 @@ impl HnModel {
     /// Used by the UI layer when the user explicitly clears the
     /// model state (e.g., after switching topic feeds, the UI may
     /// want to start clean).
+    ///
+    /// In the minimal port, the `R`/`Reset` keybinding (`ui.inc:444`)
+    /// is gated behind the FASM-only `use_reset_goods` macro and is
+    /// not wired in the default Rust build, so this method is
+    /// preserved for FASM-baseline parity per AAP §0.8.2 and is
+    /// otherwise exercised only by the model's own unit tests.
+    #[allow(dead_code)]
     pub fn reset(&self) {
         // Clear mainorder. Strings drop automatically.
         if let Ok(mut mainorder) = self.mainorder.lock() {
