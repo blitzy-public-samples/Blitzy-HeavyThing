@@ -1186,32 +1186,43 @@ impl Screen {
         });
 
         // -------------------- screen children ------------------------
-        // Append outer_wrapper (index 0) and statusbar.base (index 1).
-        // We also seed `inner.focus` to the buddy-list — the FASM line
-        // `mov [rbx+screen_focus_ofs], rax` in `screen$new` does the
-        // same after the data grid is constructed.
-        //
-        // The same `Arc::get_mut` block also installs the `self_weak`
-        // back-reference. `Arc::downgrade` only bumps the *weak* count,
-        // so the Arc still has a unique strong reference and
-        // `Arc::get_mut` continues to succeed afterwards.
-        let self_weak = Arc::downgrade(&screen);
+        // Append outer_wrapper (index 0) and statusbar.base (index 1)
+        // through `Arc::get_mut`. This must run *before* any
+        // `Arc::downgrade` of the screen Arc because `Arc::get_mut`
+        // returns `None` when **either** the strong count exceeds 1
+        // **or** any `Weak` pointer exists for the same allocation.
+        // (See the standard library: "Returns a mutable reference into
+        // the given `Arc`, if there are no other `Arc` or `Weak`
+        // pointers to the same allocation.")
         if let Some(s_mut) = Arc::get_mut(&mut screen) {
             s_mut.state.children.push_back(outer_wrapper as Arc<dyn Widget>);
             s_mut
                 .state
                 .children
                 .push_back(statusbar.base.clone() as Arc<dyn Widget>);
-            if let Ok(mut inner) = s_mut.inner.lock() {
-                inner.focus = Some(buddylist.clone() as Arc<dyn Widget>);
-            }
-            if let Ok(mut slot) = s_mut.self_weak.lock() {
-                *slot = self_weak;
-            }
         } else {
             return Err(anyhow!(
                 "screen::new: outer Screen Arc::get_mut failed (refcount > 1)"
             ));
+        }
+
+        // -------------------- self-weak + initial focus --------------
+        // Now that `Arc::get_mut` has finished, we are free to create
+        // a `Weak<Screen>` for the back-reference. The `inner` and
+        // `self_weak` fields are wrapped in `Mutex`, so writing to
+        // them only requires `&self` (interior mutability). This means
+        // we can install both *after* `Arc::downgrade` without a
+        // second `Arc::get_mut` call.
+        //
+        // FASM line `mov [rbx+screen_focus_ofs], rax` in `screen$new`
+        // sets the initial focus to the buddy-list immediately after
+        // the data grid is constructed; we mirror that here.
+        let self_weak = Arc::downgrade(&screen);
+        if let Ok(mut inner) = screen.inner.lock() {
+            inner.focus = Some(buddylist.clone() as Arc<dyn Widget>);
+        }
+        if let Ok(mut slot) = screen.self_weak.lock() {
+            *slot = self_weak;
         }
 
         // -------------------- back-reference -------------------------
