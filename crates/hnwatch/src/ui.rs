@@ -1103,46 +1103,62 @@ pub fn init(model: Arc<HnModel>) -> Result<Arc<UiState>> {
 
 /// Helper: take ownership of a freshly-built [`TuiStatusBar`] [`Arc`]
 /// and append the five navigation labels via the FASM call order
-/// (`Job`, `Show`, `Ask`, `New`, `Top`). The returned [`Arc`] points
-/// at the same widget — this exists purely to expose `&mut Statusbar`
-/// access via [`Arc::get_mut`] before any shared clones exist.
+/// (`Job`, `Show`, `Ask`, `New`, `Top`).
+///
+/// `add_label` requires `&mut Statusbar`, which is only obtainable by
+/// extracting the inner value from the [`Arc`]. We use [`Arc::try_unwrap`]
+/// (NOT `Arc::get_mut`): the spawned uptime-timer task inside
+/// [`TuiStatusBar::new_d`]/`finalize_construction` captures a
+/// [`std::sync::Weak<Statusbar>`] back-pointer, so the freshly-built `Arc`
+/// always has `weak_count == 1`, which makes `Arc::get_mut` return
+/// [`None`]. `Arc::try_unwrap` only checks `strong_count == 1` — the
+/// outstanding [`std::sync::Weak`] does NOT block it. This pattern
+/// matches the in-tree exemplar at
+/// `heavything::tui::widgets::statusbar::test_add_label_*` (statusbar.rs
+/// lines 1577-1610).
+///
+/// Once we have the inner [`Statusbar`] by value we mutate it by-value,
+/// then re-wrap with [`Arc::new`]. The original allocation now has
+/// `strong_count == 0`; on its next 5 s tick the pre-existing timer task
+/// observes `Weak::upgrade() == None` and exits cleanly. For
+/// `show_uptime = false` (hnwatch always passes this), the timer task
+/// would have been a no-op anyway, so losing it is harmless.
 fn build_statusbar_with_labels(sb: Arc<TuiStatusBar>) -> Result<Arc<TuiStatusBar>, TuiError> {
-    let mut sb = sb;
     let label_normal = ColorPair::new(COLOR_BLACK, COLOR_LIGHTGRAY);
     let label_highlight = ColorPair::new(COLOR_VENETIANRED, COLOR_GRAY);
 
-    // We must take unique mutable access to add labels. The fresh
-    // Arc returned by `TuiStatusBar::new_d` has refcount 1 and no
-    // weak refs, so `Arc::get_mut` succeeds.
-    {
-        let sb_mut = Arc::get_mut(&mut sb).ok_or_else(|| {
-            TuiError::Render(std::io::Error::other(
-                "ui::init: statusbar Arc was unexpectedly shared before label population",
-            ))
-        })?;
+    // Take unique ownership of the inner `Statusbar` via `Arc::try_unwrap`.
+    // This succeeds because at this call site `strong_count == 1` (the
+    // caller has just constructed the Arc and has not cloned it). Any
+    // outstanding `Weak` reference held by the timer task is irrelevant
+    // to `try_unwrap`.
+    let mut sb_owned = Arc::try_unwrap(sb).map_err(|_| {
+        TuiError::Render(std::io::Error::other(
+            "ui::init: statusbar Arc was unexpectedly shared before label population",
+        ))
+    })?;
 
-        // FASM `ui.inc` lines 200–280 — add labels in this exact
-        // order. Each call inserts at index 1, so the final visual
-        // ordering (left to right) is `copyright | Top | New | Ask | Show | Job`,
-        // matching the FASM `list$insert_after(children, first, ...)`
-        // semantics byte-for-byte.
-        let l_job = sb_mut.add_label(STAT_JOB, label_normal)?;
-        l_job.set_highlight(HK_JOB, label_highlight);
+    // FASM `ui.inc` lines 200–280 — add labels in this exact order. Each
+    // call inserts at index 1, so the final visual ordering (left to
+    // right) is `copyright | Top | New | Ask | Show | Job`, matching the
+    // FASM `list$insert_after(children, first, ...)` semantics
+    // byte-for-byte.
+    let l_job = sb_owned.add_label(STAT_JOB, label_normal)?;
+    l_job.set_highlight(HK_JOB, label_highlight);
 
-        let l_show = sb_mut.add_label(STAT_SHOW, label_normal)?;
-        l_show.set_highlight(HK_SHOW, label_highlight);
+    let l_show = sb_owned.add_label(STAT_SHOW, label_normal)?;
+    l_show.set_highlight(HK_SHOW, label_highlight);
 
-        let l_ask = sb_mut.add_label(STAT_ASK, label_normal)?;
-        l_ask.set_highlight(HK_ASK, label_highlight);
+    let l_ask = sb_owned.add_label(STAT_ASK, label_normal)?;
+    l_ask.set_highlight(HK_ASK, label_highlight);
 
-        let l_new = sb_mut.add_label(STAT_NEW, label_normal)?;
-        l_new.set_highlight(HK_NEW, label_highlight);
+    let l_new = sb_owned.add_label(STAT_NEW, label_normal)?;
+    l_new.set_highlight(HK_NEW, label_highlight);
 
-        let l_top = sb_mut.add_label(STAT_TOP, label_normal)?;
-        l_top.set_highlight(HK_TOP, label_highlight);
-    }
+    let l_top = sb_owned.add_label(STAT_TOP, label_normal)?;
+    l_top.set_highlight(HK_TOP, label_highlight);
 
-    Ok(sb)
+    Ok(Arc::new(sb_owned))
 }
 
 // ===========================================================================

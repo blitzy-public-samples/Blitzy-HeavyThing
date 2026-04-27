@@ -90,11 +90,12 @@
 
 // Submodule declarations in alphabetical order per the agent prompt.
 // `eventstream` and `textify` are listed in the file's
-// `depends_on_files`; `hnmodel` and `ui` are sibling modules
-// referenced by name from `main()` and bound to the binary crate's
-// module tree at this single point of declaration.
+// `depends_on_files`; `hnmodel`, `render`, and `ui` are sibling
+// modules referenced by name from `main()` and bound to the binary
+// crate's module tree at this single point of declaration.
 mod eventstream;
 mod hnmodel;
+mod render;
 mod textify;
 mod ui;
 
@@ -371,28 +372,113 @@ fn main() -> anyhow::Result<()> {
         // counters consumed by ui::statusbar_update.
         let model = hnmodel::HnModel::init("topstories")?;
 
-        // Stage 4 — initialise the TUI.
+        // Stage 4 — initialise the TUI widget tree.
         // Receives an Arc<HnModel> clone so that ui::init can register
         // status- and updated-callbacks on the model without taking
         // ownership of the original Arc (which we keep in `model` to
         // ensure the model survives until the shutdown future
         // resolves).
-        let _ui = ui::init(Arc::clone(&model))?;
+        let ui_state = ui::init(Arc::clone(&model))?;
 
-        // Stage 5 — wait for SIGTERM or SIGINT.
-        // `install_shutdown_signals` spawns a tokio task that
-        // registers SignalKind::terminate + SignalKind::interrupt
-        // handlers and triggers the returned Shutdown when either
-        // arrives. `Shutdown::wait` is cancel-safe and idempotent
-        // per its rustdoc.
-        let shutdown = heavything::net::runtime::install_shutdown_signals();
+        // Stage 4.5 — enter raw terminal mode.
+        //
+        // `RawTerminal::enter` is the Rust port of `tui_terminal.inc`
+        // lines 197–355: it grabs the controlling tty's `termios`
+        // state, applies `cfmakeraw`, switches to the alternate
+        // screen buffer (`ESC[?1049h` per AAP §0.7.3.1), hides the
+        // cursor, clears the screen, and registers `sigaction`-
+        // based `SIGTERM`/`SIGINT`/`SIGWINCH` handlers that perform
+        // best-effort terminal restoration via direct
+        // `libc::write` + `_exit` (so the user's terminal is left
+        // in a sane state even if the process is killed before
+        // `Drop` can run).
+        //
+        // We bind the guard to `_term`, NOT `_` — Rust's
+        // wildcard-pattern would drop the guard immediately,
+        // restoring cooked mode before the render task ever ran.
+        // Binding to a named local extends the lifetime to the
+        // end of the async block.
+        //
+        // The bind is fallible because `tcgetattr` returns ENOTTY
+        // when stdin is not a real terminal (e.g., when hnwatch is
+        // run with `< /dev/null`). We accept the error path
+        // gracefully: in that scenario the renderer still emits
+        // ANSI bytes to stdout — they simply will not produce
+        // visible terminal effects. This degraded behaviour
+        // satisfies the integration verification requirement that
+        // hnwatch emit ANSI sequences even when stdin is piped.
+        let _term = heavything::tui::terminal::RawTerminal::enter().ok();
+
+        // Determine the initial window size. `get_winsize` issues
+        // `ioctl(TIOCGWINSZ)` against stdin; if stdin is not a TTY
+        // we fall back to the conventional 80×24 default per the
+        // VT100 specification.
+        let (cols, rows) = match _term.as_ref().and_then(|t| t.get_winsize().ok()) {
+            Some(ws) => (ws.cols, ws.rows),
+            None => (render::DEFAULT_COLS, render::DEFAULT_ROWS),
+        };
+
+        // Stage 4.6 — spawn the render and stdin tasks.
+        //
+        // We construct a cooperative `Shutdown` (NOT
+        // `install_shutdown_signals`) because the
+        // `RawTerminal::enter` call above already installed
+        // `sigaction`-based handlers for `SIGTERM` and `SIGINT`
+        // that `_exit(0)` after restoring terminal state.
+        // Co-existing tokio signalfd-based registrations would
+        // conflict with the sigaction registrations (the kernel
+        // delivers each signal to exactly one handler). The
+        // cooperative shutdown here is triggered by:
+        //
+        //  * the stdin task, when the user types Ctrl-C / Ctrl-D
+        //    / `q` / `Q` (in raw mode `cfmakeraw` clears `ISIG`,
+        //    so terminal-generated Ctrl-C arrives as the byte
+        //    `0x03` rather than as `SIGINT`),
+        //  * the stdin task, on EOF (closed pipe / `/dev/null`).
+        //
+        // The render task observes the same `Shutdown` via
+        // `Shutdown::wait` inside its `tokio::select!` loop and
+        // exits cleanly on trigger. After awaiting the trigger
+        // here we abort the stdin handle (its `read` is on a
+        // dedicated blocking thread so cooperative cancellation
+        // is not possible) and `await` the render handle to
+        // completion (it observes the trigger cooperatively).
+        let shutdown = heavything::net::runtime::Shutdown::new();
+        let repaint = std::sync::Arc::new(tokio::sync::Notify::new());
+
+        let render_handle = tokio::spawn(render::render_loop(
+            Arc::clone(&ui_state),
+            Arc::clone(&repaint),
+            shutdown.token(),
+            cols,
+            rows,
+        ));
+        let stdin_handle = tokio::spawn(render::stdin_loop(
+            Arc::clone(&ui_state),
+            shutdown.token(),
+            Arc::clone(&repaint),
+        ));
+
+        // Stage 5 — wait for shutdown.
         shutdown.wait().await;
 
-        // Force-drop ordering: `_ui` first, then `model`. Stack
-        // unwinding handles this naturally (`_ui` was bound after
-        // `model`, so it is dropped first). Listing them explicitly
-        // would serve only as a comment, which we provide here
-        // instead per AAP §0.8.6 ("comments explain WHY, not WHAT").
+        // Cleanup. `stdin_handle.abort()` is safe-but-best-effort
+        // because the read is blocking; the render task exits
+        // cooperatively. We `await` both handles to surface any
+        // panic and to make Drop-ordering deterministic.
+        stdin_handle.abort();
+        let _ = stdin_handle.await;
+        let _ = render_handle.await;
+
+        // Force-drop ordering: `_term` first (restores cooked
+        // mode), then `ui_state`, then `model`. Stack unwinding
+        // handles this naturally — `_term` was bound after both,
+        // so it is dropped first. Listing them explicitly would
+        // serve only as a comment, which we provide here per
+        // AAP §0.8.6 ("comments explain WHY, not WHAT").
+        drop(_term);
+        drop(ui_state);
+        drop(model);
 
         Ok::<(), anyhow::Error>(())
     })??;
