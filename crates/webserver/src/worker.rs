@@ -80,11 +80,13 @@ use tokio::net::UnixStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, MissedTickBehavior};
 
-use heavything::config::{LOG_FLUSH_INTERVAL_MS, STRING_BITS};
+use heavything::config::{LOG_FLUSH_INTERVAL_MS, STRING_BITS, TLS_BLACKLIST};
 use heavything::crypto::rng;
 use heavything::crypto::x509::{update_ocsp_response, OcspResponse};
-use heavything::net::http::server::{handle_connection, WebServerConfig as HtServerConfig};
+use heavything::net::blacklist::Blacklist;
+use heavything::net::http::server::{handle_connection, WebServerConfig as HtServerConfig, NOHOST_KEY};
 use heavything::net::tls;
+use heavything::net::tls::{TlsServer, TlsStream};
 use heavything::net::url::Url;
 use heavything::util::syslog;
 use heavything::EXIT_EPOLL_CREATE_FAIL;
@@ -534,9 +536,102 @@ async fn worker_event_loop(
     // heavything's `WebServerConfig` MUST happen inside the tokio
     // runtime context because `new_config` spawns periodic tasks via
     // `spawn_periodic`.
+    //
+    // For TLS-marked listeners (`is_tls = true`), we additionally:
+    //
+    //   1. Build a worker-shared [`Blacklist`] with the AAP §0.4.1.1
+    //      `TLS_BLACKLIST` (86,400 s) ban duration. Sharing one
+    //      blacklist across all TLS listeners in a worker mirrors
+    //      the FASM single-global-blacklist policy — a peer banned
+    //      on one listener is banned on all of them.
+    //   2. Construct a [`TlsServer`] per listener via
+    //      [`TlsServer::new`], passing the listener's `pem_path`
+    //      as both cert and key file (the FASM CLI accepts a
+    //      single combined PEM at `-tls PEMFILE`; heavything's
+    //      [`tls::read_private_key_pem`] handles the same-file
+    //      case for combined PEMs).
+    //   3. Spawn the three TLS lifecycle background tasks per AAP
+    //      §0.7.1.1's 8-canonical-timer count:
+    //        - `spawn_pem_reload` — 3,600 s PEM hot-reload
+    //        - `spawn_ocsp_refresh` — 7,200 s OCSP refresh / 300 s
+    //          retry
+    //        - `spawn_session_cache_sweep` — 3,600 s sweep
+    //   4. Pass `Some(tls_server)` to [`accept_loop`] so the loop
+    //      wraps each accepted [`tokio::net::TcpStream`] via
+    //      [`TlsServer::accept`] before passing the resulting
+    //      [`TlsStream`] to [`handle_connection`]. The HTTP
+    //      handler is generic over `T: AsyncRead + AsyncWrite +
+    //      Send + Unpin + 'static` so it accepts either the raw
+    //      `TcpStream` (plaintext) or the `TlsStream` (encrypted)
+    //      transparently.
+    //
+    // Resolves the QA finding "Issue #2: HTTPS connections hang
+    // during TLS handshake — TLS layer not wrapped".
+    //
+    // The blacklist is built lazily on first TLS listener so
+    // plaintext-only deployments (no `-tls` flags) pay zero cost.
+    let mut tls_blacklist: Option<Arc<Blacklist>> = None;
     for (listener, arg_cfg) in listeners.into_iter().zip(config.configs.iter()) {
         let http_config = build_http_config(arg_cfg).await;
-        tokio::spawn(accept_loop(listener, http_config));
+
+        let tls_server = if arg_cfg.is_tls {
+            // The arguments parser's preflight at
+            // `arguments.inc:.tlsmod` validates `-tls PEMFILE`
+            // readability via `std::fs::metadata` BEFORE recording
+            // it on the next `-bind`. By the time we reach this
+            // worker, a `is_tls = true` cfg without a `pem_path` is
+            // a parse-time invariant violation. Bail with an
+            // attributable error rather than panic — the master
+            // sees the worker's exit code and can attribute the
+            // failure in its supervisor log.
+            let pem_path = arg_cfg.pem_path.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "worker: -tls listener {} missing pem_path \
+                     (arguments parser invariant violation)",
+                    arg_cfg.bind_addr
+                )
+            })?;
+
+            // Lazily build the blacklist on first TLS use; share
+            // the resulting `Arc` across all subsequent TLS
+            // listeners in this worker.
+            let blacklist = match &tls_blacklist {
+                Some(bl) => Arc::clone(bl),
+                None => {
+                    let bl = Blacklist::new(Duration::from_secs(TLS_BLACKLIST));
+                    tls_blacklist = Some(Arc::clone(&bl));
+                    bl
+                }
+            };
+
+            let tls_srv = TlsServer::new(pem_path, pem_path, blacklist).with_context(|| {
+                format!(
+                    "worker: TlsServer::new failed for -tls {} on listener {}",
+                    pem_path.display(),
+                    arg_cfg.bind_addr
+                )
+            })?;
+
+            // Arm the three TLS background tasks. Per
+            // [`TlsServer::spawn_pem_reload`] etc. each task holds
+            // a [`std::sync::Weak`] reference, so when the last
+            // strong [`Arc<TlsServer>`] is dropped the tasks
+            // observe `Weak::upgrade() == None` and exit cleanly.
+            // We deliberately do NOT retain the [`JoinHandle`]s —
+            // the worker process never gracefully shuts down its
+            // TLS state separately from the rest of the runtime
+            // (the master link closure is the shutdown trigger,
+            // and `process::exit` tears the entire runtime down).
+            let _pem_reload_handle = tls_srv.spawn_pem_reload();
+            let _ocsp_refresh_handle = tls_srv.spawn_ocsp_refresh();
+            let _session_cache_sweep_handle = tls_srv.spawn_session_cache_sweep();
+
+            Some(tls_srv)
+        } else {
+            None
+        };
+
+        tokio::spawn(accept_loop(listener, http_config, tls_server));
     }
 
     // ---------- Master-link receive loop ----------
@@ -698,6 +793,27 @@ async fn outbound_pump(
 /// translation uses a dedicated accept task per listener so each
 /// listener has independent backpressure.
 ///
+/// When `tls_server` is `Some(_)` the listener is TLS-marked
+/// (`is_tls = true` per AAP §0.7.2): every accepted
+/// [`tokio::net::TcpStream`] is handed to [`TlsServer::accept`]
+/// which performs the rustls handshake (TLS 1.2 + TLS 1.3, ECDHE
+/// suites, OCSP-stapling-aware) before being wrapped into a
+/// [`TlsStream`] and forwarded to [`handle_connection`]. The handler
+/// is generic over `T: AsyncRead + AsyncWrite + Send + Unpin +
+/// 'static` so it accepts both `TcpStream` (plaintext) and
+/// `TlsStream` (encrypted) interchangeably. On handshake failure the
+/// peer's IP is added to the shared blacklist for
+/// `TLS_BLACKLIST` (86,400 s) on cryptographic failures only, per
+/// the [`TlsServer::accept`] contract — IO failures (peer
+/// disconnect mid-handshake) do not blacklist.
+///
+/// Each handshake is spawned as its own tokio task so a slow / stuck
+/// handshake from one peer does NOT block the accept loop from
+/// taking on the next connection. This preserves the assembly
+/// `epoll$run`'s "accept and immediately resume waiting" semantics
+/// where the TLS handshake state machine ran on the per-connection
+/// io chain rather than in the listener loop.
+///
 /// Errors from [`tokio::net::TcpListener::accept`] are logged via
 /// [`syslog::emit_error`] (matching the assembly's silent EAGAIN
 /// retry semantics on transient errors) followed by a brief
@@ -705,7 +821,11 @@ async fn outbound_pump(
 /// Returning from this function would terminate accepting on the
 /// listener; we therefore loop forever on transient errors and only
 /// exit if the entire runtime is torn down.
-async fn accept_loop(listener: tokio::net::TcpListener, http_config: Arc<HtServerConfig>) {
+async fn accept_loop(
+    listener: tokio::net::TcpListener,
+    http_config: Arc<HtServerConfig>,
+    tls_server: Option<Arc<TlsServer>>,
+) {
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
@@ -726,9 +846,46 @@ async fn accept_loop(listener: tokio::net::TcpListener, http_config: Arc<HtServe
                 // epoll$fatality` per-chain teardown without
                 // killing the worker.
                 let cfg = Arc::clone(&http_config);
-                tokio::spawn(async move {
-                    handle_connection(stream, peer, cfg).await.ok();
-                });
+                match &tls_server {
+                    Some(tls_srv) => {
+                        // TLS-marked listener: wrap the raw
+                        // [`TcpStream`] via [`TlsServer::accept`]
+                        // before forwarding to
+                        // [`handle_connection`]. Each handshake
+                        // gets its own task so we never block
+                        // accepting subsequent connections on a
+                        // slow handshake.
+                        let tls_srv = Arc::clone(tls_srv);
+                        tokio::spawn(async move {
+                            match tls_srv.accept(stream).await {
+                                Ok(tls_stream) => {
+                                    handle_tls_connection(tls_stream, peer, cfg).await;
+                                }
+                                Err(e) => {
+                                    // Handshake failure (crypto
+                                    // failures already blacklisted
+                                    // by [`TlsServer::accept`]; IO
+                                    // failures are logged for
+                                    // diagnostics). We do NOT
+                                    // emit anything to the peer —
+                                    // a failed handshake means we
+                                    // never had an established
+                                    // record layer to send an
+                                    // alert through.
+                                    syslog::emit_error(&e);
+                                }
+                            }
+                        });
+                    }
+                    None => {
+                        // Plaintext listener: pass the raw
+                        // [`TcpStream`] directly to
+                        // [`handle_connection`].
+                        tokio::spawn(async move {
+                            handle_connection(stream, peer, cfg).await.ok();
+                        });
+                    }
+                }
             }
             Err(e) => {
                 // Transient accept errors (e.g., EMFILE under fd
@@ -742,6 +899,47 @@ async fn accept_loop(listener: tokio::net::TcpListener, http_config: Arc<HtServe
             }
         }
     }
+}
+
+// ============================================================================
+// async fn handle_tls_connection — TLS-wrapped delegate to handle_connection
+// ============================================================================
+
+/// Forward a freshly-handshaked [`TlsStream`] into
+/// [`handle_connection`].
+///
+/// This thin wrapper exists for two reasons:
+///
+///  1. To make the TLS-vs-plaintext split in [`accept_loop`] read as
+///     a simple `match` over `Option<Arc<TlsServer>>` rather than
+///     inlining the `handle_connection(...).await.ok()` call inside
+///     each branch's spawned task. The two branches stay
+///     symmetric and the handshake-success path remains as easy to
+///     read as the plaintext path.
+///
+///  2. To give the future "post-handshake but pre-HTTP" hook surface
+///     a single attachment point — e.g., per-connection access-log
+///     headers that include the negotiated cipher suite (extracted
+///     from the [`TlsStream`] before `handle_connection` consumes
+///     it). Today this function delegates straight through; future
+///     observability work can extend it without touching the accept
+///     loop.
+///
+/// The `.ok()` discard mirrors the plaintext branch in
+/// [`accept_loop`] — per-request errors (HTTP 4xx/5xx) are absorbed
+/// inside [`handle_connection`]; only catastrophic IO is bubbled up
+/// and we deliberately drop it here so a single broken peer does not
+/// tear the worker down.
+async fn handle_tls_connection(
+    tls_stream: TlsStream,
+    peer: SocketAddr,
+    cfg: Arc<HtServerConfig>,
+) {
+    // [`TlsStream`] implements `tokio::io::AsyncRead` and
+    // `tokio::io::AsyncWrite`, satisfying [`handle_connection`]'s
+    // generic bound `T: AsyncRead + AsyncWrite + Send + Unpin +
+    // 'static`. No additional adapter is needed.
+    handle_connection(tls_stream, peer, cfg).await.ok();
 }
 
 // ============================================================================
@@ -1040,13 +1238,28 @@ fn install_tls_sessioncache_hook(tls_tx: mpsc::UnboundedSender<Vec<u8>>) {
 /// | `redirects[0].to`      | `set_redirect(String)`         |
 /// | `cache_control`        | `set_cache_control(u64)`       |
 /// | `host_sandbox`         | `add_sandbox(host, dir)`       |
+/// | `global_sandbox`       | `add_sandbox(NOHOST_KEY, dir)` |
 /// | `index_files`          | `add_index_file(filename)`     |
 /// | `fastcgi_map`          | `add_fastcgi(suffix, Url)`     |
 ///
-/// Fields not yet exposed via setter (`pem_path`, `file_stat_time`,
-/// `global_sandbox` without a host association): these are passed
-/// through other heavything entry points (e.g., TLS PEM hot-reload
-/// via [`tls`]); they are deliberately not duplicated here.
+/// The `global_sandbox` (set by the AAP §0.5.1.8 `-sandbox PATH`
+/// flag) is registered under the heavything sentinel host key
+/// [`NOHOST_KEY`] (`..nohost..`). The dispatcher's `resolve_docroot`
+/// (`heavything::net::http::server`) tries (a) the explicit host
+/// match, then (b) the [`NOHOST_KEY`] fallback before declaring 404
+/// — registering under the sentinel makes `-sandbox` the catch-all
+/// docroot when no `-hostsandbox` mapping matches the inbound
+/// request's `Host:` header. This mirrors the FASM
+/// `webservercfg_sandboxes_ofs` default-host behaviour preserved in
+/// `webserver.inc:.nohoststr` (see AAP §0.5.1.8 + the QA finding
+/// "`-sandbox` flag silently ignored — every request returns 404"
+/// resolved by this wiring).
+///
+/// Fields not exposed via setter (`pem_path`, `file_stat_time`):
+/// `pem_path` is consumed by the worker's TLS bootstrap loop in
+/// [`worker_event_loop`] (one [`TlsServer`] per `is_tls=true`
+/// listener); `file_stat_time` is reserved for future per-cfg
+/// hotlist tuning.
 async fn build_http_config(arg_cfg: &ArgWebServerConfig) -> Arc<HtServerConfig> {
     let cfg = HtServerConfig::new_config();
 
@@ -1102,6 +1315,27 @@ async fn build_http_config(arg_cfg: &ArgWebServerConfig) -> Arc<HtServerConfig> 
     }
 
     // ---- Async setters ----
+    //
+    // Register the AAP §0.5.1.8 `-sandbox PATH` global sandbox
+    // under the heavything sentinel host key [`NOHOST_KEY`]
+    // (`..nohost..`). This makes `-sandbox` the catch-all docroot
+    // when no `-hostsandbox HOST DIR` mapping matches the inbound
+    // request's `Host:` header. Order matters: register the
+    // global sandbox FIRST so the per-host explicit mappings below
+    // can shadow it for specific hosts (the heavything map's
+    // `add_sandbox` is last-write-wins per key, but the sentinel
+    // `NOHOST_KEY` is a distinct key from any real host string so
+    // there is no conflict — `resolve_docroot` consults the
+    // explicit match first then falls back to the sentinel).
+    //
+    // Mirrors the FASM `webserver.inc:.nohoststr` fallback path —
+    // resolves the QA finding "Issue #1: `-sandbox` flag silently
+    // ignored — every request returns 404".
+    if let Some(ref dir) = arg_cfg.global_sandbox {
+        let dir_str = dir.to_string_lossy().into_owned();
+        cfg.add_sandbox(NOHOST_KEY, dir_str).await;
+    }
+
     for mapping in arg_cfg.host_sandbox.iter() {
         // `add_sandbox` takes `impl Into<String>` for both args;
         // the `dir: PathBuf` is converted via its
