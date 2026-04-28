@@ -631,6 +631,15 @@ impl Chatpanel {
     ///
     /// Returns an [`anyhow::Error`] if [`TuiText::new_di`] fails or if
     /// the inner panel mutex is poisoned.
+    ///
+    /// `#[allow(dead_code)]`: This is the Rust port of the FASM
+    /// `chatpanel$notify` symbol (sshtalk/chatpanel.inc lines
+    /// 380–414). It is preserved per AAP §0.8.2 (Minimal Change
+    /// Clause) as part of the public API surface so future user-
+    /// join / "user has left" notification paths can call it
+    /// without further surgery to chatpanel.rs. The minimal
+    /// `main.rs` init sequence does not invoke it.
+    #[allow(dead_code)]
     pub fn notify(&self, message: &str) -> Result<()> {
         // FASM lines 386–397: build the system-notification TuiText.
         let darkgray_black = ColorPair::new(8, 0); // FASM ansi_colors edx, 'darkgray', 'black'
@@ -1145,6 +1154,12 @@ impl Chatpanel {
     /// Borrow the chatroom this chatpanel is connected to.
     ///
     /// FASM mapping: `mov rax, [rbx+chatpanel_room_ofs]`.
+    ///
+    /// `#[allow(dead_code)]`: Public accessor mirroring the FASM
+    /// `chatpanel$room` symbol; preserved per AAP §0.8.2 (Minimal
+    /// Change Clause) for future cross-module rendering paths. The
+    /// minimal `main.rs` does not currently invoke it.
+    #[allow(dead_code)]
     pub fn room(&self) -> &Arc<Chatroom> {
         &self.room
     }
@@ -1154,6 +1169,13 @@ impl Chatpanel {
     /// FASM mapping: `mov rax, [rbx+chatpanel_name_ofs]` (FASM stores
     /// a copied string pointer; the Rust port stores a [`String`] by
     /// value).
+    ///
+    /// `#[allow(dead_code)]`: Public accessor mirroring the FASM
+    /// `chatpanel$name` symbol; preserved per AAP §0.8.2 (Minimal
+    /// Change Clause) so screen.rs lookup paths can resolve the
+    /// chatpanel's display name without re-plumbing the field. The
+    /// minimal `main.rs` does not currently invoke it.
+    #[allow(dead_code)]
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -1161,6 +1183,12 @@ impl Chatpanel {
     /// Borrow the user that owns this chatpanel.
     ///
     /// FASM mapping: `mov rax, [rbx+chatpanel_user_ofs]`.
+    ///
+    /// `#[allow(dead_code)]`: Public accessor mirroring the FASM
+    /// `chatpanel$user` symbol; preserved per AAP §0.8.2 (Minimal
+    /// Change Clause) for future user-presence rendering. The
+    /// minimal `main.rs` does not currently invoke it.
+    #[allow(dead_code)]
     pub fn user(&self) -> &Arc<User> {
         &self.user
     }
@@ -1172,6 +1200,12 @@ impl Chatpanel {
     /// port stores a [`Weak`] reference (to break the screen ↔
     /// chatpanel cycle); callers must handle the `None` case at
     /// shutdown.
+    ///
+    /// `#[allow(dead_code)]`: Public accessor mirroring the FASM
+    /// `chatpanel$screen` symbol; preserved per AAP §0.8.2 (Minimal
+    /// Change Clause) for fan-out cleanup logic. The minimal
+    /// `main.rs` does not currently invoke it.
+    #[allow(dead_code)]
     pub fn screen(&self) -> Option<Arc<Screen>> {
         self.screen.upgrade()
     }
@@ -1179,6 +1213,12 @@ impl Chatpanel {
     /// Read the current vertical scroll modifier.
     ///
     /// FASM mapping: `mov eax, [rbx+chatpanel_scroll_ofs]`.
+    ///
+    /// `#[allow(dead_code)]`: Public accessor mirroring the FASM
+    /// `chatpanel$scroll` symbol; preserved per AAP §0.8.2 (Minimal
+    /// Change Clause) for scrollback rendering. The minimal
+    /// `main.rs` does not currently invoke it.
+    #[allow(dead_code)]
     pub fn scroll(&self) -> i32 {
         self.scroll.load(Ordering::Acquire)
     }

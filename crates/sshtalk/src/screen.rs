@@ -123,6 +123,15 @@ pub const LIGHTGRAY_PALETTE: u8 = 251;
 
 /// Deep blue for the de-focused buddy-list selection — used to dim
 /// the highlight when buddy-list is not the active widget.
+///
+/// `#[allow(dead_code)]`: This palette index is part of the FASM
+/// colour-table API surface (sshtalk/screen.inc constant) and is
+/// preserved per AAP §0.8.2 (Minimal Change Clause). It is consumed
+/// by the [`LIGHTGRAY_MIDNIGHTBLUE`] and [`YELLOW_MIDNIGHTBLUE`]
+/// `ColorPair` constants below; both pairs are reserved for the
+/// de-focused buddy-list rendering path that is built but not
+/// exercised by the minimal `main.rs` startup sequence.
+#[allow(dead_code)]
 pub const MIDNIGHTBLUE_PALETTE: u8 = 18;
 
 // ============================================================================
@@ -146,6 +155,13 @@ pub const LIGHTGRAY_BLUE: ColorPair = ColorPair::new(LIGHTGRAY_PALETTE, BLUE_PAL
 
 /// Light-gray foreground on midnight-blue background — buddy-list
 /// selection while de-focused.
+///
+/// `#[allow(dead_code)]`: This `ColorPair` is part of the FASM
+/// colour-table API surface (sshtalk/screen.inc) and is preserved
+/// per AAP §0.8.2 (Minimal Change Clause) for the de-focused
+/// buddy-list rendering path. The minimal `main.rs` startup
+/// sequence does not exercise the de-focus colour swap.
+#[allow(dead_code)]
 pub const LIGHTGRAY_MIDNIGHTBLUE: ColorPair = ColorPair::new(LIGHTGRAY_PALETTE, MIDNIGHTBLUE_PALETTE);
 
 /// Black foreground on cyan background — modal panel backing.
@@ -175,6 +191,13 @@ pub const HEADER_COLORS: ColorPair = BLACK_LIGHTGRAY;
 
 /// Yellow foreground on midnight-blue background — alternate selection
 /// scheme reserved for future use.
+///
+/// `#[allow(dead_code)]`: This `ColorPair` is part of the FASM
+/// colour-table API surface (sshtalk/screen.inc) and is preserved
+/// per AAP §0.8.2 (Minimal Change Clause) per the doc-comment
+/// note ("reserved for future use"). The minimal `main.rs`
+/// startup sequence does not currently apply this colour scheme.
+#[allow(dead_code)]
 pub const YELLOW_MIDNIGHTBLUE: ColorPair = ColorPair::new(YELLOW_PALETTE, MIDNIGHTBLUE_PALETTE);
 
 // ============================================================================
@@ -388,6 +411,13 @@ pub trait ChatpanelOpener: Send + Sync {
     /// `Ctrl-A` / `Ctrl-R` handlers to detect the "focus on 1:1
     /// chatpanel with this buddy" branch. Default `false` for the
     /// same reason as above.
+    ///
+    /// `#[allow(dead_code)]`: This trait method is part of the
+    /// FASM-derived `ChatpanelOpener` API surface (`screen.inc`
+    /// Ctrl-A/Ctrl-R fast-paths) and is preserved per AAP §0.8.2
+    /// (Minimal Change Clause). The minimal `main.rs` startup
+    /// sequence does not exercise the buddy fast-path.
+    #[allow(dead_code)]
     fn matches_buddy(&self, _widget: &Arc<dyn Widget>, _username: &str) -> bool {
         false
     }
@@ -395,6 +425,13 @@ pub trait ChatpanelOpener: Send + Sync {
     /// Return `true` if `widget` is a chatpanel for a *room* (rather
     /// than a 1:1 buddy chat). Used by Ctrl-A / Ctrl-R to surface the
     /// "focus on room → show dialog" branch. Default `false`.
+    ///
+    /// `#[allow(dead_code)]`: This trait method is part of the
+    /// FASM-derived `ChatpanelOpener` API surface (`screen.inc`
+    /// Ctrl-A/Ctrl-R fast-paths) and is preserved per AAP §0.8.2
+    /// (Minimal Change Clause). The minimal `main.rs` startup
+    /// sequence does not exercise the room-panel branch.
+    #[allow(dead_code)]
     fn is_room_panel(&self, _widget: &Arc<dyn Widget>) -> bool {
         false
     }
@@ -403,6 +440,13 @@ pub trait ChatpanelOpener: Send + Sync {
     /// 1:1 chatpanel, otherwise `None`. Used by Ctrl-A / Ctrl-R for
     /// the "immediate add/remove via stringmap_insert_unique"
     /// fast-path. Default `None`.
+    ///
+    /// `#[allow(dead_code)]`: This trait method is part of the
+    /// FASM-derived `ChatpanelOpener` API surface (`screen.inc`
+    /// Ctrl-A/Ctrl-R fast-paths) and is preserved per AAP §0.8.2
+    /// (Minimal Change Clause). The minimal `main.rs` startup
+    /// sequence does not exercise the immediate-add/remove path.
+    #[allow(dead_code)]
     fn panel_buddy_name(&self, _widget: &Arc<dyn Widget>) -> Option<String> {
         None
     }
@@ -589,6 +633,14 @@ impl Buddylist {
 
     /// Acquire shared access to the inner data-grid for mutation.
     /// Returns the `MutexGuard` on success, an error string otherwise.
+    ///
+    /// `#[allow(dead_code)]`: Public accessor preserved per AAP
+    /// §0.8.2 (Minimal Change Clause) so future buddy-list
+    /// re-render paths can mutate the inner [`TuiDataGrid`] without
+    /// re-plumbing the field. The minimal `main.rs` startup
+    /// sequence does not currently mutate the buddy-list grid
+    /// after construction.
+    #[allow(dead_code)]
     pub fn with_grid<F, R>(&self, f: F) -> Result<R>
     where
         F: FnOnce(&mut TuiDataGrid) -> Result<R>,
@@ -921,6 +973,16 @@ pub struct Screen {
     /// The bottom-anchored sshtalk status-bar wrapper. The `base`
     /// field of this wrapper (an `Arc<heavything::Statusbar>`) is
     /// cloned into `state.children` as the second screen child.
+    ///
+    /// `#[allow(dead_code)]`: This field stores the strong reference
+    /// to the [`StatusBar`] wrapper so its base widget remains
+    /// alive for as long as the [`Screen`]. The base widget itself
+    /// is cloned into `state.children`; the wrapper field is
+    /// preserved per AAP §0.8.2 (Minimal Change Clause) for future
+    /// status-bar update calls (e.g. `connected/online/total`
+    /// counter refresh) that the minimal `main.rs` startup
+    /// sequence does not currently exercise.
+    #[allow(dead_code)]
     pub(crate) statusbar: Arc<sb::StatusBar>,
     /// The buddy-list data-grid wrapper. Stored separately from the
     /// children list so [`Screen::update_buddies`] can refresh its
@@ -929,6 +991,16 @@ pub struct Screen {
     /// The bell widget in the right column.
     pub(crate) bell: Arc<TuiBell>,
     /// The help-text panel in the right column.
+    ///
+    /// `#[allow(dead_code)]`: This field stores the strong reference
+    /// to the helptext widget so it remains alive for as long as
+    /// the [`Screen`]. The widget itself is cloned into the right
+    /// column's children; the field is preserved per AAP §0.8.2
+    /// (Minimal Change Clause) for future helptext updates (the
+    /// FASM baseline never mutated it after construction either).
+    /// The minimal `main.rs` startup sequence does not currently
+    /// read it.
+    #[allow(dead_code)]
     pub(crate) helptext: Arc<TuiText>,
     /// Runtime-mutable state guarded by a `Mutex` — see [`ScreenInner`].
     pub(crate) inner: Mutex<ScreenInner>,
@@ -1289,6 +1361,13 @@ impl Screen {
 
     /// Return a clone of the currently focused widget, if any.
     /// FASM mapping: `[rbx+screen_focus_ofs]`.
+    ///
+    /// `#[allow(dead_code)]`: Public accessor mirroring the FASM
+    /// `screen$focus` symbol; preserved per AAP §0.8.2 (Minimal
+    /// Change Clause) for future Tab/Shift-Tab focus-cycling
+    /// integration. The minimal `main.rs` startup sequence does
+    /// not currently inspect the focus pointer post-construction.
+    #[allow(dead_code)]
     pub fn focus(&self) -> Option<Arc<dyn Widget>> {
         match self.inner.lock() {
             Ok(g) => g.focus.clone(),
@@ -1299,20 +1378,40 @@ impl Screen {
     /// Borrow the buddy-list wrapper. Visible inside the crate so
     /// `chatpanel` and `chatroom` can fan-out updates over each user's
     /// `tuilist`.
+    ///
+    /// `#[allow(dead_code)]`: Crate-visible accessor preserved per
+    /// AAP §0.8.2 (Minimal Change Clause) for future chatpanel /
+    /// chatroom fan-out integration. The minimal `main.rs` startup
+    /// sequence does not currently invoke it.
+    #[allow(dead_code)]
     pub(crate) fn buddylist(&self) -> &Arc<Buddylist> {
         &self.buddylist
     }
 
     /// Borrow the helptext widget (used by tests for visual
     /// inspection; not part of the public API surface).
+    ///
+    /// `#[allow(dead_code)]`: This `cfg(test)` accessor is reserved
+    /// for unit tests in `screen.rs` that exercise the helptext
+    /// rendering path. The current sshtalk binary does not contain
+    /// such tests but the accessor is preserved per AAP §0.8.2
+    /// (Minimal Change Clause) so future test expansion can read
+    /// the helptext field without unlocking it.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn helptext(&self) -> &Arc<TuiText> {
         &self.helptext
     }
 
     /// Borrow the sshtalk status-bar wrapper (used by tests for
     /// visual inspection).
+    ///
+    /// `#[allow(dead_code)]`: This `cfg(test)` accessor is reserved
+    /// for unit tests in `screen.rs` that inspect the status-bar
+    /// wrapper. Preserved per AAP §0.8.2 (Minimal Change Clause)
+    /// for future test expansion.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn statusbar(&self) -> &Arc<sb::StatusBar> {
         &self.statusbar
     }

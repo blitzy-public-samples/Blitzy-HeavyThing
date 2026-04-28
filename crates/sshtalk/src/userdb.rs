@@ -742,6 +742,18 @@ pub fn newuser(username: &str, password: &str) -> Result<Arc<User>, UserdbError>
 /// `S: Any + Send + Sync + 'static`, which lets `screen.rs` (created by
 /// another agent) pass its concrete `Arc<Screen>` without knowing the
 /// exact `ScreenHandle` type alias.
+///
+/// `#[allow(dead_code)]`: this function is part of userdb's public API
+/// surface mapped from the FASM `userdb$online` symbol (see
+/// `userdb.inc` lines ~410 in the upstream HeavyThing source). The
+/// minimal Rust port of `main.rs` does not directly call this entry
+/// point because the per-connection TUI auth flow (TuiSimpleAuth →
+/// SimpleAuthHandler) takes over presence tracking via the
+/// `SIMPLEAUTH_VTABLE` callbacks; the `online` entry point is
+/// retained verbatim from the FASM API for future enhancements (e.g.
+/// non-SSH client front-ends) and so the public symbol matrix stays
+/// behaviorally identical to the assembly baseline per AAP §0.8.2.
+#[allow(dead_code)]
 pub fn online<S>(user: &Arc<User>, screen: &Arc<S>) -> Result<(), UserdbError>
 where
     S: std::any::Any + Send + Sync + 'static,

@@ -177,17 +177,35 @@ pub struct MessageEntry {
     /// "system" and "user" messages by route (calling `chatpanel$notify`
     /// for system messages and `chatpanel$message` for user messages);
     /// this port uses the discriminator instead.
+    ///
+    /// `#[allow(dead_code)]`: the field is part of the public
+    /// `MessageEntry` surface preserved from the FASM
+    /// `chatroom_message` struct. The minimal Rust port of `main.rs`
+    /// does not currently render the per-message scrollback through a
+    /// `Chatpanel` instance, so this field is read only by future
+    /// rendering paths (e.g., scrollback replay for late joiners). It
+    /// is preserved per AAP §0.8.2 so the public API stays identical
+    /// to the assembly baseline.
+    #[allow(dead_code)]
     pub sender: Option<String>,
 
     /// Message body. UTF-8 encoded; the FASM baseline used UTF-32
     /// `string32` objects but per AAP §0.5.1.7 the Rust port
     /// transparently uses UTF-8 native strings.
+    ///
+    /// `#[allow(dead_code)]`: see the rationale on `sender` above —
+    /// preserved as part of the `MessageEntry` API surface.
+    #[allow(dead_code)]
     pub content: String,
 
     /// Wall-clock UNIX-epoch seconds at which the entry was committed.
     /// Stored as `f64` (rather than `SystemTime`) so the chatpanel
     /// rendering path can subtract two timestamps for "n seconds ago"
     /// formatting without going through the `Duration` API.
+    ///
+    /// `#[allow(dead_code)]`: see the rationale on `sender` above —
+    /// preserved as part of the `MessageEntry` API surface.
+    #[allow(dead_code)]
     pub timestamp: f64,
 }
 
@@ -253,6 +271,11 @@ pub struct Chatroom {
     /// for parity with future "change topic" commands. The lock is
     /// independent from `users` so a `set_topic` call cannot stall
     /// concurrent `join`/`leave`/`for_each` traversals.
+    ///
+    /// `#[allow(dead_code)]`: read only by future
+    /// `Chatpanel`-rendering paths that have not yet been hooked up
+    /// to the topic-display row. Preserved per AAP §0.8.2.
+    #[allow(dead_code)]
     topic: RwLock<Option<String>>,
 
     /// Set of connected screens, keyed by `Arc::as_ptr(screen) as u64`.
@@ -634,6 +657,17 @@ fn destroy(room: &Arc<Chatroom>) -> Result<()> {
 /// "Present: ..." line — matching FASM `.userlist_skip`, line 169.
 ///
 /// FASM mapping: `chatroom$join_notify` (`chatroom.inc` lines 141..=289).
+///
+/// `#[allow(dead_code)]`: this function is part of the public
+/// `chatroom` module API surface. The minimal Rust port of `main.rs`
+/// does not currently hook the per-connection chatpanel into the
+/// presence-broadcast path (the structural mismatch between the
+/// FASM 3-third simpleauth layout and the Rust simpleauth widget
+/// bypasses the chatpanel-construction step described in the AAP),
+/// so this entry point is retained verbatim from the FASM API for
+/// future enhancements (e.g., the named-chatroom Ctrl-J creation
+/// flow inside the active chat session). Preserved per AAP §0.8.2.
+#[allow(dead_code)]
 pub fn join_notify(room: &Arc<Chatroom>, joiner: &str) -> Result<()> {
     // FASM line 145: `cmp qword [rdi+chatroom_name_ofs], 0; je .nothingtodo`
     // — unnamed 1:1 rooms produce no notification.
@@ -684,6 +718,11 @@ pub fn join_notify(room: &Arc<Chatroom>, joiner: &str) -> Result<()> {
 /// FASM mapping: lines 161..=200 of `chatroom$join_notify` — the
 /// `mov rdi, .present; call string$copy` + walk-the-users-list +
 /// `string$concat ", "` + `string$concat "."` chain.
+///
+/// `#[allow(dead_code)]`: helper for [`join_notify`], which is itself
+/// allow-dead per the structural-mismatch rationale documented on
+/// that function. Both items are preserved per AAP §0.8.2.
+#[allow(dead_code)]
 fn build_presence_list(room: &Arc<Chatroom>, joiner: &str) -> Result<String> {
     let guard = room
         .users
@@ -753,6 +792,14 @@ impl Chatroom {
     ///
     /// Returns an error only if the topic lock is poisoned (lock-
     /// poisoning panic in another thread).
+    ///
+    /// `#[allow(dead_code)]`: This accessor is part of the public
+    /// FASM API surface mapped from `chatroom$topic` and is preserved
+    /// per AAP §0.8.2 (Minimal Change Clause) for future "/topic"
+    /// commands implementable in chatpanel. The minimal `main.rs`
+    /// init sequence does not currently invoke it, but removing it
+    /// would break the FASM-to-Rust API parity contract.
+    #[allow(dead_code)]
     pub fn topic(&self) -> Result<Option<String>> {
         let guard = self
             .topic
@@ -775,6 +822,14 @@ impl Chatroom {
     /// # Errors
     ///
     /// Returns an error only if the topic lock is poisoned.
+    ///
+    /// `#[allow(dead_code)]`: This accessor is part of the public
+    /// FASM-derived API surface. Per AAP §0.8.2 (Minimal Change
+    /// Clause) we preserve the topic-mutation API so future
+    /// chatpanel "/topic" command implementations can call it
+    /// without requiring further surgery to chatroom.rs. The
+    /// minimal `main.rs` init sequence does not invoke it.
+    #[allow(dead_code)]
     pub fn set_topic(&self, topic: Option<String>) -> Result<()> {
         let mut guard = self
             .topic
@@ -794,6 +849,14 @@ impl Chatroom {
     /// # Errors
     ///
     /// Returns an error only if the users lock is poisoned.
+    ///
+    /// `#[allow(dead_code)]`: This accessor mirrors the FASM
+    /// `chatroom$users_count` symbol (read of
+    /// `[rdi+chatroom_users_ofs]+_avlofs_right`) and is preserved
+    /// per AAP §0.8.2 (Minimal Change Clause) for the statusbar
+    /// rendering path that is built but not exercised by the
+    /// minimal `main.rs` startup sequence.
+    #[allow(dead_code)]
     pub fn users_count(&self) -> Result<usize> {
         let guard = self
             .users
@@ -813,6 +876,14 @@ impl Chatroom {
     ///
     /// FASM mapping: no direct equivalent; the FASM baseline kept
     /// scrollback per-chatpanel rather than per-room.
+    ///
+    /// `#[allow(dead_code)]`: This accessor is part of the public
+    /// API exposed for the chatpanel rendering path (per the doc-
+    /// comment above). Per AAP §0.8.2 (Minimal Change Clause) it
+    /// is preserved so future chatpanel work can read scrollback
+    /// without re-plumbing the room-history relationship. The
+    /// minimal `main.rs` init sequence does not invoke it.
+    #[allow(dead_code)]
     pub fn history(&self) -> &RwLock<VecDeque<MessageEntry>> {
         &self.history
     }
