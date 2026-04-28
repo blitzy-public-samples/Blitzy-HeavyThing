@@ -36,46 +36,52 @@ Each site is traceable back to the assembly behavior it preserves. In the assemb
 
 | Metric                                    | Value |
 |-------------------------------------------|-------|
-| Total production `unsafe` sites           | 24    |
+| Total production `unsafe` sites           | 27    |
 | Target budget (AAP §0.7.4)                | ≤ 50  |
 | Expected count per AAP §0.7.4.1           | 14–22 |
-| FFI / raw-syscall / intrinsic sites       | 24    |
+| FFI / raw-syscall / intrinsic sites       | 27    |
 | Sites exceeding budget with justification | 0     |
 | Additional test-only `unsafe` sites       | 3     |
 
-The 24 production sites enumerated below were verified by grepping
-`\bunsafe\s+(fn|impl|\{|extern)` across `crates/heavything/src/` (27
-lexical matches — 24 production + 3 test-only blocks). Test-only sites
-are listed in the "Test-only Unsafe (Appendix)" section for
-completeness but do not count against the AAP §0.7.4 budget, which
-governs production code only.
+The 27 production sites enumerated below were verified by grepping
+`\bunsafe\s+(fn|impl|\{|extern)` across both production crate roots
+that contain `unsafe` code — `crates/heavything/src/` (27 lexical
+matches: 24 production + 3 test-only blocks) and `crates/webserver/src/`
+(3 lexical matches, all production: `master.rs:872`, `:893`, `:1017`).
+The remaining production crates (`crates/sshtalk/src/`, `crates/hnwatch/src/`)
+contain zero `unsafe` blocks. Test-only sites are listed in the
+"Test-only Unsafe (Appendix)" section for completeness but do not count
+against the AAP §0.7.4 budget, which governs production code only.
 
-The overall count (24) is two sites over the top of the AAP §0.7.4.1
-"expected 14–22" range. The excess is attributable to the sub-TUI
-signal-handler installation / restore machinery (nine sites in
-`tui/terminal.rs`, where AAP §0.7.4.1 anticipated roughly 6–8), the
-five `net/http/mimelike.rs` sites that implement the raw-pointer
-escape hatch needed for zero-copy mmap delivery of HTTP response
-bodies, and a single `net/http/server.rs` mmap site that backs the
-webserver hotlist file cache. Each site group is isolated behind a
-type boundary (`RawTerminal`, `Mimelike::set_body_external`,
-`HotEntry::open` respectively), consumers interact via safe method
-surfaces, and every block carries a `// SAFETY:` comment naming the
-invariants. No single site requires the >50 justification
-paragraph carve-out described in the "Unsafe Minimization Principles"
-section.
+The overall count (27) is five sites over the top of the AAP §0.7.4.1
+"expected 14–22" range. The excess is attributable to four site
+clusters: the sub-TUI signal-handler installation / restore machinery
+(nine sites in `heavything/src/tui/terminal.rs`, where AAP §0.7.4.1
+anticipated roughly 6–8), the five `heavything/src/net/http/mimelike.rs`
+sites that implement the raw-pointer escape hatch needed for zero-copy
+mmap delivery of HTTP response bodies, a single
+`heavything/src/net/http/server.rs` mmap site that backs the webserver
+hotlist file cache, and the three `webserver/src/master.rs` sites that
+implement the master-process daemonization and worker-spawn forks per
+AAP §0.5.1.8. Each site group is isolated behind a type boundary
+(`RawTerminal`, `Mimelike::set_body_external`, `HotEntry::open`,
+`daemonize_master`/`fork_workers` respectively), consumers interact
+via safe method surfaces, and every block carries a `// SAFETY:`
+comment naming the invariants. No single site requires the >50
+justification paragraph carve-out described in the "Unsafe Minimization
+Principles" section.
 
 ### Breakdown by Category
 
 | Category       | Sites | Files                                                     |
 |----------------|-------|-----------------------------------------------------------|
-| FFI-libc       | 11    | `net/runtime.rs` (2), `tui/terminal.rs` (9)               |
-| FFI-nix        | 3     | `net/child.rs` (3)                                        |
-| FFI-memmap2    | 4     | `net/http/server.rs`, `util/mapped.rs`, `util/mappedheap.rs`, `util/privmapped.rs` |
-| CPU-intrinsic  | 1     | `crypto/rng.rs`                                           |
-| Other          | 5     | `net/http/mimelike.rs` (marker traits + raw pointers)     |
+| FFI-libc       | 12    | `heavything/src/net/runtime.rs` (2), `heavything/src/tui/terminal.rs` (9), `webserver/src/master.rs` (1) |
+| FFI-nix        | 5     | `heavything/src/net/child.rs` (3), `webserver/src/master.rs` (2) |
+| FFI-memmap2    | 4     | `heavything/src/net/http/server.rs`, `heavything/src/util/mapped.rs`, `heavything/src/util/mappedheap.rs`, `heavything/src/util/privmapped.rs` |
+| CPU-intrinsic  | 1     | `heavything/src/crypto/rng.rs`                            |
+| Other          | 5     | `heavything/src/net/http/mimelike.rs` (marker traits + raw pointers) |
 | Raw syscall    | 0     | —                                                         |
-| **Total**      | **24**|                                                           |
+| **Total**      | **27**|                                                           |
 
 ## FFI-libc — TUI Raw Mode and Signal Handling
 
@@ -254,6 +260,57 @@ Per AAP §0.5.1.4 and §0.7.4.1, `nix` wraps the process-management syscalls (`f
   - In this branch we have `close(parent_fd)` only — `child_fd` is not re-used
   - `UnixStream` `Drop` closes the fd when `child_main` returns (or on `exit(0)` post-fall-through)
 - **Integration test**: `test_fork_spawn_child_basic` (`tests/ffi_boundary.rs:353`)
+
+## FFI — webserver Master Daemonization (cross-crate)
+
+Per AAP §0.5.1.8 (master-worker process model) and §0.7.1.2 (privilege-drop ordering), the `webserver` binary's master process performs three production `unsafe` operations during its pre-tokio bootstrap:
+
+1. `daemonize_master` calls `fork(2)` to detach from the launching shell (FASM `master.inc` line 38 `.dofork`).
+2. `daemonize_master` closes inherited stdio (fds 0/1/2) via `libc::close` (FASM `master.inc` lines 53–58 byte-identical).
+3. `fork_workers` calls `fork(2)` once per CPU to spawn worker processes paired with `socketpair(2)` IPC channels (FASM `master.inc` line ~150 / `epoll_child$spawn` machinery).
+
+These three sites live in `crates/webserver/src/master.rs` rather than the `heavything` library because the daemonization + worker-spawn lifecycle is webserver-specific (per AAP §0.5.1.8 the `sshtalk` and `hnwatch` binaries are single-process and do not invoke this machinery). They are enumerated here so the unsafe audit covers every production crate in the workspace, not only `heavything`. Underlying syscall semantics (and their associated safety invariants) are identical to the `heavything::net::child::spawn_child` site at `net/child.rs:910`, which the same `nix::unistd::fork` wrapper guards. The integration tests for that helper (`test_fork_spawn_child_basic`, `test_killall_children_on_drop`, `test_fork_workers`) consequently exercise the exact `nix::unistd::fork` machinery used at these three webserver sites.
+
+### `webserver::master::daemonize_master` — fork
+
+- **Location**: `crates/webserver/src/master.rs:872`
+- **Category**: FFI-nix
+- **Functions called**: `nix::unistd::fork`
+- **Reason**: `fork(2)` is fundamentally unsafe in a multi-threaded program — only the calling thread survives the fork, and any mutex held by another thread deadlocks if the child attempts to take it. `nix` exposes this correctly as `unsafe fn fork()` so callers acknowledge the contract. The webserver master invokes this fork to detach from its launching shell when `-background` is requested (FASM `master.inc` line 38 `.dofork`).
+- **Safety invariant**:
+  - Master process is single-threaded at this site: per AAP §0.7.1.2, the tokio runtime is built strictly post-fork (in `master_event_loop` at `master.rs:1173`), and no `std::thread::spawn` precedes this call. The only stack is the original `main` thread.
+  - The parent branch exits immediately via `process::exit(0)` (FASM `master.inc` line 38 `.doexit` parity at line 876), so no parent-side bookkeeping survives.
+  - The child branch closes inherited stdio (next site, line 893), calls `setsid()`, and re-seeds the HMAC-DRBG via `rng::reseed()` to avoid producing identical key streams to the parent — a critical invariant per AAP §0.5.1.8.
+  - On fork failure the `?` propagation surfaces a typed `anyhow::Error` to the caller; no fd leakage at this site (no fds are owned at this point in the daemonize sequence).
+- **Integration test**: `test_fork_workers` (`tests/ffi_boundary.rs:1798`), `test_fork_spawn_child_basic` (`:380`), `test_killall_children_on_drop` (`:707`) — all three exercise the same `nix::unistd::fork` wrapper via `heavything::net::child::spawn_child`, which is the helper consumed by `fork_workers` (and its safety contract is identical here).
+
+### `webserver::master::daemonize_master` — `libc::close(fd)` for inherited stdio
+
+- **Location**: `crates/webserver/src/master.rs:893`
+- **Category**: FFI-libc
+- **Functions called**: `libc::close(fd)` for each `fd ∈ {0, 1, 2}` (stdin/stdout/stderr)
+- **Reason**: post-daemonize stdio closure mirroring FASM `master.inc` lines 53–58 byte-identically (`syscall_close` with `edi = 0`, `1`, `2` in sequence with no error checking). Neither `std` nor `tokio` exposes a "close stdin/stdout/stderr by fd number" primitive, and `nix::unistd::close` requires a `BorrowedFd` whose lifetime semantics conflict with the fact that the daemon is permanently giving up these descriptors (no surrounding `OwnedFd` can be constructed for a fd we are about to discard). Direct `libc::close` is the cleanest fit.
+- **Safety invariant**:
+  - Each `fd ∈ {0, 1, 2}` is a known-valid process-lifetime descriptor inherited from the original launching process; the kernel guarantees these fds are always allocated for any process started from a shell.
+  - `libc::close(fd)` is benign even if the fd was already closed (returns `-1` with `EBADF`, which we discard via `let _ =` per the FASM baseline's no-error-check pattern).
+  - We are inside the post-fork daemon child branch (parent exited at line 876); no other code path observes these stdio descriptors after this loop. Subsequent code in `daemonize_master` (`setsid()`, `rng::reseed()`, `syslog::set_pid()`) does not read or write fds 0/1/2.
+  - The detach-from-tty `setsid()` call at line 902 follows immediately, completing the FASM `master.inc` line 60 daemonization sequence.
+- **Integration test**: indirectly covered by `test_fork_workers` (`tests/ffi_boundary.rs:1798`) via shared fork machinery. A dedicated unit test that closes its own stdio is impractical because the test harness itself relies on stdout for output capture; the production close path is exercised end-to-end whenever `webserver` runs in `-background` mode (Gate 1 / Gate 5 live smoke tests).
+
+### `webserver::master::fork_workers` — fork (per worker)
+
+- **Location**: `crates/webserver/src/master.rs:1017`
+- **Category**: FFI-nix
+- **Functions called**: `nix::unistd::fork`
+- **Reason**: `fork(2)` is `unsafe fn` for the same reason as the `daemonize_master` site above. This is the worker-spawn fork: one iteration per CPU produces one worker child paired with a `socketpair(2)` IPC channel, mirroring FASM `epoll_child$spawn` (`epoll_child.inc`) and the master-side dispatcher at `master.inc` line ~150.
+- **Safety invariant**:
+  - Process is still pre-tokio at this site: the master's tokio runtime is built only after `fork_workers` returns (per AAP §0.7.1.2 / §0.5.1.8), inside `master_event_loop` at `master.rs:1173`.
+  - The previous `daemonize_master` call (when invoked) was also pre-tokio and did not start any threads of its own; the process state at this loop body is single-threaded.
+  - Only async-signal-safe operations follow until the runtime starts after `fork_workers` returns (the parent branch updates `pre_workers` on the original main thread; the child branch transfers fd ownership and dispatches to `crate::worker::run`).
+  - On fork failure the FASM byte-identical `"Fatal: fork and/or socketpair failed."` message is emitted and the process exits 1 (FASM `master.inc` line 154 `.err_forkfail` parity at lines 1019–1023).
+  - The companion `socketpair(2)` succeeds before each fork attempt (lines 994–999); on fork failure the socketpair `OwnedFd` pair is cleaned up automatically via Rust's `Drop` semantics when the closure returns `Err` (no fd leakage).
+  - Both branches of the `ForkResult` match arm correctly handle their respective fd ownership: parent drops `child_fd` (line 1031), child drops `parent_fd` (line 1055). Both ends of every spawned socketpair therefore have exactly one owning process post-fork, matching the FASM baseline's IPC topology.
+- **Integration test**: `test_fork_workers` (`tests/ffi_boundary.rs:1798`) — directly exercises the worker-spawn pattern via `heavything::net::child::spawn_child` × `WORKER_COUNT=2`, preserving the FASM `epoll_child$spawn` master/worker shape and validating both the parent-side and child-side `ForkResult` arms behave per spec.
 
 ## FFI-memmap2 — Memory-Mapped Files
 
@@ -449,13 +506,13 @@ If the total count ever exceeds 50, each site over 50 requires a dedicated writt
 
 This document is regenerated whenever
 
-    grep -rnE '\bunsafe\s+(fn|impl|\{|extern)' crates/heavything/src/
+    grep -rnE '\bunsafe\s+(fn|impl|\{|extern)' crates/heavything/src/ crates/webserver/src/ crates/sshtalk/src/ crates/hnwatch/src/
 
 returns a different set of lines from the one captured at the head of this document. The verification invocation is:
 
-    grep -rnE '\bunsafe\s+(fn|impl|\{|extern)' crates/heavything/src/ | wc -l
+    grep -rnE '\bunsafe\s+(fn|impl|\{|extern)' crates/heavything/src/ crates/webserver/src/ crates/sshtalk/src/ crates/hnwatch/src/ | wc -l
 
-which should currently return `27` (= 24 production + 3 test-only). If it returns a different number, one of two conditions holds:
+which should currently return `30` (= 27 production + 3 test-only across all four production crates: 27 lexical matches in `heavything` + 3 in `webserver` + 0 in `sshtalk` + 0 in `hnwatch`). If it returns a different number, one of two conditions holds:
 
 1. A new production unsafe site was introduced without adding a matching entry in the sections above — this is a merge-blocking audit finding, and the correct remediation is to add the entry (or to refactor the code to eliminate the new site).
 2. An existing unsafe site was removed — update the relevant section to delete the stale entry and decrement the "Total production `unsafe` sites" row of the Audit Summary table.
