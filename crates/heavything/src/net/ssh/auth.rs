@@ -538,8 +538,29 @@ pub fn handle_service_request(packet_body: &[u8]) -> Result<ServiceRequestResult
     if packet_body != CLIENT_SERVICENAME {
         return Err(SshError::Auth);
     }
+    // Build the full body of the `SSH_MSG_SERVICE_ACCEPT` (6) frame
+    // per RFC 4253 §10:
+    //
+    // ```text
+    //     byte      SSH_MSG_SERVICE_ACCEPT
+    //     string    service name
+    // ```
+    //
+    // The `string` is `CLIENT_SERVICENAME` (i.e., `ssh-userauth`
+    // already wrapped in its 4-byte SSH-string length prefix). The
+    // caller (`server.rs::handle_service_request`) hands this Vec
+    // straight to `encrypt_and_send`, which prepends framing
+    // (length+pad) but does **not** add a message-type byte itself —
+    // the caller is responsible for that and we satisfy it here.
+    //
+    // Mirrors `ssh.inc` `.got_servicerequest` (lines 2881–2906)
+    // where the FASM code emits the type byte ahead of the echoed
+    // service-name buffer in the same frame.
+    let mut accept = Vec::with_capacity(1 + CLIENT_SERVICENAME.len());
+    accept.push(SSH_MSG_SERVICE_ACCEPT);
+    accept.extend_from_slice(CLIENT_SERVICENAME);
     Ok(ServiceRequestResult {
-        accept_payload: CLIENT_SERVICENAME.to_vec(),
+        accept_payload: accept,
         advance_stage: true,
     })
 }
@@ -1188,7 +1209,17 @@ mod tests {
     #[test]
     fn test_service_request_accepts_ssh_userauth() {
         let result = handle_service_request(CLIENT_SERVICENAME).unwrap();
-        assert_eq!(result.accept_payload, CLIENT_SERVICENAME.to_vec());
+        // accept_payload is the FULL body of the
+        // SSH_MSG_SERVICE_ACCEPT (6) frame — RFC 4253 §10:
+        //     byte      SSH_MSG_SERVICE_ACCEPT
+        //     string    service name
+        // The string is `CLIENT_SERVICENAME` (already length-prefixed
+        // `ssh-userauth`).
+        let mut expected = Vec::with_capacity(1 + CLIENT_SERVICENAME.len());
+        expected.push(SSH_MSG_SERVICE_ACCEPT);
+        expected.extend_from_slice(CLIENT_SERVICENAME);
+        assert_eq!(result.accept_payload, expected);
+        assert_eq!(result.accept_payload[0], SSH_MSG_SERVICE_ACCEPT);
         assert!(result.advance_stage);
     }
 

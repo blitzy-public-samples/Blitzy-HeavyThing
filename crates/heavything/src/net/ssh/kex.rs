@@ -1225,6 +1225,275 @@ impl HostKey {
             HostKey::Dss { .. } => "ssh-dss",
         }
     }
+
+    /// Convert a [`crate::crypto::x509::SshHostKey`] (loaded from
+    /// `/etc/ssh/ssh_host_*_key` PEM files via
+    /// [`crate::crypto::x509::load_ssh_host_keys`]) into a kex-local
+    /// `HostKey` ready for signature emission.
+    ///
+    /// This bridges the two layered representations:
+    ///
+    /// * `crypto::x509::SshHostKey` carries opaque PEM-derived DER
+    ///   plus an optional pre-decoded SSH wire blob (from the matching
+    ///   `.pub` file). It is what filesystem-level loaders return.
+    /// * `kex::HostKey` carries the broken-down arithmetic operands
+    ///   that [`sign_rsa`] / [`sign_dss`] consume directly.
+    ///
+    /// # Algorithm dispatch (per AAP §0.1.1)
+    ///
+    /// | `KeyAlgo` | Result |
+    /// |-----------|--------|
+    /// | [`KeyAlgo::Rsa`]  | `Some(HostKey::Rsa { … })` |
+    /// | [`KeyAlgo::Dsa`]  | `Some(HostKey::Dss { … })` (traditional `BEGIN DSA PRIVATE KEY` only) |
+    /// | [`KeyAlgo::EcdsaP256`] / [`KeyAlgo::EcdsaP384`] / [`KeyAlgo::Ed25519`] | `None` (not in the AAP §0.1.1 corpus) |
+    ///
+    /// `None` is also returned when the DER blob cannot be parsed
+    /// (e.g. corrupt file, or PKCS#8-wrapped DSA which embeds
+    /// `(p, q, g)` inside the algorithm identifier and would require
+    /// recomputing `y = g^x mod p` — out of scope for the conversion
+    /// path; callers should generate DSA keys in the traditional
+    /// `BEGIN DSA PRIVATE KEY` form via `ssh-keygen -m PEM`).
+    ///
+    /// # Wire blob derivation
+    ///
+    /// When [`SshHostKey::public_key_blob`] is empty (e.g. the `.pub`
+    /// companion file was missing), the blob is reconstructed from
+    /// the private DER:
+    ///
+    /// * RSA: extract `(n, e)` from PKCS#1/PKCS#8 → emit
+    ///   `string "ssh-rsa" || mpint e || mpint n`.
+    /// * DSA: emit `string "ssh-dss" || mpint p || mpint q ||
+    ///   mpint g || mpint y` from the parsed components.
+    ///
+    /// Both forms exactly match FASM `ssh.inc` lines 3194-3232 and
+    /// the [`HostKey`] doc-comment §"Wire format invariants".
+    ///
+    /// [`KeyAlgo`]: crate::crypto::x509::KeyAlgo
+    /// [`KeyAlgo::Rsa`]: crate::crypto::x509::KeyAlgo::Rsa
+    /// [`KeyAlgo::Dsa`]: crate::crypto::x509::KeyAlgo::Dsa
+    /// [`KeyAlgo::EcdsaP256`]: crate::crypto::x509::KeyAlgo::EcdsaP256
+    /// [`KeyAlgo::EcdsaP384`]: crate::crypto::x509::KeyAlgo::EcdsaP384
+    /// [`KeyAlgo::Ed25519`]: crate::crypto::x509::KeyAlgo::Ed25519
+    /// [`SshHostKey::public_key_blob`]: crate::crypto::x509::SshHostKey::public_key_blob
+    pub fn from_ssh_host_key(src: &crate::crypto::x509::SshHostKey) -> Option<HostKey> {
+        use crate::crypto::x509::KeyAlgo;
+        match src.algorithm {
+            KeyAlgo::Rsa => {
+                // RSA: copy private DER verbatim; signing path will
+                // re-parse via parse_rsa_private_key_components.
+                let private_der = src.private_key.der.clone();
+                let public_ssh_blob = if !src.public_key_blob.is_empty() {
+                    src.public_key_blob.clone()
+                } else {
+                    build_rsa_public_blob_from_private_der(&private_der).ok()?
+                };
+                Some(HostKey::Rsa {
+                    private_der,
+                    public_ssh_blob,
+                })
+            }
+            KeyAlgo::Dsa => {
+                // DSA: parse traditional DSAPrivateKey to extract
+                // (p, q, g, y, x). PKCS#8-wrapped DSA is rejected
+                // (callers must use `ssh-keygen -m PEM`).
+                let DsaPrivateComponents {
+                    p_be,
+                    q_be,
+                    g_be,
+                    y_be,
+                    x_be,
+                } = parse_traditional_dsa_private_key(&src.private_key.der).ok()?;
+                let public_ssh_blob = if !src.public_key_blob.is_empty() {
+                    src.public_key_blob.clone()
+                } else {
+                    build_dss_public_blob(&p_be, &q_be, &g_be, &y_be)
+                };
+                Some(HostKey::Dss {
+                    p_be,
+                    q_be,
+                    g_be,
+                    y_be,
+                    x_be,
+                    public_ssh_blob,
+                })
+            }
+            // Ed25519 / ECDSA host keys are intentionally unsupported
+            // here: the AAP §0.1.1 algorithm corpus covers only
+            // `ssh-rsa` and `ssh-dss`, matching the FASM `ssh.inc`
+            // host-key signing dispatch (lines 3186-3280 / 3289-3479).
+            // Returning `None` lets the caller skip this entry.
+            KeyAlgo::Ed25519 | KeyAlgo::EcdsaP256 | KeyAlgo::EcdsaP384 => None,
+        }
+    }
+}
+
+/// Build the SSH wire-format public-key blob for an `ssh-rsa` host
+/// key, deriving `(n, e)` from the private DER.
+///
+/// Returns the byte sequence
+/// `string "ssh-rsa" || mpint e || mpint n` per RFC 4253 §6.6 and
+/// FASM `ssh.inc` lines 3194-3205.
+///
+/// # Errors
+///
+/// Returns [`SshError::HostKeys`] on DER parse failure (e.g. the
+/// private DER is neither PKCS#1 nor PKCS#8 RSA).
+fn build_rsa_public_blob_from_private_der(der: &[u8]) -> Result<Vec<u8>, NetError> {
+    let (n_be, e_be) = parse_rsa_public_components(der)?;
+    let mut blob = Vec::with_capacity(4 + 7 + 4 + e_be.len() + 1 + 4 + n_be.len() + 1);
+    append_string(&mut blob, b"ssh-rsa");
+    append_mpint(&mut blob, &e_be);
+    append_mpint(&mut blob, &n_be);
+    Ok(blob)
+}
+
+/// Build the SSH wire-format public-key blob for an `ssh-dss` host
+/// key from its mpint components.
+///
+/// Returns `string "ssh-dss" || mpint p || mpint q || mpint g || mpint y`
+/// per RFC 4253 §6.6 and FASM `ssh.inc` lines 3215-3232.
+fn build_dss_public_blob(p_be: &[u8], q_be: &[u8], g_be: &[u8], y_be: &[u8]) -> Vec<u8> {
+    let mut blob = Vec::with_capacity(
+        4 + 7 + 4 * 4 + p_be.len() + q_be.len() + g_be.len() + y_be.len() + 4,
+    );
+    append_string(&mut blob, b"ssh-dss");
+    append_mpint(&mut blob, p_be);
+    append_mpint(&mut blob, q_be);
+    append_mpint(&mut blob, g_be);
+    append_mpint(&mut blob, y_be);
+    blob
+}
+
+/// Parse an RSA private-key DER blob, returning the public components
+/// `(n_be, e_be)` as raw big-endian byte sequences.
+///
+/// Tries PKCS#8 wrapper first (modern OpenSSH default), falls back to
+/// PKCS#1 traditional form. Mirrors
+/// [`parse_rsa_private_key_components`] but extracts `(n, e)` instead
+/// of `(n, d)` because the public components are what go into the
+/// SSH wire blob.
+///
+/// # Errors
+///
+/// Returns [`SshError::HostKeys`] if the DER cannot be parsed as
+/// either format.
+fn parse_rsa_public_components(der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), NetError> {
+    match parse_pkcs8_rsa_public_components(der) {
+        Ok(v) => Ok(v),
+        Err(_) => parse_pkcs1_rsa_public_components(der).map_err(|_| {
+            NetError::Ssh(SshError::HostKeys(
+                "RSA private key DER could not be parsed as PKCS#8 or PKCS#1 (public components)"
+                    .to_string(),
+            ))
+        }),
+    }
+}
+
+/// Parse PKCS#1 `RSAPrivateKey`, returning `(n_be, e_be)`.
+///
+/// Layout (RFC 8017 §A.1.2): `SEQUENCE { version, n, e, d, p, q, dp, dq, qinv }`.
+fn parse_pkcs1_rsa_public_components(der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), NetError> {
+    let mut top = DerCursor::new(der);
+    let body = top.read_tlv(DER_TAG_SEQUENCE)?;
+    if !top.bytes.is_empty() {
+        return Err(NetError::Ssh(SshError::HostKeys(
+            "PKCS#1 RSA: trailing bytes after SEQUENCE".to_string(),
+        )));
+    }
+    let mut inner = DerCursor::new(body);
+    // version (INTEGER)
+    let _version = inner.read_tlv(DER_TAG_INTEGER)?;
+    // modulus (n)
+    let n_bytes = inner.read_tlv(DER_TAG_INTEGER)?;
+    // publicExponent (e)
+    let e_bytes = inner.read_tlv(DER_TAG_INTEGER)?;
+    Ok((
+        canonicalize_der_integer(n_bytes),
+        canonicalize_der_integer(e_bytes),
+    ))
+}
+
+/// Parse PKCS#8 `PrivateKeyInfo` wrapping a PKCS#1 RSA key, returning
+/// `(n_be, e_be)`. Layout per RFC 5208 §5.
+fn parse_pkcs8_rsa_public_components(der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), NetError> {
+    let mut top = DerCursor::new(der);
+    let body = top.read_tlv(DER_TAG_SEQUENCE)?;
+    if !top.bytes.is_empty() {
+        return Err(NetError::Ssh(SshError::HostKeys(
+            "PKCS#8: trailing bytes after SEQUENCE".to_string(),
+        )));
+    }
+    let mut inner = DerCursor::new(body);
+    let _version = inner.read_tlv(DER_TAG_INTEGER)?;
+    inner.skip_tlv()?; // privateKeyAlgorithm
+    let pkcs1_bytes = inner.read_tlv(DER_TAG_OCTET_STRING)?;
+    parse_pkcs1_rsa_public_components(pkcs1_bytes)
+}
+
+/// Parse a traditional `DSAPrivateKey` DER (`BEGIN DSA PRIVATE KEY`
+/// PEM, OpenSSL legacy form), returning `(p_be, q_be, g_be, y_be, x_be)`
+/// as canonical big-endian unsigned byte sequences.
+///
+/// Layout (RFC 5912, traditional DSA private-key format used by
+/// `ssh-keygen -m PEM -t dsa`):
+/// ```text
+/// DSAPrivateKey ::= SEQUENCE {
+///     version INTEGER,  -- 0
+///     p       INTEGER,
+///     q       INTEGER,
+///     g       INTEGER,
+///     y       INTEGER,  -- public
+///     x       INTEGER   -- private
+/// }
+/// ```
+///
+/// PKCS#8-wrapped DSA (where `(p, q, g)` are split between the
+/// algorithm identifier and the inner OCTET STRING which contains
+/// only `x`) is **not** parsed by this function — it returns
+/// [`SshError::HostKeys`]. Callers needing PKCS#8 DSA support should
+/// regenerate the host key with `ssh-keygen -m PEM`.
+///
+/// # Errors
+///
+/// Returns [`SshError::HostKeys`] on any parse error (truncation,
+/// missing fields, or unrecognised tags).
+/// Decoded big-endian byte buffers for the five components of a
+/// traditional DSAPrivateKey — `p`, `q`, `g`, `y` (public), and `x`
+/// (private). Each field is canonicalised via
+/// [`canonicalize_der_integer`] so that surplus DER leading-zero
+/// bytes are stripped before SSH mpint conversion.
+struct DsaPrivateComponents {
+    p_be: Vec<u8>,
+    q_be: Vec<u8>,
+    g_be: Vec<u8>,
+    y_be: Vec<u8>,
+    x_be: Vec<u8>,
+}
+
+fn parse_traditional_dsa_private_key(
+    der: &[u8],
+) -> Result<DsaPrivateComponents, NetError> {
+    let mut top = DerCursor::new(der);
+    let body = top.read_tlv(DER_TAG_SEQUENCE)?;
+    if !top.bytes.is_empty() {
+        return Err(NetError::Ssh(SshError::HostKeys(
+            "DSA private key: trailing bytes after SEQUENCE".to_string(),
+        )));
+    }
+    let mut inner = DerCursor::new(body);
+    let _version = inner.read_tlv(DER_TAG_INTEGER)?;
+    let p_bytes = inner.read_tlv(DER_TAG_INTEGER)?;
+    let q_bytes = inner.read_tlv(DER_TAG_INTEGER)?;
+    let g_bytes = inner.read_tlv(DER_TAG_INTEGER)?;
+    let y_bytes = inner.read_tlv(DER_TAG_INTEGER)?;
+    let x_bytes = inner.read_tlv(DER_TAG_INTEGER)?;
+    Ok(DsaPrivateComponents {
+        p_be: canonicalize_der_integer(p_bytes),
+        q_be: canonicalize_der_integer(q_bytes),
+        g_be: canonicalize_der_integer(g_bytes),
+        y_be: canonicalize_der_integer(y_bytes),
+        x_be: canonicalize_der_integer(x_bytes),
+    })
 }
 
 /// Sign the SSH exchange hash `H` with our `ssh-rsa` host key.

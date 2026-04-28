@@ -656,18 +656,41 @@ impl SshSession {
     /// stderr + exiting with code 1 (preserving FASM `sshtalk.asm`
     /// behavior).
     pub fn new_server(config: &SshConfig, blacklist: Option<Arc<Blacklist>>) -> Result<Arc<Self>, SshError> {
-        // Verify host keys are loadable. Empty vector still means we
-        // load successfully but the disk had no keys, which we treat
-        // as a configuration failure (matches sshtalk semantics).
-        let _x509_keys =
-            crate::crypto::x509::load_ssh_host_keys().map_err(|e| SshError::HostKeys(format!("{:?}", e)))?;
-        // The x509 → kex::HostKey extraction interface is intentionally
-        // minimal at this layer; concrete signing-capable host-key
-        // entries are populated downstream by the binary that owns the
-        // private-key files. server.rs only ASSERTS loadability and
-        // installs an empty Vec — handlers needing to sign will return
-        // SshError::HostKeys when they observe an empty list.
-        let host_keys = Vec::<HostKey>::new();
+        // Load host keys from `/etc/ssh/ssh_host_*_key` PEM files via
+        // the crypto layer, then convert each into a kex-local
+        // `HostKey` ready for signing. Empty vector still means we
+        // load successfully but the disk had no usable keys, which we
+        // treat as a configuration failure (matches sshtalk semantics).
+        let x509_keys = crate::crypto::x509::load_ssh_host_keys()
+            .map_err(|e| SshError::HostKeys(format!("{:?}", e)))?;
+
+        // Convert each `crypto::x509::SshHostKey` to a signing-capable
+        // `kex::HostKey`. Per AAP §0.1.1 the corpus is `ssh-rsa` and
+        // `ssh-dss`; ECDSA / Ed25519 entries returned by
+        // `load_ssh_host_keys` (e.g. `ssh_host_ecdsa_key`) are silently
+        // dropped here — `HostKey::from_ssh_host_key` returns `None`
+        // for those algorithms. Likewise, DSA keys in PKCS#8 form
+        // (which embed `(p, q, g)` in the algorithm identifier) are
+        // dropped because the conversion path requires the traditional
+        // `BEGIN DSA PRIVATE KEY` form.
+        let host_keys: Vec<HostKey> = x509_keys
+            .iter()
+            .filter_map(HostKey::from_ssh_host_key)
+            .collect();
+
+        if host_keys.is_empty() {
+            // No RSA / DSS host keys were convertible. Fail at
+            // construction time rather than at the GEX-INIT handler so
+            // the caller (sshtalk / webserver `main`) can report the
+            // configuration error before any client connects.
+            return Err(SshError::HostKeys(
+                "no signing-capable host keys (ssh-rsa / ssh-dss) available — \
+                 ensure /etc/ssh/ssh_host_rsa_key is in PEM form (try \
+                 `ssh-keygen -m PEM -t rsa -f /etc/ssh/ssh_host_rsa_key`)"
+                    .to_string(),
+            ));
+        }
+
         let session = Self::shared_new(
             ClientMode::Server,
             host_keys,
@@ -733,7 +756,18 @@ impl SshSession {
             open: AtomicBool::new(false),
             compression_state: StdMutex::new(CompressionState::None),
             stage: AtomicU32::new(SshStage::Idents as u32),
-            kex: StdMutex::new(KexState::new(SSH_IDENT.to_vec())),
+            // KexState stores `local_ident` in its **bare** form (without
+            // the trailing `\r\n`) because RFC 4253 §8 / FASM `ssh.inc`
+            // `.keycalc` lines ~5238 explicitly exclude CR LF from V_S in
+            // the exchange-hash input. The wire emission (further below
+            // in the connect path) still sends the full [`SSH_IDENT`]
+            // bytes including CR LF, so peers see a compliant banner;
+            // only the hashed copy is trimmed. Storing the trimmed form
+            // here means every later `compute_exchange_hash` call hashes
+            // the canonical V_S without needing per-call slicing.
+            kex: StdMutex::new(KexState::new(
+                SSH_IDENT[..SSH_IDENT.len() - 2].to_vec(),
+            )),
             local_cipher: StdMutex::new(CipherState::new()),
             remote_cipher: StdMutex::new(CipherState::new()),
             deflate: StdMutex::new(None),
@@ -990,8 +1024,18 @@ impl IoChain for SshSession {
             // Drive the state machine.
             match self.drive_receive_loop().await {
                 Ok(()) => self.dead.load(Ordering::SeqCst),
-                Err(_) => {
-                    // Fatal — caller should destroy chain.
+                Err(e) => {
+                    // Fatal — caller should destroy chain. Emit a
+                    // diagnostic syslog entry before tearing down so
+                    // wire-protocol regressions surface in the worker
+                    // → master → syslog relay (AAP §0.5.1.7) rather
+                    // than presenting as a silent `Connection closed
+                    // by peer` to the client. Externally observable
+                    // behavior (chain destruction + SHUT_WR) is
+                    // preserved.
+                    crate::util::syslog::warning(&format!(
+                        "ssh::receive: fatal dispatch error, tearing down session: {e:?}"
+                    ));
                     self.dead.store(true, Ordering::SeqCst);
                     true
                 }
@@ -1098,11 +1142,24 @@ impl SshSession {
             if local_cipher.is_active() {
                 // Compute MAC over (seqnum || plaintext_packet) FIRST,
                 // while wire still contains the unencrypted bytes.
+                // `compute_mac` increments the seqnum as a side-effect.
                 let tag = local_cipher.compute_mac(&wire);
                 // Encrypt the entire framed wire in place.
                 local_cipher.cbc_encrypt_in_place(&mut wire)?;
                 // Append the 32-byte HMAC-SHA-256 tag.
                 wire.extend_from_slice(&tag);
+            } else {
+                // Plaintext packet (typical of the pre-NEWKEYS KEX
+                // handshake). RFC 4253 §6.4 mandates that the packet
+                // sequence number "is incremented after every packet
+                // (regardless of whether encryption or MAC was in
+                // use)." The FASM baseline implements this; without
+                // the bump here the very first encrypted packet from
+                // the peer would arrive with the peer-side seqnum
+                // already at N while our `verify_mac` would still be
+                // computing against seqnum=0, causing every post-KEX
+                // packet to fail MAC verification.
+                local_cipher.bump_seqnum_plaintext();
             }
         }
 
@@ -1374,6 +1431,18 @@ impl SshSession {
                 self.reset_packet_state();
                 return Err(e);
             }
+        } else {
+            // Plaintext receive path. RFC 4253 §6.4 requires the
+            // packet sequence number to increment for *every* packet
+            // including plaintext KEX packets — see the matching
+            // comment in `encrypt_and_send` for the symptom this
+            // prevents (post-NEWKEYS MAC mismatch on the first
+            // encrypted inbound packet).
+            let mut remote = self
+                .remote_cipher
+                .lock()
+                .map_err(|_| NetError::Ssh(SshError::Cipher))?;
+            remote.bump_seqnum_plaintext();
         }
 
         // ----- Phase E: parse pad_len, slice payload.
@@ -2157,7 +2226,21 @@ impl SshSession {
         let init_window = u32::from_be_bytes([after_type[4], after_type[5], after_type[6], after_type[7]]);
         let max_pkt = u32::from_be_bytes([after_type[8], after_type[9], after_type[10], after_type[11]]);
 
-        if channel_type == SESSION_STR {
+        // `read_string` returns the bytes of the SSH `string` field
+        // **after** stripping its 4-byte big-endian length prefix
+        // (server.rs:2725 `let bytes = buf[4..4 + len].to_vec();`),
+        // whereas [`SESSION_STR`] stores the on-wire representation
+        // including its length prefix (4-byte BE length 7 followed by
+        // ASCII "session", 11 bytes total — see auth.rs:373 and the
+        // corresponding `test_session_str_layout` test). To compare
+        // the parsed channel-type name against the constant we skip
+        // the constant's first four bytes so both operands are the
+        // raw 7-byte ASCII "session". Mirrors the FASM
+        // `ssh.inc .got_channelopen` path which reads the channel
+        // type field as raw bytes (after consuming the SSH `string`
+        // length header in the same parser pass) and memcmps against
+        // `.sessionstr`'s data portion (FASM lines 5300–5310 area).
+        if channel_type == SESSION_STR[4..] {
             // Accept session channel.
             self.remote_channel_id.store(sender_chan, Ordering::SeqCst);
             self.remote_window.store(init_window, Ordering::SeqCst);

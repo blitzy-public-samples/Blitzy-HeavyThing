@@ -922,8 +922,37 @@ fn load_ssh_host_keys_from(dir: &Path) -> Result<Vec<SshHostKey>, CryptoError> {
         // Parse the PEM. Reuse parse_pem_reader, but SSH host-key
         // files contain ONLY a private key (no certificate), so the
         // chain check would falsely fail. Use a simpler parser path.
+        //
+        // `parse_ssh_private_pem` returns `Ok(None)` when the file
+        // exists and is readable but contains *no PEM block that
+        // `rustls-pemfile` recognises*. The canonical example is the
+        // OpenSSH-proprietary `BEGIN OPENSSH PRIVATE KEY` envelope
+        // emitted by `ssh-keygen -A` for ECDSA / Ed25519 host keys
+        // (rustls-pemfile silently returns `None` for these blocks
+        // — verified empirically against rustls-pemfile 2.x). Such
+        // files belong to algorithms that are explicitly *out of
+        // corpus* per AAP §0.1.1 (which requires only `ssh-rsa`
+        // and `ssh-dss`), so silently skipping them is correct and
+        // mirrors the existing ENOENT-tolerant pattern above.
         let mut reader = BufReader::new(file.take(MAX_PEM_SIZE));
-        let private_key = parse_ssh_private_pem(&mut reader, &priv_path)?;
+        let Some(private_key) = parse_ssh_private_pem(&mut reader, &priv_path)? else {
+            // Diagnostic visibility for operators who *expected* the
+            // key to load: emit a single syslog warning per skipped
+            // file. This matches the AAP §0.5.1.7 "syslog for OCSP
+            // activity" pattern and helps debug Gate-4 host-key
+            // confusion without falsely failing the loader.
+            crate::util::syslog::warning(&format!(
+                "x509::load_ssh_host_keys: skipping {} \
+                 (no rustls-pemfile-recognised private-key block; \
+                 OpenSSH-proprietary `BEGIN OPENSSH PRIVATE KEY` \
+                 format is not supported — regenerate with \
+                 `ssh-keygen -m PEM -t rsa -f {}` if this key was \
+                 intended for use)",
+                priv_path.display(),
+                priv_path.display(),
+            ));
+            continue;
+        };
 
         // Probe for the matching public-key file. SSH's ssh-keygen
         // writes them as "<basename>.pub" alongside the private key.
@@ -940,38 +969,52 @@ fn load_ssh_host_keys_from(dir: &Path) -> Result<Vec<SshHostKey>, CryptoError> {
     Ok(keys)
 }
 
-/// Parse a PEM file that contains exactly one private key (no
+/// Parse a PEM file that contains at most one private key (no
 /// certificates). Used for SSH host-key files which are
 /// private-key-only.
+///
+/// # Returns
+///
+/// * `Ok(Some(key))` — at least one PKCS#1 / PKCS#8 / SEC1 private-key
+///   block was found and decoded.
+/// * `Ok(None)` — the file exists and is well-formed but contains no
+///   PEM block that `rustls-pemfile` recognises. This is the OpenSSH
+///   proprietary `BEGIN OPENSSH PRIVATE KEY` envelope path: callers
+///   in [`load_ssh_host_keys_from`] treat it as a *skip*, matching
+///   AAP §0.1.1 which excludes Ed25519/ECDSA from the host-key
+///   algorithm corpus.
+/// * `Err(_)` — a structural PEM parse error (malformed BEGIN/END,
+///   bad base64, etc.). These remain fatal so genuinely corrupt key
+///   files are surfaced rather than silently ignored.
 fn parse_ssh_private_pem<R: std::io::BufRead>(
     reader: &mut R,
     source_label: &Path,
-) -> Result<PrivateKey, CryptoError> {
+) -> Result<Option<PrivateKey>, CryptoError> {
     loop {
         let item = rustls_pemfile::read_one(reader).map_err(|e| {
             CryptoError::X509(format!("PEM parse error in {}: {}", source_label.display(), e))
         })?;
         let Some(item) = item else {
-            return Err(CryptoError::X509(format!(
-                "no private-key block in SSH host-key file {}",
-                source_label.display()
-            )));
+            return Ok(None);
         };
         match item {
             Item::Pkcs1Key(der) => {
-                return Ok(PrivateKey::new(der.secret_pkcs1_der().to_vec(), KeyAlgo::Rsa));
+                return Ok(Some(PrivateKey::new(der.secret_pkcs1_der().to_vec(), KeyAlgo::Rsa)));
             }
             Item::Pkcs8Key(der) => {
                 let bytes = der.secret_pkcs8_der().to_vec();
                 let algo = detect_pkcs8_algorithm(&bytes).unwrap_or(KeyAlgo::Rsa);
-                return Ok(PrivateKey::new(bytes, algo));
+                return Ok(Some(PrivateKey::new(bytes, algo)));
             }
             Item::Sec1Key(der) => {
                 let bytes = der.secret_sec1_der().to_vec();
                 let algo = detect_sec1_algorithm(&bytes).unwrap_or(KeyAlgo::EcdsaP256);
-                return Ok(PrivateKey::new(bytes, algo));
+                return Ok(Some(PrivateKey::new(bytes, algo)));
             }
-            // Skip any non-key blocks and keep looking.
+            // Skip any non-key blocks (certs, CRLs, CSRs) and keep
+            // looking. SSH host-key files normally contain a single
+            // private-key block; this loop tolerates files that mix
+            // in other PEM block types.
             _ => continue,
         }
     }

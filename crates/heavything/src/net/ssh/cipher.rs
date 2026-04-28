@@ -325,10 +325,52 @@ impl CipherState {
     /// Current packet sequence number.
     ///
     /// Read-only accessor for testing and diagnostic logging; mutation
-    /// happens only in [`Self::compute_mac`] and [`Self::verify_mac`].
+    /// happens in [`Self::compute_mac`], [`Self::verify_mac`], and
+    /// [`Self::bump_seqnum_plaintext`].
     #[must_use]
     pub fn seqnum(&self) -> u32 {
         self.seqnum
+    }
+
+    /// Increment the packet sequence number without performing any
+    /// cryptographic operation.
+    ///
+    /// # Why this exists
+    ///
+    /// Per RFC 4253 §6.4, the SSH packet sequence number "is an
+    /// implicit packet sequence number ... initialized to zero for
+    /// the first packet and is incremented after every packet
+    /// (regardless of whether encryption or MAC was in use)." The
+    /// FASM `ssh.inc` baseline implements this faithfully: every
+    /// packet — plaintext KEX packets included — bumps the relevant
+    /// sequence number (`ssh_writeseq_ofs` / `ssh_readseq_ofs`)
+    /// before the next packet is processed.
+    ///
+    /// In our Rust port the sequence number is co-located with the
+    /// cipher state for cache locality, and `compute_mac` /
+    /// `verify_mac` increment it as a side-effect of the HMAC build
+    /// path. Those paths are skipped during plaintext key exchange,
+    /// so without this method the seqnum would remain at 0 across
+    /// every plaintext packet and then disagree with the peer the
+    /// moment the first encrypted packet arrives (yielding the
+    /// classic "MAC verification failed on first encrypted packet"
+    /// symptom that the FASM baseline never exhibits).
+    ///
+    /// # Semantics
+    ///
+    /// * Adds 1 with wrapping arithmetic, matching FASM's 32-bit
+    ///   `add ssh_writeseq_ofs, 1` (line 917) / `add dword
+    ///   ssh_readseq_ofs, 1` (line 1230+) which silently wrap on
+    ///   overflow.
+    /// * Does **not** touch any other field — `key`, `iv`, `mac_key`,
+    ///   `active` are all preserved.
+    /// * Idempotent only in the trivial sense; each call advances
+    ///   the counter by one. Callers must invoke it exactly once per
+    ///   plaintext packet, and not at all on encrypted packets
+    ///   (because `compute_mac` / `verify_mac` already bump on the
+    ///   encrypted path).
+    pub fn bump_seqnum_plaintext(&mut self) {
+        self.seqnum = self.seqnum.wrapping_add(1);
     }
 
     /// Encrypt one complete SSH packet **in place** using AES-256-CBC,
