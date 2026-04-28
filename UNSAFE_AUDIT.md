@@ -41,17 +41,31 @@ Each site is traceable back to the assembly behavior it preserves. In the assemb
 | Expected count per AAP §0.7.4.1           | 14–22 |
 | FFI / raw-syscall / intrinsic sites       | 27    |
 | Sites exceeding budget with justification | 0     |
-| Additional test-only `unsafe` sites       | 3     |
+| Additional test-only `unsafe` sites       | 4     |
 
 The 27 production sites enumerated below were verified by grepping
-`\bunsafe\s+(fn|impl|\{|extern)` across both production crate roots
-that contain `unsafe` code — `crates/heavything/src/` (27 lexical
-matches: 24 production + 3 test-only blocks) and `crates/webserver/src/`
-(3 lexical matches, all production: `master.rs:872`, `:893`, `:1017`).
-The remaining production crates (`crates/sshtalk/src/`, `crates/hnwatch/src/`)
-contain zero `unsafe` blocks. Test-only sites are listed in the
-"Test-only Unsafe (Appendix)" section for completeness but do not count
-against the AAP §0.7.4 budget, which governs production code only.
+`\bunsafe\s+(fn|impl|\{|extern)` across the four production crate roots,
+filtering out comment-only matches via `grep -vE "^[^:]+:[^:]+:\s*(//|//!)"`.
+The strict-regex code count is 31 lexical matches — 27 production +
+4 test-only — distributed as follows:
+
+- `crates/heavything/src/` — 27 lexical matches: 24 production
+  (`net/http/mimelike.rs:384,385,712,825,980`,
+  `net/http/server.rs:479`, `net/child.rs:910,945,1011`,
+  `net/runtime.rs:509,619`, `tui/terminal.rs:203,267,318,350,406,419,
+  434,476,519`, `crypto/rng.rs:297`, `util/mapped.rs:209`,
+  `util/mappedheap.rs:305`, `util/privmapped.rs:319`) + 3 test-only
+  (`net/runtime.rs:1095`, `net/runtime.rs:1380`,
+  `net/http/mimelike.rs:2300`).
+- `crates/webserver/src/` — 3 lexical matches, all production:
+  `master.rs:872`, `:893`, `:1017`.
+- `crates/sshtalk/src/` — 1 lexical match, test-only:
+  `userdb.rs:1115` (inside `parse_hex_32_rejects_non_hex_chars`).
+- `crates/hnwatch/src/` — zero `unsafe` lexical matches.
+
+Test-only sites are listed in the "Test-only Unsafe (Appendix)"
+section for completeness but do not count against the AAP §0.7.4
+budget, which governs production code only.
 
 The overall count (27) is five sites over the top of the AAP §0.7.4.1
 "expected 14–22" range. The excess is attributable to four site
@@ -446,13 +460,14 @@ Per AAP §0.5.1.4 `net/http/mimelike.rs` ports `mimelike.inc` with byte-identica
 
 ## Test-only Unsafe (Appendix)
 
-These sites exist only inside `#[cfg(test)]` blocks and do not count against the production AAP §0.7.4 budget. They are listed here for grep-completeness — any maintenance script that counts `unsafe` lexical occurrences in `crates/heavything/src/` (after filtering out comment lines) will observe 27 total matches (24 production + 3 test-only).
+These sites exist only inside `#[cfg(test)]` blocks and do not count against the production AAP §0.7.4 budget. They are listed here for grep-completeness — any maintenance script that counts `unsafe` lexical occurrences after filtering out comment lines will observe 31 total matches across all four production crates (27 production + 4 test-only): 27 in `heavything` (24 production + 3 test-only), 3 in `webserver` (all production), 1 in `sshtalk` (test-only), 0 in `hnwatch`.
 
 | # | File:Line                                                   | Purpose                                                                   |
 |---|-------------------------------------------------------------|---------------------------------------------------------------------------|
 | 1 | `crates/heavything/src/net/runtime.rs:1095`                 | `test_check_ulimit_current` — independently invoke `libc::getrlimit` to double-check `check_ulimit`'s return value matches kernel reality |
 | 2 | `crates/heavything/src/net/runtime.rs:1380`                 | `test_stream_defaults_roundtrip` — invoke `libc::getsockopt` to read back `SO_LINGER` / `SO_KEEPALIVE` after `apply_stream_defaults` set them |
-| 3 | `crates/heavything/src/net/http/mimelike.rs:2195`           | `body_bytes_uses_external_pointer_when_set` — call the `unsafe fn set_body_external` from the test body to exercise the external-pointer code path |
+| 3 | `crates/heavything/src/net/http/mimelike.rs:2300`           | `body_bytes_uses_external_pointer_when_set` — call the `unsafe fn set_body_external` from the test body to exercise the external-pointer code path |
+| 4 | `crates/sshtalk/src/userdb.rs:1115`                         | `parse_hex_32_rejects_non_hex_chars` — mutate a heap-allocated `String` via `String::as_bytes_mut` to inject a non-hex character at a deterministic offset, then assert `parse_hex_32` rejects the result. The unsafe block is required because `as_bytes_mut` is itself `unsafe`: it returns a mutable byte view of a UTF-8 `String` whose validity must be preserved. The injected byte (`b'Z'`) is ASCII and therefore preserves UTF-8 validity, satisfying the precondition. |
 
 ## Integration Test Mapping
 
@@ -462,17 +477,21 @@ Integration tests currently implemented in `crates/heavything/tests/ffi_boundary
 
 | Test Name                       | File:Line | Unsafe Sites Exercised                                |
 |---------------------------------|-----------|-------------------------------------------------------|
-| `test_fork_spawn_child_basic`   | `:353`    | `net/child.rs` fork + 2× from_raw_fd                  |
-| `test_prctl_pdeathsig`          | `:506`    | `net/child.rs` (same) — exercises `prctl::set_pdeathsig` post-fork in the child branch |
-| `test_killall_children_on_drop` | `:680`    | `net/child.rs` (same) — exercises the `ChildProcess::Drop` kill path |
-| `test_check_ulimit`             | `:812`    | `net/runtime.rs` (getrlimit/setrlimit)                |
-| `test_stream_defaults_roundtrip`| `:964`    | `net/runtime.rs` (setsockopt)                         |
-| `test_raw_terminal_roundtrip`   | `:1147`   | `tui/terminal.rs:203, 267, 519` (enter → get_winsize → drop round-trip; gracefully skips when stdin is not a TTY) |
-| `test_sigwinch_handler`         | `:1389`   | `tui/terminal.rs:318, 350` (sigaction install + SIGWINCH delivery via `signal::raise(SIGWINCH)` + poll on `take_winch_pending`) |
-| `test_setuid_setgid_drop`       | `:1582`   | webserver master privilege-drop primitives (`nix::unistd::setuid`, `setgid`); gated on `HEAVYTHING_PRIVILEGED_TESTS=1` and `getuid() == 0` |
-| `test_fork_workers`             | `:1750`   | `net/child.rs` worker-spawn pattern (`spawn_child` × `WORKER_COUNT=2`); preserves the FASM `epoll_child$spawn` master/worker shape for CP8 |
-| `test_mmap_file_cache`          | `:1876`   | `net/http/server.rs:479` (HotEntry::open) — covers the shared `MmapOptions::map` machinery used by all four memmap2 sites |
-| `test_cpuid_vendor_string`      | `:2040`   | _Supplementary CPU-instruction-boundary test_ — exercises `std::arch::x86_64::__cpuid(0)` (a **safe fn** on x86_64 per AAP §0.7.4.1 "0 sites" budget, not an unsafe site) and ground-truths the result against `/proc/cpuinfo`'s `vendor_id` field plus the `cpu::detect_is_intel` ECX-only check at `cpu.rs:141`. Added in CP7 to satisfy the QA Checkpoint 7 expected-outcome enumeration; not strictly required by AAP §0.7.4.4 but increases CPU-feature-detection regression confidence at zero risk. |
+| `test_fork_spawn_child_basic`   | `:380`    | `net/child.rs` fork + 2× from_raw_fd                  |
+| `test_prctl_pdeathsig`          | `:533`    | `net/child.rs` (same) — exercises `prctl::set_pdeathsig` post-fork in the child branch |
+| `test_killall_children_on_drop` | `:707`    | `net/child.rs` (same) — exercises the `ChildProcess::Drop` kill path |
+| `test_check_ulimit`             | `:839`    | `net/runtime.rs` (getrlimit/setrlimit)                |
+| `test_stream_defaults_roundtrip`| `:991`    | `net/runtime.rs` (setsockopt)                         |
+| `test_raw_terminal_roundtrip`   | `:1174`   | `tui/terminal.rs:203, 267, 519` (enter → get_winsize → drop round-trip; gracefully skips when stdin is not a TTY) |
+| `test_sigwinch_handler`         | `:1416`   | `tui/terminal.rs:318, 350` (sigaction install + SIGWINCH delivery via `signal::raise(SIGWINCH)` + poll on `take_winch_pending`) |
+| `test_setuid_setgid_drop`       | `:1628`   | webserver master privilege-drop primitives (`nix::unistd::setuid`, `setgid`); gated on `HEAVYTHING_PRIVILEGED_TESTS=1` and `getuid() == 0` |
+| `test_fork_workers`             | `:1798`   | `net/child.rs` worker-spawn pattern (`spawn_child` × `WORKER_COUNT=2`); preserves the FASM `epoll_child$spawn` master/worker shape for CP8 |
+| `test_mmap_file_cache`          | `:1923`   | `net/http/server.rs:479` (HotEntry::open) — covers the shared `MmapOptions::map` machinery used by all four memmap2 sites |
+| `test_cpuid_vendor_string`      | `:2082`   | _Supplementary CPU-instruction-boundary test_ — exercises `std::arch::x86_64::__cpuid(0)` (a **safe fn** on x86_64 per AAP §0.7.4.1 "0 sites" budget, not an unsafe site) and ground-truths the result against `/proc/cpuinfo`'s `vendor_id` field plus the `cpu::detect_is_intel` ECX-only check at `cpu.rs:141`. Added in CP7 to satisfy the QA Checkpoint 7 expected-outcome enumeration; not strictly required by AAP §0.7.4.4 but increases CPU-feature-detection regression confidence at zero risk. |
+| `test_cpuid_feature_detection_does_not_panic` | `:2251`   | _Supplementary CPU-feature-detection regression test_ — invokes `std::arch::x86_64::__cpuid(1)` and re-runs `cpu::detect()` to confirm the resulting `CpuFeatures` set is consistent with the rustc `is_x86_feature_detected!` macro for `aes`, `sse2`, `ssse3`, `sse4.1`, `avx`, `avx2`. Safe-fn boundary on x86_64. |
+| `test_vdso_module_loads`        | `:2357`   | _Supplementary vDSO smoke test_ — confirms `util::vdso::module_loaded()` returns `true` on Linux x86_64 where the vDSO is always mapped by the kernel and Rust's `std::time` uses it transparently. Safe-fn boundary. |
+| `test_exit_code_constants`      | `:2466`   | _Supplementary exit-code regression test_ — pins the AAP §0.1.2 exit-code constants (96/97/98/99) by asserting the `heavything::InitError::exit_code` mapping. Safe-fn boundary. |
+| `test_isatty_smoke`             | `:2553`   | _Supplementary TTY-detection smoke test_ — invokes `std::io::IsTerminal::is_terminal` on stdin to ensure `tui/terminal.rs::enter` correctly skips raw-mode acquisition when not attached to a TTY. Safe-fn boundary. |
 
 Aspirational tests referenced by this document but not yet implemented (CP8 scope — require subprocess signal-induction harnessing):
 
@@ -510,9 +529,11 @@ This document is regenerated whenever
 
 returns a different set of lines from the one captured at the head of this document. The verification invocation is:
 
-    grep -rnE '\bunsafe\s+(fn|impl|\{|extern)' crates/heavything/src/ crates/webserver/src/ crates/sshtalk/src/ crates/hnwatch/src/ | wc -l
+    grep -rnE '\bunsafe\s+(fn|impl|\{|extern)' crates/heavything/src/ crates/webserver/src/ crates/sshtalk/src/ crates/hnwatch/src/ \
+        | grep -vE "^[^:]+:[^:]+:\s*(//|//!)" \
+        | wc -l
 
-which should currently return `30` (= 27 production + 3 test-only across all four production crates: 27 lexical matches in `heavything` + 3 in `webserver` + 0 in `sshtalk` + 0 in `hnwatch`). If it returns a different number, one of two conditions holds:
+which should currently return `31` (= 27 production + 4 test-only across all four production crates: 27 lexical matches in `heavything` (24 production + 3 test-only) + 3 in `webserver` (all production) + 1 in `sshtalk` (test-only) + 0 in `hnwatch`). The post-`grep -vE` filter excludes comment lines that contain the word `unsafe` in prose (e.g. `// SAFETY:`, `// unsafe extern`, doc-comment narration); the unfiltered count is higher and unstable as comments are added or edited. If the filtered count returns a different number, one of two conditions holds:
 
 1. A new production unsafe site was introduced without adding a matching entry in the sections above — this is a merge-blocking audit finding, and the correct remediation is to add the entry (or to refactor the code to eliminate the new site).
 2. An existing unsafe site was removed — update the relevant section to delete the stale entry and decrement the "Total production `unsafe` sites" row of the Audit Summary table.

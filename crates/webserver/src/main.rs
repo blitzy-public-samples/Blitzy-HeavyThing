@@ -93,6 +93,25 @@
 // future edits cannot regress without a deliberate suppression
 // (which AAP §0.8.3 forbids anyway).
 #![forbid(unsafe_op_in_unsafe_fn)]
+// Rustdoc lint allowances per AAP §0.8.6 and Final Checkpoint 16 QA
+// expectation that "documented `#[allow(rustdoc::*)]` exceptions
+// justified per file" is acceptable.
+//
+// `webserver` doc comments cross-link to private FASM-style helpers
+// (`master::run`, `worker::accept_loop`, `arguments::parse_one`) and
+// use angle-bracket placeholders like `<host>:<port>` in usage prose.
+// These conventions are inherited from `rwasa.asm` / `arguments.inc`
+// help text and rewriting them would either expand the public API
+// surface (AAP §0.8.1) or degrade source review readability. See the
+// matching block in `crates/heavything/src/lib.rs` for the full
+// justification. This narrow allowance does NOT suppress the broader
+// `warnings` or `unused` lints that AAP §0.8.3 forbids.
+#![allow(
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links,
+    rustdoc::invalid_html_tags
+)]
 
 mod arguments;
 mod master;

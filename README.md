@@ -58,8 +58,11 @@ cargo build --release
 
 This builds the `heavything` library crate and all three binary crates
 (`sshtalk`, `hnwatch`, `webserver`) with warnings-as-errors enforced via
-`.cargo/config.toml` (`RUSTFLAGS="-D warnings"`). Release artifacts are
-placed in `target/release/`.
+`.cargo/config.toml` (`RUSTFLAGS="-D warnings"`). Because the same
+`.cargo/config.toml` pins `target = "x86_64-unknown-linux-gnu"` per
+AAP §0.3.2.4 (Linux x86_64 only), release artifacts land in
+`target/x86_64-unknown-linux-gnu/release/` rather than the default
+`target/release/`.
 
 ### Running the Binaries
 
@@ -86,7 +89,9 @@ Commonly used `webserver` flags:
 - `-vhost HOST` — restrict this `-bind` to a virtual host.
 - `-sandbox PATH` — chroot into `PATH` after binding.
 - `-funcmatch PATTERN` — enable request-function matching.
-- `-background` — detach from the controlling terminal.
+- `-foreground` — keep the master process attached to the controlling
+  terminal (the default behaviour is to fork into the background as a
+  daemon, mirroring `rwasa.asm` and `master.inc`).
 - `-new` — ignore pre-existing state and start fresh.
 
 ### Testing

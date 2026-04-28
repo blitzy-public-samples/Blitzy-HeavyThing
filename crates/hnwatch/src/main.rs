@@ -88,6 +88,27 @@
 //!   surfacing through `anyhow::Error`'s default `Termination`
 //!   impl.
 
+// Rustdoc lint allowances per AAP §0.8.6 and Final Checkpoint 16 QA
+// expectation that "documented `#[allow(rustdoc::*)]` exceptions
+// justified per file" is acceptable.
+//
+// `hnwatch` doc comments link to private internal helpers
+// (`hnmodel::poll_once`, `ui::tick`, `textify::render_html`) and to
+// trait methods on `dyn Trait` (`<dyn Any>::downcast_ref`) which
+// rustdoc's name resolver flags. Rewriting these to public API names
+// would expand the surface area (AAP §0.8.1); rewriting to plain
+// backticks would lose the cross-link semantics on items that DO
+// resolve. See the matching block in `crates/heavything/src/lib.rs`
+// for the full justification. This narrow allowance does NOT
+// suppress the broader `warnings` or `unused` lints that AAP §0.8.3
+// forbids.
+#![allow(
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links,
+    rustdoc::invalid_html_tags
+)]
+
 // Submodule declarations in alphabetical order per the agent prompt.
 // `eventstream` and `textify` are listed in the file's
 // `depends_on_files`; `hnmodel`, `render`, and `ui` are sibling

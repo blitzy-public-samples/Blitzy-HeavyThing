@@ -125,6 +125,25 @@
 // edits cannot regress without a deliberate suppression (which AAP
 // §0.8.3 forbids anyway).
 #![forbid(unsafe_op_in_unsafe_fn)]
+// Rustdoc lint allowances per AAP §0.8.6 and Final Checkpoint 16 QA
+// expectation that "documented `#[allow(rustdoc::*)]` exceptions
+// justified per file" is acceptable.
+//
+// `sshtalk` doc comments reference internal helper functions (e.g.
+// `<dyn Any>::downcast_ref`, `userdb::authenticate`, `screen::tick`)
+// and use the placeholder form `<username>` in usage examples. These
+// are doc-author conventions inherited from the assembly source;
+// rewriting them would expand the public API surface (AAP §0.8.1) or
+// degrade source-review readability without changing rendered docs.
+// See the matching block in `crates/heavything/src/lib.rs` for the
+// full justification. This narrow allowance does NOT suppress the
+// broader `warnings` or `unused` lints that AAP §0.8.3 forbids.
+#![allow(
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links,
+    rustdoc::invalid_html_tags
+)]
 
 // ===========================================================================
 // Module declarations — five sibling modules, declared in the order

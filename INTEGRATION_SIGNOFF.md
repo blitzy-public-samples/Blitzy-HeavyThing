@@ -75,7 +75,7 @@ Gate 1 verifies end-to-end boundary behavior on the three in-scope binary crates
     date: Tue, 28 Apr 2026 05:27:00 GMT
     content-length: 30
     ```
-  - `server: HeavyThing` byte-identical with FASM `webserver.inc` `srvhdr` constant emitted at `crates/heavything/src/net/http/server.rs:159` and `:3298`
+  - `server: HeavyThing` byte-identical with FASM `webserver.inc` `srvhdr` constant declared at `crates/heavything/src/net/http/server.rs:164` (`pub const SERVER_HEADER_VALUE: &str = "HeavyThing";`), emitted at `crates/heavything/src/net/http/server.rs:2591` (`response.set_header("Server", SERVER_HEADER_VALUE);`), and pinned byte-frozen by `test_server_header_byte_frozen` at `crates/heavything/src/net/http/server.rs:3705–3706`
 
 > Unit tests with mocked I/O do **not** satisfy Gate 1. Only live, end-to-end runs against the real kernel network stack, a real OpenSSH 9.6p1 client, real `curl 8.5.0`, and the real public HN Firebase API count as Gate 1 evidence — every box above cites such a capture. See AAP §0.8.4 for the governing rule.
 
@@ -140,8 +140,9 @@ Gate 4 verifies that each binary inter-operates with a named real-world peer: a 
   - HTTPS path (`-tls`) tested by independent rustls TLS 1.2/1.3 reach to the HN Firebase API above; the in-process TLS server config builder is unit-tested in `crates/heavything/src/net/tls.rs` and integration-tested in `crates/heavything/tests/net_integration.rs`
 - [x] `webserver` emits the exact `Strict-Transport-Security: max-age=31536000; includeSubDomains` header when `webserver_hsts = 1`
   - Constant declared at `crates/heavything/src/config.rs:606`: `pub const HSTS_HEADER_VALUE: &str = "max-age=31536000; includeSubDomains";`
-  - In-source assertion at `crates/heavything/src/net/http/server.rs:3286–3287` verifies byte equality with the AAP §0.1.1 mandated literal
-  - Emission gate at `crates/heavything/src/net/http/server.rs:2237–2238`: `if self.config.is_tls_enabled() && config::WEBSERVER_HSTS { response.set_header(HSTS_HEADER_NAME, config::HSTS_HEADER_VALUE); }`
+  - Companion header-name constant at `crates/heavything/src/net/http/server.rs:177`: `pub const HSTS_HEADER_NAME: &str = "Strict-Transport-Security";`
+  - In-source assertions at `crates/heavything/src/net/http/server.rs:3687–3695` (`test_hsts_header_byte_frozen`) verify byte equality of both `HSTS_HEADER_VALUE` (line 3689) and `HSTS_HEADER_NAME` (line 3695) with the AAP §0.1.1 mandated literals; the `HSTS_HEADER_VALUE` constant itself is also pinned byte-frozen by an in-tree test at `crates/heavything/src/config.rs:654`
+  - Emission gate at `crates/heavything/src/net/http/server.rs:2599–2600`: `if self.config.is_tls_enabled() && config::WEBSERVER_HSTS { response.set_header(HSTS_HEADER_NAME, config::HSTS_HEADER_VALUE); }`
 - [x] `webserver` emits an `X-NB` BREACH-mitigation header (1–48 random bytes) on TLS+gzip responses
   - Header name constant at `crates/heavything/src/net/http/server.rs:185`: `pub const X_NB_HEADER_NAME: &str = "X-NB";`
   - Documented at `crates/heavything/src/net/http/server.rs:179–185` ("BREACH-mitigation header name … pseudo-random hex-encoded payload of 1..=`WEBSERVER_BREACH_MITIGATION` bytes")
@@ -173,7 +174,7 @@ Gate 5 confirms that the observable interface surface — CLI flags, exit codes,
   - Live capture: hex `53 53 48 2d 32 2e 30 2d 48 65 61 76 79 54 68 69 6e 67 0d 0a` ↔ ASCII `S S H - 2 . 0 - H e a v y T h i n g \r \n`
 - [x] HTTP response `Server:` header reflects the HeavyThing identity (exact string per assembly `webserver.inc`)
   - Live capture from `curl -v http://127.0.0.1:7771/`: `< server: HeavyThing` (verbatim from `/tmp/webserver_curl.log`)
-  - Implementation: `crates/heavything/src/net/http/server.rs:159` (`SERVER_HEADER_VALUE`) and `:3298` (test verifying byte parity)
+  - Implementation: constant declared at `crates/heavything/src/net/http/server.rs:164` (`pub const SERVER_HEADER_VALUE: &str = "HeavyThing";`); emitted at `crates/heavything/src/net/http/server.rs:2591` (`response.set_header("Server", SERVER_HEADER_VALUE);`); pinned byte-frozen by `test_server_header_byte_frozen` at `crates/heavything/src/net/http/server.rs:3705–3706`
 - [x] `sshtalk` missing SSH host keys in `/etc/ssh` → stderr error + exit 1 (preserved)
   - Implementation: `crates/sshtalk/src/main.rs` — host-key load failures map to `eprintln!` + `std::process::exit(1)` per FASM `sshtalk.asm` baseline
 - [x] `hnwatch` default navstring = `"topstories"`; `main_item_limit` = 150
@@ -192,12 +193,12 @@ Gate 5 confirms that the observable interface surface — CLI flags, exit codes,
 Gate 6 confirms that every `unsafe` block introduced by the Rust port is accounted for in `UNSAFE_AUDIT.md` with location, reason, and safety invariant; that the total site count stays within the 50-site budget (or is accompanied by per-site written justification); and that every FFI / raw-syscall boundary has a corresponding integration test.
 
 - [x] `UNSAFE_AUDIT.md` exists at the repository root
-  - File: `UNSAFE_AUDIT.md` (≈ 41 KB)
+  - File: `UNSAFE_AUDIT.md` (≈ 51 KB)
 - [x] Every production `unsafe` block in `crates/` is listed with file:line, reason, and safety invariant
-  - 25 detailed sections (each headed `### …`) cover the production unsafe surface, including: `RawTerminal::enter / get_winsize / install_signal_handlers / drop`, `runtime::check_ulimit`, `runtime::apply_stream_defaults`, `net::child::spawn_child` (3 sites), `net::http::server::HotEntry::open`, `util::mapped::Mapped::new_file`, `util::mappedheap::MappedHeap::new_file`, `util::privmapped::PrivMapped::open`, `crypto::rng::read_tsc`, `Mimelike` Send/Sync/external-body sites
+  - 27 detailed sections (each headed `### …`) cover the production unsafe surface, including: `RawTerminal::enter / get_winsize / install_signal_handlers / install_one / drop`, signal handlers (`sigterm_handler`, `sigint_handler`, `crash_handler`, `cleanup_terminal_from_signal`), `runtime::check_ulimit`, `runtime::apply_stream_defaults`, `net::child::spawn_child` (3 sites: fork + parent/child `UnixStream::from_raw_fd`), `webserver::master::daemonize_master` (2 sites: fork + `libc::close` for stdio) and `webserver::master::fork_workers`, `net::http::server::HotEntry::open`, `util::mapped::Mapped::new_file`, `util::mappedheap::MappedHeap::new_file`, `util::privmapped::PrivMapped::open`, `crypto::rng::read_tsc`, `Mimelike` Send/Sync/external-body sites; the 28th `### …` heading is the `Breakdown by Category` summary which is not itself an audit entry
 - [x] Total unsafe site count is well within the 50-site budget
-  - Per-CP8-review baseline: **24 production sites** (well under the AAP §0.7.4.1 50-site ceiling and only 2 over the 14–22 expected range, justified by sub-TUI signal-handler machinery)
-  - Cross-check: `grep -rnE '\bunsafe\s' crates/ --include='*.rs' --exclude-dir=tests | wc -l` = 36 raw matches inclusive of `unsafe fn`/`unsafe impl`/`unsafe trait` declarations and `// SAFETY:` comment lines; the 25 audit sections capture every production `unsafe { … }` block
+  - Authoritative count after the CP16 review: **27 production sites** (24 inside `crates/heavything/src/` + 3 inside `crates/webserver/src/master.rs`); well under the AAP §0.7.4.1 50-site ceiling and within reach of the 14–22 expected range allowing for the sub-TUI signal-handler machinery and the master-process fork/daemonize triple
+  - Cross-check: `grep -rnE '\bunsafe\s+(fn|impl|\{|extern)' crates/heavything/src/ crates/webserver/src/ crates/sshtalk/src/ crates/hnwatch/src/ | grep -vE '^[^:]+:[^:]+:\s*(//|//!)' | wc -l` returns **31 lexical matches** (27 production + 4 test-only `#[cfg(test)]` blocks: 3 in `crates/heavything/src/net/http/mimelike.rs` and 1 in `crates/sshtalk/src/userdb.rs:1115`); the 27 audit sections capture every production `unsafe { … }` block while the 4 test-only blocks are catalogued separately under `UNSAFE_AUDIT.md` "Test-only Unsafe Appendix"
 - [x] Every FFI / raw-syscall boundary site has a corresponding integration test in `crates/heavything/tests/ffi_boundary.rs`:
   - [x] `test_raw_terminal_roundtrip` — `libc::tcgetattr` / `libc::tcsetattr` / `libc::cfmakeraw` (terminal raw-mode acquire/restore)
   - [x] `test_fork_workers` — `nix::unistd::fork` (master-worker fork; verifies child exits cleanly with status 0)
@@ -207,9 +208,9 @@ Gate 6 confirms that every `unsafe` block introduced by the Rust port is account
   - [x] `test_sigwinch_handler` — `tokio::signal::unix::signal(SignalKind::window_change())` (TUI resize)
   - Companion FFI tests also present: `test_fork_spawn_child_basic`, `test_killall_children_on_drop`, `test_check_ulimit`, `test_stream_defaults_roundtrip`, `test_cpuid_vendor_string`, `test_cpuid_feature_detection_does_not_panic`, `test_vdso_module_loads`, `test_exit_code_constants`, `test_isatty_smoke` — bringing the FFI-boundary suite to **15 tests, all passing**
 - [x] Audit inventory matches actual `unsafe` blocks
-  - Verification recipe in the Build Reproduction Appendix below; review-time cross-check confirmed parity at the 24-production-site count
+  - Verification recipe in the Build Reproduction Appendix below; review-time cross-check confirmed parity at the 27-production-site count (24 in `crates/heavything/src/` + 3 in `crates/webserver/src/master.rs`)
 - [x] Every audit entry includes a `// SAFETY:` comment at the `unsafe` block itself
-  - Spot-checked across all 25 sections during the CP8 review; every `unsafe` block introduces its safety invariant per AAP §0.7.4.2
+  - Spot-checked across all 27 audit sections during the CP16 review; every `unsafe` block introduces its safety invariant per AAP §0.7.4.2
 
 ## Gate 7 — All Five Subsystems Translated
 
@@ -245,7 +246,7 @@ Gate 8 is this document itself. The checklist below is the terminal acceptance c
   - Gate 3 (performance): `BENCHMARK_REPORT.md` populated; SHA-256 5.04× faster, HTTP RTT within 3×, AES-CBC envelope-bound
   - Gate 4 (real-world artifacts): OpenSSH 9.6p1 + curl 8.5.0 + HN Firebase API verified
   - Gate 5 (API contract): every CLI/exit-code/header constant cross-referenced to `file:line`
-  - Gate 6 (unsafe audit): 24 production sites under 50-site budget; 15 FFI boundary tests
+  - Gate 6 (unsafe audit): 27 production sites under 50-site budget; 15 FFI boundary tests
   - Gate 7 (subsystem completeness): 5 subsystems intact; 6 integration test files; 3 362 workspace tests pass
 - [x] `UNSAFE_AUDIT.md`, `BENCHMARK_REPORT.md`, and this file committed to the repository
 - [x] `README.md` updated with Rust build instructions
@@ -325,10 +326,22 @@ cargo fmt --all -- --check
 ### Regenerating the Unsafe Audit cross-reference
 
 ```bash
-# Count unsafe blocks and cross-check against UNSAFE_AUDIT.md
-grep -rnE '\bunsafe\b' crates/ --include='*.rs' | wc -l
-grep -rn 'unsafe' crates/ --include='*.rs' > /tmp/unsafe_sites.txt
-diff <(sort /tmp/unsafe_sites.txt) <(grep -oE 'crates/[^ ]+\.rs' UNSAFE_AUDIT.md | sort -u)
+# Strict-regex count of every `unsafe fn`/`unsafe impl`/`unsafe extern`/`unsafe { … }` site
+# across the production crates' src/ trees, with `// SAFETY:` and `//!` comment lines filtered out.
+# Expected output as of CP16: 31 lexical matches = 27 production unsafe + 4 test-only unsafe.
+grep -rnE '\bunsafe\s+(fn|impl|\{|extern)' \
+    crates/heavything/src/ crates/webserver/src/ \
+    crates/sshtalk/src/    crates/hnwatch/src/ \
+  | grep -vE '^[^:]+:[^:]+:\s*(//|//!)' \
+  | wc -l
+
+# Side-by-side diff against the file paths catalogued in UNSAFE_AUDIT.md
+grep -rnE '\bunsafe\s+(fn|impl|\{|extern)' \
+    crates/heavything/src/ crates/webserver/src/ \
+    crates/sshtalk/src/    crates/hnwatch/src/ \
+  | grep -vE '^[^:]+:[^:]+:\s*(//|//!)' > /tmp/unsafe_sites.txt
+diff <(awk -F: '{print $1}' /tmp/unsafe_sites.txt | sort -u) \
+     <(grep -oE 'crates/[^ )`]+\.rs' UNSAFE_AUDIT.md | sort -u)
 ```
 
 ### Reproducing the benchmark baseline comparison
