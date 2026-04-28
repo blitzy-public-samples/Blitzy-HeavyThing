@@ -1062,7 +1062,14 @@ impl Mimelike {
             if MIMELIKE_SETCOOKIE_SPLIT && name.eq_ignore_ascii_case(HEADER_SET_COOKIE) {
                 self.write_setcookie_split(&name, &value);
             } else {
-                self.xmitbody.extend_from_slice(name.as_bytes());
+                // QA Issue #4 — emit header names in conventional
+                // HTTP/1.x title-case (`Strict-Transport-Security`
+                // not `strict-transport-security`) per AAP §0.1.1
+                // byte-identical preservation. The HPACK static-
+                // table path stores names in lowercase for HTTP/2
+                // efficiency; we re-capitalize them on the
+                // HTTP/1.1 wire.
+                emit_titlecased_header_name(&mut self.xmitbody, &name);
                 self.xmitbody.extend_from_slice(b": ");
                 self.xmitbody.extend_from_slice(value.as_bytes());
                 self.xmitbody.extend_from_slice(b"\r\n");
@@ -1147,7 +1154,10 @@ impl Mimelike {
         }
 
         for cookie in emitted {
-            self.xmitbody.extend_from_slice(name.as_bytes());
+            // QA Issue #4 — title-case the Set-Cookie header name
+            // for AAP §0.1.1 byte-identical wire output, same as
+            // the main compose path.
+            emit_titlecased_header_name(&mut self.xmitbody, name);
             self.xmitbody.extend_from_slice(b": ");
             self.xmitbody.extend_from_slice(cookie.as_bytes());
             self.xmitbody.extend_from_slice(b"\r\n");
@@ -1392,9 +1402,14 @@ impl Mimelike {
                 parse_multipart_body(&mut m, &data[pos - n..pos], &boundary);
             }
         } else if transfer_chunked {
-            // Find the chunked terminator.
-            if let Some(rel) = find_chunked_terminator(&data[pos..]) {
-                let body_end = pos + rel + CHUNKED_TERMINATOR.len();
+            // Find the chunked terminator. Two shapes accepted:
+            // 7-byte `\r\n0\r\n\r\n` (embedded after >=1 chunk),
+            // 5-byte `0\r\n\r\n` (bare empty body — see
+            // `find_chunked_terminator` doc comment for QA #11
+            // rationale). The terminator length is returned alongside
+            // the offset so we slice the body correctly in both cases.
+            if let Some((rel, term_len)) = find_chunked_terminator(&data[pos..]) {
+                let body_end = pos + rel + term_len;
                 let body_data = &data[pos..body_end];
                 m.set_body(body_data)?;
                 pos = body_end;
@@ -1467,14 +1482,43 @@ fn find_line_break(data: &[u8]) -> Option<(usize, usize)> {
     None
 }
 
-/// Locates [`CHUNKED_TERMINATOR`] within `data`, returning its byte
-/// offset relative to the start of `data`.
-fn find_chunked_terminator(data: &[u8]) -> Option<usize> {
+/// Locates the chunked-transfer-encoding terminator within `data`,
+/// returning `(offset, terminator_length)` on success.
+///
+/// Two terminator shapes are recognised:
+///
+/// * **Embedded** (length 7): the canonical `"\r\n0\r\n\r\n"` — the
+///   leading CRLF closes the previous chunk's payload, the `0\r\n`
+///   is the zero-length chunk-size line, and the trailing `\r\n`
+///   ends the (empty) trailers section. This is what's emitted when
+///   the body actually contains chunks.
+///
+/// * **Bare-zero** (length 5): `"0\r\n\r\n"` at the **very start** of
+///   `data`. This is what's seen on the wire when the body is empty
+///   from the outset (no preceding chunk → no leading CRLF). This
+///   shape is what HeavyThing's own [`chunk_body`] outbound encoder
+///   emits for empty payloads (line 1693), and what real clients
+///   (curl, libcurl, browser fetch) send when they have no body to
+///   transmit. Without this detection, an empty chunked POST would
+///   hang the server waiting for "more body" forever — see
+///   QA Checkpoint 10 Issue #11.
+///
+/// The 5-byte form is **only** matched at offset 0; mid-stream a
+/// `0\r\n\r\n` sequence belongs to a chunk's data payload (e.g. a
+/// hex-encoded chunk-size of `30` looks like `"30\r\n"` followed by
+/// 0x30 bytes, none of which can mimic this prefix).
+fn find_chunked_terminator(data: &[u8]) -> Option<(usize, usize)> {
+    // Bare-zero form (empty body from the start).
+    if data.starts_with(b"0\r\n\r\n") {
+        return Some((0, 5));
+    }
+    // Embedded form (after at least one preceding chunk).
     if CHUNKED_TERMINATOR.is_empty() || data.len() < CHUNKED_TERMINATOR.len() {
         return None;
     }
     data.windows(CHUNKED_TERMINATOR.len())
         .position(|w| w == CHUNKED_TERMINATOR)
+        .map(|off| (off, CHUNKED_TERMINATOR.len()))
 }
 
 /// De-chunks a chunked Transfer-Encoding body into `dest`.
@@ -1810,6 +1854,67 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         return None;
     }
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Append `name` to `out` with HTTP/1.x title-case capitalization.
+///
+/// HTTP/1.x header names are case-insensitive on the wire (RFC 7230 §3.2),
+/// but the canonical convention used by virtually every server and proxy
+/// (Apache, nginx, IIS) is **Title-Case-With-Hyphens**: capitalize the
+/// first byte of each hyphen-delimited segment, lowercase the rest.
+/// AAP §0.1.1 explicitly mandates byte-identical preservation of
+/// `Strict-Transport-Security: max-age=31536000; includeSubDomains` —
+/// our HPACK static-table machinery (`headers::resolve_static_name`)
+/// stores names in lowercase internally for the HTTP/2 path, so the
+/// HTTP/1.1 wire serializer must re-capitalize them on emission.
+///
+/// Two header names violate strict title-case and need explicit
+/// overrides:
+/// * `ETag` — the canonical RFC 7232 spelling (not `Etag`).
+/// * `X-NB` — HeavyThing's BREACH-mitigation header (not `X-Nb`).
+///
+/// Any other rule for capitalization (e.g. `Content-MD5`, `WWW-Authenticate`)
+/// is left to the caller — it can pre-call `set_header(...)` with the
+/// exact desired casing and rely on
+/// [`headers::resolve_static_name`]'s static-table lookup, but for the
+/// majority of headers this title-case helper produces the conventional
+/// wire form. (The static-table path also lowercases owned names today,
+/// so the helper is the canonical fix-point.)
+///
+/// Implementation notes:
+/// * Pure ASCII-byte loop; no string-case crate dependency (none is
+///   imported by the heavything library).
+/// * Allocates nothing — appends directly to the caller's buffer.
+/// * Treats `-` as the segment separator; subsequent byte after `-`
+///   becomes the new "first byte" of the next segment.
+fn emit_titlecased_header_name(out: &mut Buffer, name: &str) {
+    let bytes = name.as_bytes();
+
+    // Special-case overrides: the FASM library's wire output uses
+    // these exact spellings, and AAP §0.1.1 byte-identical
+    // preservation requires we match them.
+    if bytes.eq_ignore_ascii_case(b"etag") {
+        out.extend_from_slice(b"ETag");
+        return;
+    }
+    if bytes.eq_ignore_ascii_case(b"x-nb") {
+        out.extend_from_slice(b"X-NB");
+        return;
+    }
+
+    // General title-case loop.
+    let mut at_segment_start = true;
+    for &b in bytes {
+        if b == b'-' {
+            out.push(b'-');
+            at_segment_start = true;
+        } else if at_segment_start {
+            out.push(b.to_ascii_uppercase());
+            at_segment_start = false;
+        } else {
+            out.push(b.to_ascii_lowercase());
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

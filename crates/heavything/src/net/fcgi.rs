@@ -851,8 +851,19 @@ struct Inner {
 /// callback. This guarantees that callers holding a result-sender via
 /// `callback_arg` always receive exactly one notification.
 pub struct FcgiClient {
-    /// The upstream backend URL.
+    /// The upstream backend URL — used by [`Self::drive_request`] to
+    /// open the upstream transport. NEVER fed to
+    /// [`encode_request`] / [`build_params_payload`]; those functions
+    /// must receive the **incoming HTTP request URL** so the CGI/1.1
+    /// environment variables (DOCUMENT_URI, REQUEST_URI,
+    /// SCRIPT_FILENAME, SERVER_NAME, etc.) reflect the client's view
+    /// of the request. See QA Issue #9 for the bug this split fixes.
     url: Arc<Url>,
+    /// The incoming HTTP request URL (the one the client typed into
+    /// the browser, or that the upstream proxy forwarded). Used by
+    /// [`encode_request`] to populate the CGI/1.1 environment.
+    /// Distinct from [`Self::url`] (the upstream backend address).
+    request_url: Arc<Url>,
     /// The HTTP request being proxied.
     #[allow(dead_code)] // Retained for caller introspection / future feature gates.
     request: Arc<Mimelike>,
@@ -879,14 +890,26 @@ impl FcgiClient {
     /// Create a new FastCGI client and spawn its driver task.
     ///
     /// Arguments:
-    ///   * `url` — backend address (`unix:///path/to/socket`, `fcgi://host:port`,
-    ///     `tcp://host:port`, or schemeless `host:port`).
-    ///   * `request` — the HTTP request to proxy. Its method, URI, headers,
-    ///     and body are encoded into the FastCGI environment and stdin.
-    ///   * `callback` — one-shot result handler. Invoked exactly once with
-    ///     `(callback_arg, result, elapsed_ms)`.
-    ///   * `callback_arg` — opaque value forwarded as the callback's first
-    ///     argument.
+    ///   * `backend_url` — backend transport address
+    ///     (`unix:///path/to/socket`, `fcgi://host:port`, or
+    ///     `tcp://host:port`). Used ONLY to open the upstream
+    ///     connection.
+    ///   * `request_url` — the incoming HTTP request URL (the URL
+    ///     the client requested). Used to populate the CGI/1.1
+    ///     environment variables sent to the FastCGI backend
+    ///     (DOCUMENT_URI, REQUEST_URI, SCRIPT_FILENAME, SCRIPT_NAME,
+    ///     QUERY_STRING, SERVER_NAME, SERVER_PORT, HTTPS). See QA
+    ///     Issue #9 — previously this argument was `url` (the
+    ///     backend) which produced CGI vars like
+    ///     `SCRIPT_FILENAME=/tmp/fcgi.sock` instead of the actual
+    ///     PHP script path.
+    ///   * `request` — the HTTP request to proxy. Its method, URI,
+    ///     headers, and body are encoded into the FastCGI
+    ///     environment and stdin.
+    ///   * `callback` — one-shot result handler. Invoked exactly
+    ///     once with `(callback_arg, result, elapsed_ms)`.
+    ///   * `callback_arg` — opaque value forwarded as the
+    ///     callback's first argument.
     ///
     /// Returns an `Arc<FcgiClient>` for caller introspection (set/get
     /// extensible `user` field, observe URL). The driver task holds its own
@@ -899,7 +922,8 @@ impl FcgiClient {
     /// via the callback as `FcgiResult::TransportError` or
     /// `FcgiResult::ProtocolError`.
     pub fn spawn(
-        url: Arc<Url>,
+        backend_url: Arc<Url>,
+        request_url: Arc<Url>,
         request: Arc<Mimelike>,
         callback: FcgiCallback,
         callback_arg: usize,
@@ -907,10 +931,16 @@ impl FcgiClient {
         // Encode the entire outbound byte stream up-front. This mirrors the
         // FASM `fcgiclient$new` strategy of pre-building `buffer_ofs` so the
         // connect callback can dispatch the request in a single write.
-        let outbound = encode_request(&url, &request);
+        //
+        // QA Issue #9 — Encode using the REQUEST URL, not the
+        // backend URL. The CGI/1.1 environment must reflect the
+        // client's view of the request (DOCUMENT_URI, REQUEST_URI,
+        // SCRIPT_FILENAME, SERVER_NAME, etc.).
+        let outbound = encode_request(&request_url, &request);
 
         let client = Arc::new(Self {
-            url,
+            url: backend_url,
+            request_url,
             request,
             inner: Mutex::new(Inner {
                 callback: Some(callback),
@@ -935,6 +965,15 @@ impl FcgiClient {
         });
 
         Ok(client)
+    }
+
+    /// Caller-facing accessor for the request URL — the URL whose
+    /// path/query/scheme is encoded into CGI/1.1 environment
+    /// variables for the upstream FastCGI process. Distinct from
+    /// [`Self::url`] which is the backend transport address.
+    #[must_use]
+    pub fn request_url(&self) -> Arc<Url> {
+        Arc::clone(&self.request_url)
     }
 
     /// Caller-facing accessor for the configured upstream URL. Useful for
@@ -1617,9 +1656,11 @@ mod tests {
         // on_received hook is independent of the spawned task. We construct
         // it manually for this test.
         let url = Arc::new(make_minimal_url());
+        let request_url = Arc::new(make_minimal_url());
         let request = Arc::new(make_get_request());
         let client = Arc::new(FcgiClient {
             url,
+            request_url,
             request,
             inner: Mutex::new(Inner {
                 callback: None,
@@ -1639,9 +1680,11 @@ mod tests {
     #[test]
     fn on_timeout_returns_teardown() {
         let url = Arc::new(make_minimal_url());
+        let request_url = Arc::new(make_minimal_url());
         let request = Arc::new(make_get_request());
         let client = FcgiClient {
             url,
+            request_url,
             request,
             inner: Mutex::new(Inner {
                 callback: None,
@@ -1666,6 +1709,7 @@ mod tests {
         let fired_for_cb = Arc::clone(&fired);
 
         let url = Arc::new(make_minimal_url());
+        let request_url = Arc::new(make_minimal_url());
         let request = Arc::new(make_get_request());
         let cb: FcgiCallback = Box::new(move |arg, result, _elapsed| {
             assert_eq!(arg, 42);
@@ -1676,6 +1720,7 @@ mod tests {
         });
         let client = FcgiClient {
             url,
+            request_url,
             request,
             inner: Mutex::new(Inner {
                 callback: Some(cb),
@@ -1699,6 +1744,7 @@ mod tests {
         let fired_for_cb = Arc::clone(&fired);
 
         let url = Arc::new(make_minimal_url());
+        let request_url = Arc::new(make_minimal_url());
         let request = Arc::new(make_get_request());
         let cb: FcgiCallback = Box::new(move |arg, result, _elapsed| {
             assert_eq!(arg, 7);
@@ -1713,6 +1759,7 @@ mod tests {
         {
             let _client = FcgiClient {
                 url,
+                request_url,
                 request,
                 inner: Mutex::new(Inner {
                     callback: Some(cb),
@@ -1732,9 +1779,11 @@ mod tests {
     #[test]
     fn user_field_round_trip() {
         let url = Arc::new(make_minimal_url());
+        let request_url = Arc::new(make_minimal_url());
         let request = Arc::new(make_get_request());
         let client = FcgiClient {
             url,
+            request_url,
             request,
             inner: Mutex::new(Inner {
                 callback: None,

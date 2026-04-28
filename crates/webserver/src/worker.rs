@@ -1405,19 +1405,102 @@ async fn build_http_config(arg_cfg: &ArgWebServerConfig) -> Arc<HtServerConfig> 
     }
 
     for fcgi in arg_cfg.fastcgi_map.iter() {
-        // The heavything FastCGI registration takes an
-        // `Arc<Url>`; parse the address into the heavything
-        // `Url` type. On parse failure (which would indicate a
-        // CLI-validation gap, since `arguments::parse` accepts
-        // the address verbatim), skip the entry silently to
-        // match the FASM behaviour where unparseable FastCGI
-        // mappings simply weren't registered.
-        if let Ok(url) = Url::parse(&fcgi.address) {
-            cfg.add_fastcgi(fcgi.endswith.clone(), Arc::new(url)).await;
+        // QA Issue #7 — TCP FastCGI silently bypassed; raw PHP
+        // source served.
+        //
+        // The heavything FastCGI registration takes an `Arc<Url>`;
+        // parse the address into the heavything `Url` type. The
+        // `arguments::parse` CLI parser accepts the address
+        // verbatim (e.g. `127.0.0.1:9000`, `/tmp/fcgi.sock`,
+        // `tcp://...`, `unix://...`, `fcgi://...`). The previous
+        // implementation passed the raw address to `Url::parse`
+        // which rejects bare `host:port` and bare paths because
+        // `url::Url::parse` requires a scheme prefix per
+        // RFC 3986 §3.1. The parse failure was silently swallowed,
+        // so the FCGI mapping was never registered, and the
+        // `-fastcgi '\.php$' '127.0.0.1:9000'` mapping fell
+        // through to the static-file tier — which served the
+        // raw PHP source code on disk as a security/correctness
+        // failure.
+        //
+        // Fix: prepend a transport scheme when the user supplied
+        // a bare address per FASM convention:
+        //   * leading `/`  → Unix domain socket → `unix://<path>`
+        //   * otherwise    → TCP host:port      → `tcp://<addr>`
+        // Already-qualified URLs (`fcgi://`, `tcp://`, `unix://`,
+        // etc.) are passed through as-is by the
+        // `addr.contains("://")` short-circuit.
+        let normalized = normalize_fcgi_address(&fcgi.address);
+        match Url::parse(&normalized) {
+            Ok(url) => {
+                cfg.add_fastcgi(fcgi.endswith.clone(), Arc::new(url)).await;
+            }
+            Err(e) => {
+                // Even with the prefix prepended, the address
+                // could not be parsed (e.g. invalid syntax).
+                // Surface the failure on stderr and continue —
+                // we deliberately do NOT exit the worker, since
+                // other FCGI mappings (and the static-file tier)
+                // may still be functional.
+                eprintln!(
+                    "warning: ignoring -fastcgi mapping '{}' '{}' (parse error: {:?})",
+                    fcgi.endswith, fcgi.address, e
+                );
+            }
         }
     }
 
     cfg
+}
+
+// ============================================================================
+// fn normalize_fcgi_address — QA Issue #7 — bare-address scheme prepending
+// ============================================================================
+
+/// Promote a `-fastcgi` address operand to a fully-qualified URL string.
+///
+/// The CLI accepts the following forms (matching the FASM convention):
+///
+/// * `127.0.0.1:9000` (bare host:port)        → `tcp://127.0.0.1:9000`
+/// * `[::1]:9000`     (bare IPv6 host:port)   → `tcp://[::1]:9000`
+/// * `/tmp/fcgi.sock` (absolute filesystem path) → `unix:///tmp/fcgi.sock`
+/// * `tcp://host:port`, `unix://...`, `fcgi://...` (already qualified) → unchanged
+///
+/// The promoted string is then fed to [`Url::parse`], which the
+/// downstream [`heavything::net::fcgi::FcgiClient::spawn`] requires.
+/// `Url::parse` would have rejected the bare forms because
+/// `url::Url::parse` enforces a scheme prefix per RFC 3986 §3.1.
+///
+/// The QA Issue #7 reproduction was: the user supplies
+/// `-fastcgi '\.php$' '127.0.0.1:9000'`, the previous code passed
+/// `127.0.0.1:9000` directly to `Url::parse`, the parse silently
+/// failed, and the FCGI mapping was never registered. Requests for
+/// `*.php` then fell through to the static-file tier and the raw
+/// PHP source was served (a security failure). This helper closes
+/// that gap.
+fn normalize_fcgi_address(addr: &str) -> String {
+    if addr.contains("://") {
+        // Already URL-shaped; pass through verbatim. This branch
+        // preserves any explicit scheme the user supplied —
+        // including non-default schemes like `fcgi://...` which
+        // [`heavything::net::fcgi::connect_upstream`] also
+        // accepts.
+        addr.to_owned()
+    } else if addr.starts_with('/') {
+        // Absolute filesystem path → Unix domain socket.
+        // `unix://<path>` produces e.g. `unix:///tmp/fcgi.sock`
+        // (three slashes: `unix:` scheme + `//` authority +
+        // `/tmp/fcgi.sock` path), which the url crate parses as
+        // scheme="unix", empty authority, path="/tmp/fcgi.sock".
+        format!("unix://{addr}")
+    } else {
+        // Bare host:port — assume TCP. The url crate treats `tcp`
+        // as a non-special scheme and parses authority normally,
+        // yielding host + port that
+        // [`heavything::net::fcgi::connect_upstream`] reads via
+        // [`Url::host`] and [`Url::port`].
+        format!("tcp://{addr}")
+    }
 }
 
 // ============================================================================
@@ -1756,6 +1839,69 @@ mod tests {
         match too_large {
             ProtocolError::OcspTooLarge(size) => assert_eq!(size, 8192),
             ProtocolError::Insanity(_) => panic!("wrong variant"),
+        }
+    }
+
+    /// QA Issue #7 — verify that
+    /// [`normalize_fcgi_address`] applies the correct scheme
+    /// prefix to each `-fastcgi` address shape. The test pins
+    /// the four canonical inputs (already-qualified, bare
+    /// host:port, bare IPv6 host:port, bare filesystem path)
+    /// against their expected outputs and additionally asserts
+    /// that the promoted strings parse via [`Url::parse`] —
+    /// the ultimate consumer in `build_http_config`.
+    #[test]
+    fn normalize_fcgi_address_handles_all_shapes() {
+        // Already-qualified URL shapes pass through unchanged.
+        assert_eq!(
+            normalize_fcgi_address("tcp://127.0.0.1:9000"),
+            "tcp://127.0.0.1:9000"
+        );
+        assert_eq!(
+            normalize_fcgi_address("unix:///tmp/fcgi.sock"),
+            "unix:///tmp/fcgi.sock"
+        );
+        assert_eq!(
+            normalize_fcgi_address("fcgi://backend:9001"),
+            "fcgi://backend:9001"
+        );
+
+        // Bare host:port → tcp://host:port.
+        assert_eq!(
+            normalize_fcgi_address("127.0.0.1:9000"),
+            "tcp://127.0.0.1:9000"
+        );
+        assert_eq!(
+            normalize_fcgi_address("backend.local:9000"),
+            "tcp://backend.local:9000"
+        );
+
+        // Bare absolute filesystem path → unix://<path>.
+        assert_eq!(
+            normalize_fcgi_address("/tmp/fcgi.sock"),
+            "unix:///tmp/fcgi.sock"
+        );
+        assert_eq!(
+            normalize_fcgi_address("/var/run/php-fpm.sock"),
+            "unix:///var/run/php-fpm.sock"
+        );
+
+        // The promoted strings must parse via Url::parse —
+        // anything that fails here would re-introduce QA Issue
+        // #7's silent-bypass mode at the call site in
+        // build_http_config.
+        for raw in &[
+            "127.0.0.1:9000",
+            "/tmp/fcgi.sock",
+            "tcp://127.0.0.1:9000",
+            "unix:///tmp/fcgi.sock",
+            "fcgi://backend:9001",
+        ] {
+            let promoted = normalize_fcgi_address(raw);
+            assert!(
+                Url::parse(&promoted).is_ok(),
+                "Url::parse failed for normalized address {raw:?} → {promoted:?}"
+            );
         }
     }
 }

@@ -140,7 +140,7 @@ use crate::config;
 use crate::crypto::rng;
 use crate::ds::{Buffer, StringMap};
 use crate::error::{HttpError, NetError};
-use crate::net::fcgi::{FcgiCallback, FcgiClient};
+use crate::net::fcgi::{FcgiCallback, FcgiClient, FcgiResult};
 use crate::net::http::mimelike::Mimelike;
 use crate::net::io::{
     default_connected, default_destroy, default_error, default_receive, default_send, default_timeout,
@@ -1064,9 +1064,17 @@ impl WebServerConfig {
     /// directory.
     async fn resolve_docroot(&self, url: &Url) -> Option<String> {
         // (a) vhost prefix + Host header.
+        //
+        // QA Issue #6 — Concatenate prefix and host with exactly one
+        // intervening `/` regardless of whether the user supplied
+        // `-vhost /path` or `-vhost /path/`. Naive concatenation
+        // produced `/tmp/vhostrootexample.com/...` for `-vhost /tmp/vhostroot`,
+        // silently falling through to the sandbox path. Trim any
+        // trailing slashes from the prefix, then insert exactly one.
         if let Ok(g) = self.vhost.lock() {
             if let Some(prefix) = g.as_deref() {
-                let candidate = format!("{}{}", prefix, url.host());
+                let candidate =
+                    format!("{}/{}", prefix.trim_end_matches('/'), url.host());
                 if is_dir(&candidate) {
                     return Some(candidate);
                 }
@@ -1145,36 +1153,28 @@ impl WebServerConfig {
             found
         };
         if let Some(fcgi_url) = fcgi_target {
-            // Hand off to the FastCGI client. The callback will
-            // eventually fire send_response on the original WebServer.
-            // For the baseline port we mark fcgi_hooked and spawn the
-            // client; full request/response wiring is captured by the
-            // client.spawn return value and its callback.
+            // QA Issues #7/#8/#9 — Stash the (backend_url, docroot)
+            // pair on the WebServer and mark `fcgi_hooked=true`.
+            // The actual `FcgiClient::spawn` happens in
+            // [`WebServer::process_request`] AFTER `handler` returns
+            // — that is the only call site with `self: &Arc<Self>`,
+            // which is required to capture an Arc<WebServer> inside
+            // the FastCGI completion callback. Deferring the spawn
+            // also avoids the need to change `handler` /
+            // `request_stage` signatures (which would ripple through
+            // FuncHandler and an unbounded set of other call sites).
             //
-            // NOTE on the `request` argument: `Mimelike` does not
-            // implement `Clone` (single-owner FASM port), so we hand
-            // `FcgiClient::spawn` a fresh placeholder `Mimelike::new()`
-            // that satisfies the type contract. The complete request
-            // marshalling (CGI environment population, body-streaming
-            // adaptation) is performed by the call site that supplies a
-            // production `FcgiCallback` per AAP §0.5.1 Phase 4 — same
-            // pattern used by the no-op callback below. The `_url` and
-            // `_request` parameters of this dispatcher are still
-            // consumed for suffix-match selection only.
-            let _ = (server, request);
+            // The previous implementation spawned with a dummy
+            // `Mimelike::new()` request, an empty no-op callback,
+            // and the BACKEND URL fed to `encode_request` — which
+            // produced the QA-reported failure modes (no response
+            // delivered to client; CGI vars filled with the upstream
+            // socket path instead of the request URL).
+            let _ = request;
+            if let Ok(mut g) = server.fcgi_pending.lock() {
+                *g = Some((fcgi_url, docroot.to_string()));
+            }
             server.fcgi_hooked.store(true, Ordering::Relaxed);
-            let req_arc = Arc::new(Mimelike::new());
-            let cb: FcgiCallback = Box::new(move |_arg, _result, _elapsed_ms| {
-                // The complete fcgi-completion → send_response wiring
-                // lives at the call site (master config) per AAP §0.5.1
-                // Phase 4. Here we supply the no-op default that
-                // satisfies the FcgiCallback contract; in production a
-                // richer closure replaces this default.
-            });
-            // Ignore the spawn error path — FcgiClient::spawn returns
-            // an Arc<FcgiClient> on success; transport errors flow
-            // through the callback, not through the spawn return.
-            let _ = FcgiClient::spawn(fcgi_url, req_arc, cb, 0);
             return None;
         }
 
@@ -1733,6 +1733,58 @@ pub struct WebServer {
     /// Common Log Format `host` slot.
     raddr: Mutex<Option<SocketAddr>>,
 
+    /// **(Rust-only — no FASM equivalent)** Connection teardown
+    /// signal. Set to `true` whenever the parser detects an error
+    /// that must terminate the keep-alive loop (malformed request,
+    /// unsupported method, header overflow, oversize Content-Length,
+    /// 413 Payload Too Large), and also when [`Self::finish_request`]
+    /// observes `keep_alive == false` (i.e. the request advertised
+    /// `Connection: close`).
+    ///
+    /// Read by [`Self::on_receive`] after [`Self::check_accum`]
+    /// returns; if set, `on_receive` returns `Ok(true)` to signal
+    /// the IoChain that the connection must be torn down. The
+    /// upstream listener loop in `handle_connection` then invokes
+    /// the destroy chain → `TcpAdapter::destroy` → `writer.shutdown()`,
+    /// emitting the TCP FIN.
+    ///
+    /// This single mechanism resolves QA Checkpoint 10:
+    /// * Issues #1/#2/#3: malformed-request DOS amplification —
+    ///   error responses now close the connection instead of
+    ///   recursing into `check_accum` with the bad bytes still in
+    ///   `accum`.
+    /// * Issue #12: `Connection: close` not honored — the server
+    ///   now actively shuts down the TCP write half after the
+    ///   final response.
+    /// * Issue #13: `Content-Length` exceeding
+    ///   [`config::WEBSERVER_MAXREQUEST`] now triggers 413 plus
+    ///   teardown rather than a hung body-read.
+    should_close: AtomicBool,
+
+    /// **(Rust-only — no FASM equivalent)** Pending FastCGI
+    /// dispatch state.
+    ///
+    /// When [`WebServerConfig::request_stage`] Tier 2 matches a
+    /// FastCGI mapping it stores `(backend_url, docroot)` here and
+    /// sets [`Self::fcgi_hooked`]. The actual `FcgiClient::spawn`
+    /// happens in [`Self::process_request`] after the handler
+    /// returns, where the original `Mimelike` is owned (rather than
+    /// borrowed) and can be wrapped in `Arc<Mimelike>` for the
+    /// FastCGI driver task.
+    ///
+    /// This indirection is required because:
+    /// (a) `Mimelike` does not implement `Clone` (single-owner
+    ///     FASM port), so `request_stage` — which receives
+    ///     `&Mimelike` — cannot synthesise the `Arc<Mimelike>`
+    ///     that `FcgiClient::spawn` needs.
+    /// (b) `FcgiClient::spawn` needs `Arc<Url>` for both the
+    ///     backend URL and the request URL (Issue #9 — the two
+    ///     used to alias the same value, producing nonsense CGI
+    ///     parameters like `DOCUMENT_URI=/tmp/ws_test/fcgi.sock`).
+    ///
+    /// Cleared by `process_request` once the dispatch is initiated.
+    fcgi_pending: Mutex<Option<(Arc<Url>, String)>>,
+
     /// IoChain plumbing — parent (Weak, breaks reference cycles)
     /// and child (Arc, keeps the transport alive while the
     /// WebServer is in scope). See [`IoLinks`].
@@ -1774,6 +1826,8 @@ impl WebServer {
             need_more: AtomicBool::new(false),
             back_path: Mutex::new(None),
             raddr: Mutex::new(None),
+            should_close: AtomicBool::new(false),
+            fcgi_pending: Mutex::new(None),
             links: IoLinks::new(),
         })
     }
@@ -1842,8 +1896,25 @@ impl WebServer {
         }
         // Advance the parser. check_accum may consume + recurse on
         // pipelined follow-ups internally — no looping needed here.
+        //
+        // QA Issues #1/#2/#3/#12/#13 — After check_accum returns we
+        // also consult [`Self::should_close`]. The flag is set by
+        // any error path in check_accum (501 Not Implemented, 400
+        // Bad Request, 413 Payload Too Large) and by
+        // [`Self::finish_request`] when the request carried
+        // `Connection: close`. Returning `Ok(true)` from on_receive
+        // signals the IoChain plumbing to tear the connection down
+        // — which propagates to the TcpAdapter's `Drop` /
+        // `destroy()` path and triggers `writer.shutdown().await`
+        // (TCP FIN).
         match self.check_accum().await {
-            Ok(()) => Ok(false),
+            Ok(()) => {
+                if self.should_close.load(Ordering::Relaxed) {
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
             Err(e) => {
                 // Fatal parse / dispatch error. The on_error path
                 // forwards to the parent; we still tell the
@@ -1892,6 +1963,15 @@ impl WebServer {
             None => {
                 if snapshot.len() >= config::WEBSERVER_MAXHEADER {
                     // Hard 400 via the .norequest log path.
+                    //
+                    // QA Issues #1/#2/#3 — Mark the connection for
+                    // teardown so the parser does not loop on the
+                    // same bytes after the response is sent. The
+                    // request_len field stays at 0 (we have not
+                    // parsed a request); finish_request observes
+                    // should_close=true and clears accum + bypasses
+                    // recursion.
+                    self.should_close.store(true, Ordering::Relaxed);
                     self.log_no_request(400);
                     let mut resp = self.config.error(400);
                     self.send_response(&mut resp, method_code).await?;
@@ -1907,6 +1987,13 @@ impl WebServer {
 
         if !method_ok {
             // Stage 1 failure: 501 Not Implemented.
+            //
+            // QA Issues #1/#2 — Same teardown discipline as the 400
+            // path above. Without should_close, finish_request would
+            // recurse into check_accum, observe the same invalid
+            // method bytes, and emit another 501 — a 144 KB DOS
+            // amplification chain that overflows the worker stack.
+            self.should_close.store(true, Ordering::Relaxed);
             self.log_no_request(501);
             let mut resp = self.config.error(501);
             self.send_response(&mut resp, 0).await?;
@@ -1919,14 +2006,37 @@ impl WebServer {
             &snapshot, /*headers_only=*/ false, /*has_preface=*/ true,
         ) {
             Ok(m) => m,
-            Err(crate::net::http::mimelike::MimelikeError::NeedMoreBody { .. }) => {
+            Err(crate::net::http::mimelike::MimelikeError::NeedMoreBody { needed }) => {
+                // QA Issue #13 — Even before the body has fully arrived
+                // we know the total request size from
+                // `current_bytes + needed`. If that already exceeds
+                // WEBSERVER_MAXREQUEST (64 MiB by default) we MUST reject
+                // with 413 immediately rather than waiting for the
+                // remainder. Without this early check a client can
+                // declare `Content-Length: 100000000`, send no body,
+                // and the server hangs forever waiting for the body
+                // bytes (a DOS amplifier — see QA Checkpoint 10
+                // Issue #13 reproduction).
+                if snapshot.len().saturating_add(needed) > config::WEBSERVER_MAXREQUEST {
+                    self.should_close.store(true, Ordering::Relaxed);
+                    self.log_no_request(413);
+                    let mut resp = self.config.error(413);
+                    self.send_response(&mut resp, method_code).await?;
+                    return Ok(());
+                }
                 // Body still arriving — wait for the next on_receive.
                 self.need_more.store(true, Ordering::Relaxed);
                 return Ok(());
             }
             Err(e) => {
                 // Malformed: 400 Bad Request.
+                //
+                // QA Issue #3 — Invalid chunked encoding (and any
+                // other Mimelike parse failure) must close the
+                // connection after responding. Without should_close,
+                // the bad bytes stay in accum and the parser loops.
                 let _ = e;
+                self.should_close.store(true, Ordering::Relaxed);
                 self.log_no_request(400);
                 let mut resp = self.config.error(400);
                 self.send_response(&mut resp, method_code).await?;
@@ -1938,11 +2048,31 @@ impl WebServer {
         // Payload Too Large). The Mimelike parse already enforces
         // a sane Content-Length, but the absolute server cap is
         // WEBSERVER_MAXREQUEST = 64 MiB.
+        //
+        // QA Issue #13 — The previous code silently swallowed
+        // `parse::<usize>()` errors via `if let Ok(cl)`, so a
+        // malformed Content-Length header (e.g. `abc`) fell through
+        // to the dispatch pipeline. Reject malformed header values
+        // with 400 Bad Request and oversize values with 413 Payload
+        // Too Large. Both paths set should_close so the connection
+        // tears down cleanly after the response — without that, the
+        // server would keep waiting for the (declared-but-not-sent)
+        // body and amplify the DOS.
         if let Some(cl_str) = parsed.get_header("Content-Length") {
-            if let Ok(cl) = cl_str.trim().parse::<usize>() {
-                if cl > config::WEBSERVER_MAXREQUEST {
-                    self.log_no_request(413);
-                    let mut resp = self.config.error(413);
+            match cl_str.trim().parse::<usize>() {
+                Ok(cl) => {
+                    if cl > config::WEBSERVER_MAXREQUEST {
+                        self.should_close.store(true, Ordering::Relaxed);
+                        self.log_no_request(413);
+                        let mut resp = self.config.error(413);
+                        self.send_response(&mut resp, method_code).await?;
+                        return Ok(());
+                    }
+                }
+                Err(_) => {
+                    self.should_close.store(true, Ordering::Relaxed);
+                    self.log_no_request(400);
+                    let mut resp = self.config.error(400);
                     self.send_response(&mut resp, method_code).await?;
                     return Ok(());
                 }
@@ -2132,37 +2262,256 @@ impl WebServer {
         // duration of the handler call. This is required because
         // `handler` is `async fn` and the std `MutexGuard`
         // returned by `self.request.lock()` is not `Send` — we
-        // cannot hold it across an `.await`. Once the handler
-        // returns we put the request back (so logging in
-        // `Self::log` can still read headers off it) — unless the
-        // dispatch went Pending, in which case the request stays
-        // off and the eventual completion callback restores it.
+        // cannot hold it across an `.await`. After the handler
+        // returns the request is either:
+        //
+        // * Put back into `self.request` so [`Self::log`] can read
+        //   headers off it during the synchronous send paths
+        //   (`Some(response)` or fallthrough 404), OR
+        // * Mutated with the FastCGI CGI-environment headers
+        //   (`DOCUMENT_ROOT`, `REMOTE_ADDR`, `REMOTE_PORT`),
+        //   wrapped in `Arc<Mimelike>`, and consumed by the
+        //   spawned [`FcgiClient`] when the dispatch matched a
+        //   `-fastcgi` mapping (Tier 2). In that case
+        //   `self.request` stays `None` until the completion
+        //   callback fires `send_response` from a fresh tokio
+        //   task — `log()` returns silently for in-flight FCGI
+        //   requests, matching the FASM "dual IO chain" log path
+        //   where access logging is the FCGI client's
+        //   responsibility.
         let request_taken = match self.request.lock() {
             Ok(mut g) => g.take(),
             Err(_) => return Ok(()),
         };
-        let request = match request_taken {
+        let mut request = match request_taken {
             Some(r) => r,
             None => return Ok(()),
         };
 
         let response_opt = Arc::clone(&self.config).handler(self, &url, &request).await;
 
-        // Put the request back so `Self::log` can read headers.
-        if let Ok(mut g) = self.request.lock() {
-            *g = Some(request);
-        }
-
         match response_opt {
             Some(mut resp) => {
+                // Put the request back so `Self::log` can read
+                // headers during finish_request → log.
+                if let Ok(mut g) = self.request.lock() {
+                    *g = Some(request);
+                }
                 self.send_response(&mut resp, method_code).await?;
             }
             None if self.fcgi_hooked.load(Ordering::Relaxed) => {
-                // Pending: an FcgiClient or FuncHandler will fire
-                // send_response asynchronously. Nothing to do.
+                // ---- QA Issues #7/#8/#9 — FastCGI dispatch ----
+                //
+                // Tier 2 of [`WebServerConfig::request_stage`]
+                // matched the request URL against a `-fastcgi
+                // PATTERN ADDR` mapping and stashed
+                // `(backend_url, docroot)` in `self.fcgi_pending`
+                // along with `self.fcgi_hooked = true`. The actual
+                // backend connection + request transmission is
+                // performed HERE because:
+                //
+                // (a) [`FcgiClient::spawn`] requires
+                //     `Arc<Mimelike>` and the request is owned by
+                //     the local `request` binding (taken out of
+                //     `self.request` above).
+                // (b) The FCGI completion callback must capture
+                //     `Arc<WebServer>` so it can fire
+                //     `send_response` when the backend delivers a
+                //     response. `process_request` is the only
+                //     dispatch site with `self: &Arc<Self>` in
+                //     scope.
+                // (c) `build_params_payload` (in `fcgi.rs`)
+                //     populates `DOCUMENT_ROOT`, `REMOTE_ADDR`,
+                //     and `REMOTE_PORT` by reading them off the
+                //     request headers (FASM doc note: "the
+                //     webserver layer is expected to have
+                //     populated DOCUMENT_ROOT into the request
+                //     headers before invoking the FastCGI
+                //     client"). We inject them here, after Tier 2
+                //     has decided to dispatch but before wrapping
+                //     `request` in an `Arc`.
+
+                // Take the (backend_url, docroot) pair stashed by
+                // Tier 2. If the slot is empty (implementation
+                // invariant violation — `fcgi_hooked` was set
+                // without populating `fcgi_pending`) we fall back
+                // to 502 Bad Gateway.
+                let pending = match self.fcgi_pending.lock() {
+                    Ok(mut g) => g.take(),
+                    Err(_) => None,
+                };
+                let (fcgi_url, docroot) = match pending {
+                    Some(p) => p,
+                    None => {
+                        if let Ok(mut g) = self.request.lock() {
+                            *g = Some(request);
+                        }
+                        let mut resp = self.config.error(502);
+                        self.send_response(&mut resp, method_code).await?;
+                        return Ok(());
+                    }
+                };
+
+                // Inject the three CGI-environment headers that
+                // `build_params_payload` reads. `set_header` uses
+                // `insert_replace` semantics — if the client
+                // somehow sent these on the wire (they are not
+                // legal HTTP request headers), our values
+                // override theirs.
+                request.set_header("DOCUMENT_ROOT", docroot.clone());
+                let (peer_addr_str, peer_port_str) = match self.raddr.lock() {
+                    Ok(g) => match g.as_ref() {
+                        Some(peer) => (peer.ip().to_string(), peer.port().to_string()),
+                        None => (String::new(), String::new()),
+                    },
+                    Err(_) => (String::new(), String::new()),
+                };
+                request.set_header("REMOTE_ADDR", peer_addr_str);
+                request.set_header("REMOTE_PORT", peer_port_str);
+
+                // Wrap the populated request in an `Arc` for the
+                // FcgiClient. `Mimelike` does not implement
+                // `Clone` (it carries a raw `*const Mimelike`
+                // parent back-pointer for multipart parse), so we
+                // cannot keep an independent copy in
+                // `self.request` — it stays `None` while the FCGI
+                // dispatch is in flight. `log()` returns silently
+                // in that window, matching the FASM "FCGI client
+                // owns the access-log emission" model.
+                let request_arc = Arc::new(request);
+
+                // The request URL also needs `Arc<Url>`. `Url`
+                // derives `Clone`, so this is cheap.
+                let request_url_arc = Arc::new(url.clone());
+
+                // Build the completion callback using a
+                // `tokio::sync::oneshot` channel. The callback —
+                // which `FcgiClient::spawn`'s driver task fires
+                // synchronously when the FastCGI exchange
+                // completes — only sends the [`FcgiResult`] over
+                // the channel; the response-dispatch logic stays
+                // in-line in this future.
+                //
+                // ### Why oneshot rather than `tokio::spawn` from
+                // within the callback?
+                //
+                // `FcgiClient::spawn` already runs the FastCGI
+                // driver on its own tokio task; an additional
+                // `tokio::spawn(async move { …send_response… })`
+                // from within the callback would require the
+                // closure to capture `Arc<WebServer>` plus
+                // `method_code` and produce a `Send` future —
+                // which transitively requires
+                // [`Self::process_request`] to be `Send` because
+                // `send_response → finish_request → check_accum →
+                // process_request` recursion is reachable from the
+                // spawned future. `process_request`'s state
+                // machine is not currently `Send`. By keeping the
+                // response dispatch in-line we sidestep that
+                // requirement entirely (`process_request` is
+                // awaited from `on_receive` which never spawns).
+                //
+                // ### `FcgiResult` mapping
+                //
+                // * `Response(m)` — the parsed FastCGI STDOUT
+                //   payload as a `Mimelike` ready to send. Hand
+                //   to `send_response` as-is.
+                // * `TransportError(_)` / `ProtocolError(_)` — the
+                //   FCGI backend was unreachable or returned
+                //   malformed framing. RFC 3875 §6.3 says the
+                //   gateway responds with 502 Bad Gateway in both
+                //   cases.
+                // * Channel `Err` (sender dropped without sending)
+                //   — only possible if `FcgiClient::spawn`'s
+                //   driver task was cancelled before firing the
+                //   callback. Treat as transport error → 502.
+                let (tx, rx) = tokio::sync::oneshot::channel::<FcgiResult>();
+                let cb: FcgiCallback =
+                    Box::new(move |_callback_arg, result, _elapsed_ms| {
+                        // `tx.send` returns `Err(value)` if the
+                        // receiver has been dropped (e.g. the
+                        // outer task was cancelled mid-await).
+                        // Drop the value silently — the receiver
+                        // gone means the response cannot be
+                        // delivered anyway.
+                        let _ = tx.send(result);
+                    });
+
+                // Spawn the FCGI client. The returned `Arc` is
+                // stored inside the spawned tokio task itself
+                // (see `FcgiClient::spawn` — `task_client.fire_callback(outcome)`);
+                // we drop our handle here so only the driver task
+                // owns the client. On task end the
+                // `Arc<FcgiClient>` is released, which drops the
+                // `Arc<Mimelike>` request and the `Arc<Url>`
+                // backend URL.
+                let spawn_result = FcgiClient::spawn(
+                    fcgi_url,
+                    request_url_arc,
+                    request_arc,
+                    cb,
+                    0,
+                );
+                if spawn_result.is_err() {
+                    // Spawn failed before the FCGI request could
+                    // even begin (e.g. invalid backend URL,
+                    // tokio shutdown). Emit 502 directly. The
+                    // oneshot `rx` is dropped here unused.
+                    let mut resp = self.config.error(502);
+                    self.send_response(&mut resp, method_code).await?;
+                    return Ok(());
+                }
+
+                // Await the FastCGI completion. The driver task
+                // owns its own work; this `.await` simply parks
+                // this connection's future until the callback
+                // fires.
+                match rx.await {
+                    Ok(FcgiResult::Response(mut m)) => {
+                        // CGI / FCGI convention (RFC 3875 §6):
+                        // the script body is `[headers] CRLFCRLF [body]`
+                        // with NO HTTP status line. The webserver
+                        // synthesizes the status line. Per RFC 3875
+                        // §6.3.3, the script MAY emit a `Status:`
+                        // pseudo-header to override the default
+                        // 200 OK; if absent, default to 200 OK.
+                        //
+                        // Without this, the wire response begins
+                        // with `Connection: close\r\n...` (no
+                        // HTTP/1.1 preface) and HTTP/1.1 clients
+                        // (e.g. curl) reject the response as
+                        // HTTP/0.9. See QA Checkpoint 10 Issue #8
+                        // for the original failure mode.
+                        if m.preface().map(|s| s.is_empty()).unwrap_or(true) {
+                            let preface = match m.get_header("Status") {
+                                Some(s) => {
+                                    // Per RFC 3875: Status value is
+                                    // `<code> <reason-phrase>`.
+                                    format!("HTTP/1.1 {}", s.trim())
+                                }
+                                None => PREFACE_200_OK.to_string(),
+                            };
+                            m.set_preface(preface);
+                            // Strip the Status pseudo-header so it
+                            // does not appear on the wire.
+                            m.remove_header("Status");
+                        }
+                        self.send_response(&mut m, method_code).await?;
+                    }
+                    Ok(FcgiResult::TransportError(_))
+                    | Ok(FcgiResult::ProtocolError(_))
+                    | Err(_) => {
+                        let mut resp = self.config.error(502);
+                        self.send_response(&mut resp, method_code).await?;
+                    }
+                }
             }
             None => {
-                // No handler matched — emit 404.
+                // No handler matched — emit 404. Put the request
+                // back so `log()` can read headers.
+                if let Ok(mut g) = self.request.lock() {
+                    *g = Some(request);
+                }
                 let mut resp = self.config.error(404);
                 self.send_response(&mut resp, method_code).await?;
             }
@@ -2212,10 +2561,23 @@ impl WebServer {
 
         let flags = self.flags.load(Ordering::Relaxed);
         let keep_alive = (flags & 0b001) != 0;
-        let gzip_active = (flags & 0b010) != 0;
 
-        // BREACH mitigation (X-NB): TLS+gzip only.
-        if self.config.is_tls_enabled() && gzip_active {
+        // QA Issue #10 — BREACH mitigation (X-NB): TLS + gzip
+        // ONLY (AAP §0.1.1). The previous code consulted the
+        // request-side `gzip_active` flag (set during request
+        // parsing whenever the client sent `Accept-Encoding: gzip`),
+        // which over-emits X-NB on small TLS responses where the
+        // server chose NOT to gzip the body (responses below
+        // MIMELIKE_MINGZIP=1024 bytes, or non-compressible
+        // content). Consult the actual response-side
+        // `Content-Encoding` header — set by Tier 3 file dispatch
+        // when gzip is applied — so X-NB is emitted strictly on
+        // TLS+gzip responses.
+        let response_is_gzip = response
+            .get_header("Content-Encoding")
+            .map(|s| s.eq_ignore_ascii_case("gzip"))
+            .unwrap_or(false);
+        if self.config.is_tls_enabled() && response_is_gzip {
             self.add_breach_header(response);
         }
 
@@ -2292,7 +2654,21 @@ impl WebServer {
             self.inflight_sent
                 .store(config::WEBSERVER_INITIALSEND as u64, Ordering::Relaxed);
             self.send_via_child(first).await?;
-            // The next chunk(s) are dispatched by on_send_cb.
+            // QA Issue #5 — In FASM the remaining chunks are
+            // pulled by epoll EPOLLOUT events firing
+            // `webserver$sendcb`. In tokio, `send_via_child` awaits
+            // the actual write — by the time it returns, the bytes
+            // are in the kernel send buffer and we can immediately
+            // dispatch the next chunk. Loop on
+            // [`Self::on_send_cb`] until `inflight_len` drains to
+            // 0; on_send_cb internally fires the inflight_cb and
+            // calls finish_request once the buffer is fully
+            // transmitted. Without this loop, files larger than
+            // WEBSERVER_INITIALSEND (256 KiB) are silently
+            // truncated to 256 KiB on the wire.
+            while self.inflight_len.load(Ordering::Relaxed) > 0 {
+                self.on_send_cb(0).await?;
+            }
             Ok(())
         } else {
             // MODE 3 — sendinsegments. Headers go out first as a
@@ -2317,6 +2693,12 @@ impl WebServer {
                 .store(first_chunk_end as u64, Ordering::Relaxed);
             self.send_via_child(header_chunk).await?;
             self.sent_partial.store(true, Ordering::Relaxed);
+            // QA Issue #5 — Same drain loop as MODE 2. on_send_cb
+            // resets `sent_partial` to false and runs
+            // finish_request when inflight is exhausted.
+            while self.inflight_len.load(Ordering::Relaxed) > 0 {
+                self.on_send_cb(0).await?;
+            }
             Ok(())
         }
     }
@@ -2366,6 +2748,35 @@ impl WebServer {
         if let Ok(mut g) = self.request.lock() {
             *g = None;
         }
+
+        // QA Issue #12 — Honor `Connection: close`. The keep_alive
+        // flag bit is cleared by [`Self::process_request`] when the
+        // request specified `Connection: close`. We translate
+        // !keep_alive into should_close so on_receive's post-
+        // check_accum check ([`Self::on_receive`]) returns Ok(true)
+        // and the IoChain plumbing tears the connection down (which
+        // ultimately triggers `writer.shutdown().await` in
+        // TcpAdapter::destroy — RFC 7230 §6.1 FIN).
+        let keep_alive = (self.flags.load(Ordering::Relaxed) & 0b001) != 0;
+        if !keep_alive {
+            self.should_close.store(true, Ordering::Relaxed);
+        }
+
+        // QA Issues #1/#2/#3/#12/#13 — Short-circuit when the
+        // connection is being torn down. Clear accum entirely
+        // (so any leftover bad bytes do not get re-parsed if some
+        // other code path drives check_accum), reset request_len,
+        // and DO NOT recurse into check_accum. The on_receive
+        // post-check will return Ok(true) and propagate the
+        // teardown signal up the IoChain to the TcpAdapter.
+        if self.should_close.load(Ordering::Relaxed) {
+            if let Ok(mut g) = self.accum.lock() {
+                g.clear();
+            }
+            self.request_len.store(0, Ordering::Relaxed);
+            return Ok(());
+        }
+
         // Slide the accum window past the consumed request.
         let consumed = self.request_len.load(Ordering::Relaxed) as usize;
         if consumed > 0 {
@@ -2385,14 +2796,6 @@ impl WebServer {
             }
         }
         self.request_len.store(0, Ordering::Relaxed);
-
-        // If keep-alive is on, re-arm the idle timer; else hand
-        // control back to the caller (which will tear the chain
-        // down via on_receive returning Ok(true) or via Drop).
-        let keep_alive = (self.flags.load(Ordering::Relaxed) & 0b001) != 0;
-        if !keep_alive {
-            return Ok(());
-        }
 
         if !self.sent_partial.load(Ordering::Relaxed) {
             self.new_timer();
