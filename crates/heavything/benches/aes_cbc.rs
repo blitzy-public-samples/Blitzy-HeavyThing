@@ -92,25 +92,120 @@ use heavything::crypto::aes::{
 ///   saturation point on a single core (~1 GiB/s).
 const INPUT_SIZES: &[usize] = &[1_024, 65_536, 1_048_576, 16_777_216];
 
-/// Fixed AES-128 key — `b"heavything-bench-aes-key-128bits!"[..16]`.
+/// AES-128 key from NIST Special Publication 800-38A appendix F.2.1
+/// (CBC-AES128.Encrypt example).
 ///
-/// Hardcoded (not random) so that runs are reproducible across CI and
-/// local dev, and so that criterion's iteration-to-iteration measurements
-/// are not perturbed by per-iteration key derivation cost. Byte-identity
-/// of input keys across runs is the standard convention for throughput
-/// micro-benchmarks (key-schedule cost is amortized to zero by the
-/// `b.iter()` harness).
-const KEY: [u8; AES128_KEY_SIZE] = *b"heavything-bench";
+/// The full 16-byte hex value is `2b7e151628aed2a6abf7158809cf4f3c`,
+/// which is **the** canonical AES-128 example key used throughout the
+/// NIST test vectors (FIPS-197, SP 800-38A, SP 800-38C, SP 800-38D).
+///
+/// Choosing a NIST-canonical key (rather than an arbitrary string)
+/// satisfies CP8 review finding MINOR #2 by making the bench fixture
+/// fully traceable to a published reference: any reviewer can verify
+/// the bench's key-schedule output against the NIST appendix without
+/// having to derive a custom round-key table from scratch.
+///
+/// Hardcoded (not random) so runs are reproducible across CI and local
+/// dev — key-schedule cost is amortized to zero by the `b.iter()`
+/// harness regardless of which key is used, but reproducibility lets
+/// downstream agents capture-and-compare baselines deterministically.
+const KEY: [u8; AES128_KEY_SIZE] = [
+    0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c,
+];
 
-/// Fixed AES-CBC initial value (IV).
+/// AES-CBC initial value (IV) from NIST SP 800-38A appendix F.2.1.
 ///
-/// The IV is per-message in production protocols (TLS 1.2 GenericBlockCipher
-/// uses an explicit IV per record; SSH derives a fresh IV via key
-/// exchange). For the bench, a deterministic IV is sufficient because the
-/// IV's role is to randomize the first block — its value does not affect
-/// throughput, only the ciphertext output. Choosing `0xa5` repeated mirrors
-/// the FASM `aes$test` pattern (`aes.inc` §test_vectors).
-const IV: [u8; BLOCK_SIZE] = [0xa5; BLOCK_SIZE];
+/// The full 16-byte hex value is `000102030405060708090a0b0c0d0e0f`,
+/// the canonical IV that pairs with [`KEY`] in the SP 800-38A worked
+/// example. Combined with [`KEY`], this IV produces the published
+/// reference ciphertext (see [`NIST_F21_PLAINTEXT`] /
+/// [`NIST_F21_CIPHERTEXT`] below) — the [`kat_assertion`] sanity
+/// check verifies the bench's encryption path matches the reference
+/// output before each run, so any future divergence (e.g. a key-schedule
+/// bug introduced into `crypto::aes`) is caught at the bench fixture
+/// level rather than producing silently-incorrect throughput numbers.
+const IV: [u8; BLOCK_SIZE] = [
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+];
+
+/// NIST SP 800-38A appendix F.2.1 plaintext — four 16-byte blocks.
+///
+/// Each block is one of the canonical AES sample plaintext blocks used
+/// across the NIST publications:
+///   block 1: `6bc1bee22e409f96e93d7e117393172a`
+///   block 2: `ae2d8a571e03ac9c9eb76fac45af8e51`
+///   block 3: `30c81c46a35ce411e5fbc1191a0a52ef`
+///   block 4: `f69f2445df4f9b17ad2b417be66c3710`
+///
+/// These are the canonical SP 800-38A appendix-F plaintext blocks used
+/// across §F.1 (ECB), §F.2 (CBC), §F.3 (CFB), §F.4 (OFB), and §F.5
+/// (CTR), so any reviewer already familiar with the NIST
+/// modes-of-operation publication can recognise them on sight. The
+/// exact byte values match the in-tree round-trip test
+/// [`crate::crypto::aes::tests::aes128_cbc_nist_sp800_38a_vector`]
+/// (the array literal at `crates/heavything/src/crypto/aes.rs:1032`),
+/// which is the project's authoritative AES-128-CBC NIST-vector
+/// fixture.
+const NIST_F21_PLAINTEXT: [u8; 64] = [
+    0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93, 0x17, 0x2a, 0xae,
+    0x2d, 0x8a, 0x57, 0x1e, 0x03, 0xac, 0x9c, 0x9e, 0xb7, 0x6f, 0xac, 0x45, 0xaf, 0x8e, 0x51, 0x30, 0xc8,
+    0x1c, 0x46, 0xa3, 0x5c, 0xe4, 0x11, 0xe5, 0xfb, 0xc1, 0x19, 0x1a, 0x0a, 0x52, 0xef, 0xf6, 0x9f, 0x24,
+    0x45, 0xdf, 0x4f, 0x9b, 0x17, 0xad, 0x2b, 0x41, 0x7b, 0xe6, 0x6c, 0x37, 0x10,
+];
+
+/// NIST SP 800-38A appendix F.2.1 ciphertext — four 16-byte blocks.
+///
+/// The published reference ciphertext for [`NIST_F21_PLAINTEXT`] under
+/// [`KEY`] + [`IV`]:
+///   block 1: `7649abac8119b246cee98e9b12e9197d`
+///   block 2: `5086cb9b507219ee95db113a917678b2`
+///   block 3: `73bed6b8e3c1743b7116e69e22229516`
+///   block 4: `3ff1caa1681fac09120eca307586e1a7`
+///
+/// `kat_assertion()` (called once at the start of `bench_aes128_cbc_encrypt`)
+/// verifies that the heavything AES-128-CBC encrypt path produces this
+/// exact ciphertext for the NIST plaintext. If the assertion ever fails,
+/// the bench panics IMMEDIATELY rather than producing silently-wrong
+/// throughput numbers — preserving Gate 3 measurement integrity.
+const NIST_F21_CIPHERTEXT: [u8; 64] = [
+    0x76, 0x49, 0xab, 0xac, 0x81, 0x19, 0xb2, 0x46, 0xce, 0xe9, 0x8e, 0x9b, 0x12, 0xe9, 0x19, 0x7d, 0x50,
+    0x86, 0xcb, 0x9b, 0x50, 0x72, 0x19, 0xee, 0x95, 0xdb, 0x11, 0x3a, 0x91, 0x76, 0x78, 0xb2, 0x73, 0xbe,
+    0xd6, 0xb8, 0xe3, 0xc1, 0x74, 0x3b, 0x71, 0x16, 0xe6, 0x9e, 0x22, 0x22, 0x95, 0x16, 0x3f, 0xf1, 0xca,
+    0xa1, 0x68, 0x1f, 0xac, 0x09, 0x12, 0x0e, 0xca, 0x30, 0x75, 0x86, 0xe1, 0xa7,
+];
+
+// ============================================================================
+// Known-Answer Test (KAT) — verifies the bench fixture produces NIST F.2.1
+// ciphertext before any throughput measurement runs.
+// ============================================================================
+
+/// Run the NIST SP 800-38A appendix F.2.1 known-answer test against
+/// the heavything AES-128-CBC implementation.
+///
+/// This is a one-shot integrity check — NOT a throughput measurement.
+/// Called once at the start of [`bench_aes128_cbc_encrypt`]; if the
+/// assertion fails, the bench panics before any measurement starts, so
+/// reviewers can never publish throughput numbers from a broken AES
+/// implementation. This satisfies the second part of CP8 review finding
+/// MINOR #2 ("plus a one-time KAT assertion that the encryption produces
+/// the published SP 800-38A reference ciphertext").
+///
+/// The KAT runs in `< 1 µs` (encrypts 4 blocks then compares), so it
+/// adds no measurable overhead to the bench launch.
+fn kat_assertion() {
+    let mut buf = NIST_F21_PLAINTEXT;
+    let mut enc = aes128_cbc_new_encrypt(&KEY, &IV)
+        .expect("KAT: aes128_cbc_new_encrypt with NIST F.2.1 KEY+IV must succeed");
+    enc.encrypt_blocks(&mut buf)
+        .expect("KAT: AES-128-CBC encrypt_blocks on NIST F.2.1 plaintext must succeed");
+    assert_eq!(
+        buf, NIST_F21_CIPHERTEXT,
+        "AES-128-CBC NIST SP 800-38A F.2.1 KAT FAILED — \
+         heavything::crypto::aes is producing incorrect ciphertext. \
+         Bench refusing to run; fix the AES implementation before \
+         publishing throughput numbers (review finding MINOR #2)."
+    );
+}
 
 // ============================================================================
 // Helper — populate a vector with deterministic non-zero plaintext.
@@ -165,6 +260,15 @@ fn make_plaintext(size: usize) -> Vec<u8> {
 /// duration per benchmark. The reduction is the same accommodation
 /// applied in `bench_http_concurrent` (`http_roundtrip.rs`).
 fn bench_aes128_cbc_encrypt(c: &mut Criterion) {
+    // ---- KAT integrity check -------------------------------------
+    // Before any throughput measurement runs, verify that the
+    // heavything AES-128-CBC encrypt path produces the NIST SP 800-38A
+    // appendix F.2.1 reference ciphertext for the NIST plaintext under
+    // the NIST KEY+IV. If this assertion fails, the bench panics
+    // before publishing any numbers — see [`kat_assertion`] for
+    // rationale. (CP8 review finding MINOR #2.)
+    kat_assertion();
+
     // Report runtime CPU AES-NI capability once per process invocation
     // (printed to stderr so it does not pollute criterion's stdout
     // benchmark report). Per AAP §0.1.1 implicit requirement, AES-NI

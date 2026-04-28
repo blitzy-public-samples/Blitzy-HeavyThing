@@ -178,8 +178,8 @@ use std::time::{Duration, Instant};
 use nix::sys::signal::{self, Signal};
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::{
-    close, fork, getgid, getuid, pipe, read as nix_read, setgid, setuid, write as nix_write,
-    ForkResult, Gid, Pid, Uid,
+    close, fork, getgid, getuid, pipe, read as nix_read, setgid, setuid, write as nix_write, ForkResult, Gid,
+    Pid, Uid,
 };
 
 use heavything::cpu;
@@ -1496,9 +1496,7 @@ fn test_sigwinch_handler() {
             // unset; we handle both cases below.
             let term = match RawTerminal::enter() {
                 Ok(t) => t,
-                Err(TuiError::Termios(io_err))
-                    if io_err.kind() == std::io::ErrorKind::AlreadyExists =>
-                {
+                Err(TuiError::Termios(io_err)) if io_err.kind() == std::io::ErrorKind::AlreadyExists => {
                     // Singleton inherited as set; gracefully skip.
                     std::process::exit(99);
                 }
@@ -1591,6 +1589,27 @@ fn test_sigwinch_handler() {
 //     HEAVYTHING_LIVE_TESTS=1
 //     HEAVYTHING_PRIVILEGED_TESTS=1
 //
+// # Naming note (CP8 review finding MINOR #3)
+//
+// AAP §0.7.4.4 does not mandate a specific name for this opt-in
+// environment variable, and the CP8 code review report suggested
+// `HEAVYTHING_ROOT_TESTS` as an alternative. We retain
+// `HEAVYTHING_PRIVILEGED_TESTS` because:
+//
+//   1. It is more semantically accurate — `setuid(0)` then back to 0
+//      is technically still a "privileged" operation regardless of the
+//      starting uid; the test exercises the privilege-management
+//      syscall surface, not specifically root-only operations.
+//   2. The variable's documented behaviour and skip-message text
+//      already use this name throughout the existing test suite
+//      (see `test_setuid_setgid_drop` skip-path eprintln below); a
+//      rename would break any existing CI scripts that already
+//      whitelist this name.
+//   3. It pairs naturally with `HEAVYTHING_LIVE_TESTS` (the broader
+//      live-network gate). Both gates share the same `HEAVYTHING_*`
+//      prefix and `_TESTS` suffix, giving a consistent naming pattern
+//      for test-environment-variable consumers.
+//
 // On systems where the build/test runner is root (e.g. CI containers,
 // developer sudo invocations) the privileged path runs and exercises
 // the actual setuid/setgid syscalls in a forked child that exits
@@ -1617,8 +1636,10 @@ fn test_setuid_setgid_drop() {
         return;
     }
 
-    let privileged_opt_in =
-        matches!(std::env::var("HEAVYTHING_PRIVILEGED_TESTS").ok().as_deref(), Some("1"));
+    let privileged_opt_in = matches!(
+        std::env::var("HEAVYTHING_PRIVILEGED_TESTS").ok().as_deref(),
+        Some("1")
+    );
     if !privileged_opt_in {
         eprintln!(
             "test_setuid_setgid_drop: skipped \
@@ -1810,8 +1831,8 @@ fn test_fork_workers() {
     let pids = rt.block_on(async {
         let mut pids: Vec<Pid> = Vec::with_capacity(WORKER_COUNT);
         for _ in 0..WORKER_COUNT {
-            let child: ChildProcess = spawn_child(empty_child_main)
-                .expect("spawn_child must succeed on Linux/x86_64 hosts");
+            let child: ChildProcess =
+                spawn_child(empty_child_main).expect("spawn_child must succeed on Linux/x86_64 hosts");
             pids.push(child.pid);
             // Drop ChildProcess immediately. Its `parent_socket`
             // closes, the child observes EOF (although it never
@@ -1831,8 +1852,7 @@ fn test_fork_workers() {
 
     // Reap each worker in order and assert clean exit.
     for (idx, pid) in pids.iter().enumerate() {
-        let status =
-            waitpid(*pid, None).expect("waitpid must succeed for our direct child");
+        let status = waitpid(*pid, None).expect("waitpid must succeed for our direct child");
         match status {
             WaitStatus::Exited(reaped_pid, code) => {
                 assert_eq!(
@@ -1920,9 +1940,7 @@ fn test_mmap_file_cache() {
     // reproducible across runs.
     // -----------------------------------------------------------------
     const PAYLOAD_SIZE: usize = 4096;
-    let payload: Vec<u8> = (0..PAYLOAD_SIZE)
-        .map(|i| ((i * 31 + 7) & 0xff) as u8)
-        .collect();
+    let payload: Vec<u8> = (0..PAYLOAD_SIZE).map(|i| ((i * 31 + 7) & 0xff) as u8).collect();
 
     // -----------------------------------------------------------------
     // Step 2 — Write payload to a NamedTempFile. We use NamedTempFile
@@ -1930,8 +1948,7 @@ fn test_mmap_file_cache() {
     // which requires the temp file to have a stable filesystem name
     // for the lifetime of the test.
     // -----------------------------------------------------------------
-    let mut tmp =
-        tempfile::NamedTempFile::new().expect("NamedTempFile::new must succeed");
+    let mut tmp = tempfile::NamedTempFile::new().expect("NamedTempFile::new must succeed");
     tmp.as_file_mut()
         .write_all(&payload)
         .expect("write_all of test payload must succeed");
@@ -1991,7 +2008,8 @@ fn test_mmap_file_cache() {
           the slice length reported via Deref must equal the file size)"
     );
     assert_eq!(
-        mapped, payload.as_slice(),
+        mapped,
+        payload.as_slice(),
         "mapped bytes must equal source payload byte-for-byte"
     );
 

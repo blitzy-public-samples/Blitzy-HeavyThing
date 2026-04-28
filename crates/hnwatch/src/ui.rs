@@ -306,6 +306,31 @@ impl Widget for MainScreenWidget {
 /// and `.bailout` writes `main_datagrid` back (lines 882–885). The
 /// Rust port performs that swap via interior mutability so the
 /// shared [`Arc`] in the widget tree remains stable.
+///
+/// ## Architectural note (CP8 review finding MEDIUM #14)
+///
+/// The FASM source mutated `screen_main.children[0]` directly via
+/// `_list_first.value`. The Rust port cannot do that because the
+/// framework's [`heavything::tui::object::WidgetState::children`]
+/// list is plain [`heavything::ds::list::List<Arc<dyn Widget>>`] —
+/// non-`Mutex`-protected — and `Arc::get_mut(&mut self_arc)` always
+/// returns `None` post-construction (the parent main_screen and
+/// any transient Arc clones keep the strong refcount above 1).
+///
+/// The Rust port therefore:
+///
+///   * Stores the currently-displayed widget on a Mutex-protected
+///     [`ContentSlotInner::current`] slot (interior mutability).
+///   * Leaves `state.children` empty — `ContentSlot` is intentionally
+///     a single-widget wrapper that does NOT participate in the
+///     framework's recursive children walk; rendering is delegated
+///     directly to `inner.current` via [`Widget::draw`] below.
+///   * Exposes [`ContentSlot::current`] for any external code that
+///     needs to inspect the displayed widget without going through
+///     the draw path.
+///
+/// This pattern matches [`crate::screen`]'s
+/// `mounted_chatpanels` solution to the analogous issue.
 pub struct ContentSlot {
     state: WidgetState,
     inner: Mutex<ContentSlotInner>,
@@ -323,10 +348,17 @@ impl ContentSlot {
         let mut state = WidgetState::new();
         state.width_percent = Some(100.0);
         state.height_percent = Some(100.0);
-        // Mirror the slot's child as the framework's children list so
-        // the renderer can traverse it. The dynamic swap below also
-        // updates `state.children` lazily during `swap`.
-        state.children.push_back(Arc::clone(&initial));
+        // CP8 review finding MEDIUM #14: do NOT push the initial
+        // widget onto `state.children` here. The framework would
+        // walk that pointer indefinitely (it never gets updated by
+        // [`ContentSlot::swap`] because `state.children` is plain),
+        // causing the framework's name-lookup / focus-walk passes
+        // to find the stale initial widget after a swap.
+        //
+        // Instead, [`ContentSlot::draw`] below delegates rendering
+        // directly to `inner.current` which IS updated atomically
+        // by [`ContentSlot::swap`]. For external callers needing to
+        // inspect the displayed widget, see [`ContentSlot::current`].
         Arc::new(Self {
             state,
             inner: Mutex::new(ContentSlotInner { current: initial }),
@@ -334,15 +366,39 @@ impl ContentSlot {
     }
 
     /// Atomically replace the displayed widget.
+    ///
+    /// The new widget becomes visible on the next render pass — both
+    /// [`ContentSlot::draw`] and [`ContentSlot::current`] consult
+    /// the same Mutex-protected slot, so there is no window during
+    /// which the slot can read stale state.
+    ///
+    /// Resolves CP8 review finding MEDIUM #14.
     fn swap(self: &Arc<Self>, new: Arc<dyn Widget>) {
         let mut inner = unpoison(self.inner.lock());
         inner.current = new;
-        // Mutating `state.children` requires a `&mut self` reference
-        // on the wrapper — when the framework holds a clone of the
-        // Arc, this is unavailable. The runtime swap is recorded in
-        // `inner.current`; the framework's draw path consults the
-        // slot's draw method to render whichever widget is current.
-        // Both paths converge on the same display semantics.
+        // No `state.children` mutation — see [`ContentSlot::new`]
+        // doc-comment for the architectural rationale (the children
+        // list is plain `VecDeque` with no interior mutability and
+        // `Arc::get_mut` cannot succeed once the framework holds
+        // a strong reference).
+    }
+
+    /// Borrow the currently-displayed widget.
+    ///
+    /// Used by external code that needs to inspect the slot's child
+    /// without going through the draw delegation. Returns a fresh
+    /// `Arc` clone so the caller can hold the reference past the
+    /// next swap without disturbing the slot's interior mutex.
+    ///
+    /// `#[allow(dead_code)]`: Public accessor preserved per AAP
+    /// §0.8.2 (Minimal Change Clause); not currently consumed by
+    /// the hnwatch entry-point but exposed so future framework
+    /// integration (e.g. focus-cycle walks) can discover the
+    /// active content widget.
+    #[allow(dead_code)]
+    pub fn current(&self) -> Arc<dyn Widget> {
+        let inner = unpoison(self.inner.lock());
+        Arc::clone(&inner.current)
     }
 }
 
@@ -1081,21 +1137,27 @@ pub fn init(model: Arc<HnModel>) -> Result<Arc<UiState>> {
     ui.datagrid_widget.install_back(Arc::downgrade(&ui));
 
     // ---- Phase 4h: wire status / updated callbacks on the model.
+    //
+    // `HnModel::set_statuscb` and `set_updatedcb` accept any closure
+    // satisfying their `Fn(...) + Send + Sync + 'static` trait bound,
+    // so we pass the closure unboxed — `set_statuscb` allocates the
+    // `Arc<F>` internally. (Earlier drafts wrapped these in `Box::new`,
+    // which was redundant; resolved per CP8 review INFO #15.)
     {
         let weak = Arc::downgrade(&ui);
-        ui.model.set_statuscb(Box::new(move |_msg: &str| {
+        ui.model.set_statuscb(move |_msg: &str| {
             if let Some(strong) = weak.upgrade() {
                 statusbar_update(&strong);
             }
-        }));
+        });
     }
     {
         let weak = Arc::downgrade(&ui);
-        ui.model.set_updatedcb(Box::new(move |item_id: Option<&str>| {
+        ui.model.set_updatedcb(move |item_id: Option<&str>| {
             if let Some(strong) = weak.upgrade() {
                 let _ = compose(&strong, item_id);
             }
-        }));
+        });
     }
 
     Ok(ui)

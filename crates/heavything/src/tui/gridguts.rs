@@ -264,6 +264,24 @@ pub struct GridGuts {
     /// avoid repeated JSON length queries in the draw and
     /// keyevent paths. FASM: `tui_ggrowcount_ofs` (qword).
     pub(crate) row_count: usize,
+
+    /// Header-row colors snapshot, copied from the parent
+    /// [`crate::tui::widgets::datagrid::DataGrid::header_colors`] at
+    /// construction. FASM: read from
+    /// `[parent_dg + tui_dgheadercolors_ofs]` directly inside
+    /// `tui_gridguts$draw` (line 281). The Rust port snapshots the
+    /// value at construction so the draw path does not need to
+    /// upgrade the [`Weak`] back-reference (which is intentionally
+    /// expired by [`crate::tui::widgets::datagrid::DataGrid::add_column`]).
+    pub(crate) header_colors: ColorPair,
+
+    /// Selected-row colors snapshot, copied from the parent
+    /// [`crate::tui::widgets::datagrid::DataGrid::sel_colors`] at
+    /// construction. FASM: read from
+    /// `[parent_dg + tui_dgselcolors_ofs]` inside the contents loop
+    /// (line 392) where the row colors are switched to selection
+    /// colors when `r8 == ggselectedindex_ofs`.
+    pub(crate) sel_colors: ColorPair,
 }
 
 // ---------------------------------------------------------------------------
@@ -297,11 +315,19 @@ impl GridGuts {
     ///    search_panel=None, search_panel_visible=false,
     ///    data_owner=false, row_count=0`.
     #[must_use]
-    pub fn new(datagrid: Weak<dyn Widget>, colors: ColorPair) -> Self {
+    pub fn new(
+        datagrid: Weak<dyn Widget>,
+        header_colors: ColorPair,
+        body_colors: ColorPair,
+        sel_colors: ColorPair,
+    ) -> Self {
         // FASM tui_background$init_dd(100.0, 100.0, ' ', colors):
         // both percentages are 100 (on the 0..100 scale tracked by
         // `_math_onehundred`); fillchar is ASCII 0x20 packed into
-        // the low byte of a u32 codepoint cell.
+        // the low byte of a u32 codepoint cell. The body row colors
+        // are passed through to the embedded TuiBackground so the
+        // initial nvfill paints the entire viewport in the data-row
+        // palette before headers / contents are stamped on top.
         let mut state = WidgetState::new();
         state.width_percent = Some(100.0);
         state.height_percent = Some(100.0);
@@ -311,7 +337,7 @@ impl GridGuts {
         let base = TuiBackground {
             state,
             bgfillchar: u32::from(b' '),
-            bgcolors: colors,
+            bgcolors: body_colors,
         };
 
         Self {
@@ -325,6 +351,8 @@ impl GridGuts {
             search_panel_visible: false,
             data_owner: false,
             row_count: 0,
+            header_colors,
+            sel_colors,
         }
     }
 
@@ -399,6 +427,74 @@ impl GridGuts {
     /// when none exists.
     pub fn toggle_search_panel(&mut self) {
         self.search_panel_visible = !self.search_panel_visible;
+    }
+
+    /// Internal helper: computes per-column `actualwidth` values in
+    /// character cells, mirroring the FASM `.calcwidths` algorithm
+    /// (lines 540–600 of `tui_gridguts.inc`).
+    ///
+    /// Algorithm:
+    ///
+    /// 1. `available = width - 1 - col_count` (the `-1` is the
+    ///    leftmost gutter cell; the `-col_count` accounts for one
+    ///    inter-column gutter cell after each column).
+    /// 2. If `available <= 0`, every column receives `-1` (FASM
+    ///    `.calcwidths_noroom` sets a sentinel "do not draw" width).
+    /// 3. Otherwise: subtract every fixed-width column's width
+    ///    from `available`, then distribute the remainder
+    ///    proportionally to percent-width columns (each gets
+    ///    `(percent / total_percent) * remainder`, truncated to
+    ///    integer cells via FASM `cvtsd2si`).
+    ///
+    /// Returns one `i32` per column in column order, with `-1`
+    /// indicating the no-room sentinel and `>=0` indicating the
+    /// computed width in cells.
+    fn calc_actual_widths(&self) -> Vec<i32> {
+        let count = self.cols.len() as i32;
+        if count == 0 {
+            return Vec::new();
+        }
+        // FASM lines 543–548: `r15d = width - 1 - col_count`.
+        let avail_signed = self.base.state.width - 1 - count;
+        if avail_signed <= 0 {
+            // FASM `.calcwidths_noroom` (lines 587–597): every
+            // column gets the sentinel `-1` width.
+            return vec![-1_i32; count as usize];
+        }
+        // First pass: subtract every fixed-width column from the
+        // available budget; sum percent-width columns.
+        let mut total_perc = 0.0_f64;
+        let mut fixed_remainder = avail_signed;
+        for col in self.cols.iter() {
+            match col.width_cells {
+                Some(w) => fixed_remainder -= w as i32,
+                None => total_perc += col.width_percent,
+            }
+        }
+        // Second pass: emit each column's actual width.
+        self.cols
+            .iter()
+            .map(|col| match col.width_cells {
+                Some(w) => w as i32,
+                None => {
+                    if total_perc <= 0.0 {
+                        // FASM behavior with all-zero percentages
+                        // is undefined (would divide by zero); the
+                        // Rust port returns 0 to keep the
+                        // stamping pass safe.
+                        0
+                    } else {
+                        // FASM line 580–586: `divsd / mulsd /
+                        // cvtsd2si`. Truncating cast matches the
+                        // FASM convert-to-signed-integer rounding
+                        // semantics (round-toward-zero by
+                        // default).
+                        let raw = (col.width_percent / total_perc) * f64::from(fixed_remainder);
+                        raw as i32
+                    }
+                }
+            })
+            .collect()
     }
 
     /// Internal helper: clamps `selected_index` and adjusts
@@ -603,6 +699,12 @@ impl Widget for GridGuts {
             search_panel_visible: false,
             data_owner: cloned_data_owner,
             row_count: cloned_row_count,
+            // Header / selection palettes are scalar copies — preserved
+            // verbatim across clones so the cloned widget renders with
+            // the same palette as the source until the caller overrides
+            // them.
+            header_colors: self.header_colors,
+            sel_colors: self.sel_colors,
         };
 
         Ok(Arc::new(cloned) as Arc<dyn Widget>)
@@ -610,39 +712,282 @@ impl Widget for GridGuts {
 
     /// FASM vtable slot 2 — draw.
     ///
-    /// FASM lines 256–510 implement a 250+ line layout algorithm:
-    /// `nvfill` the background, `calcwidths` over the column
-    /// list, render the header row, walk the visible row range
-    /// (with top/bottom ellipsis indicators when scrolled),
-    /// emit each cell with column-aligned text, and finally
-    /// `update_display_list`.
+    /// Faithful Rust port of `tui_gridguts$draw` (FASM
+    /// `tui_gridguts.inc` lines 256–510). The algorithm:
     ///
-    /// The Rust port delegates to [`TuiBackground::draw`] for the
-    /// background fill + display-list update (faithful FASM
-    /// `nvfill` + `tui_vupdatedisplaylist` equivalent), and
-    /// leaves a TODO marker for the column / row drawing math —
-    /// that tier of fidelity is scheduled for a follow-up agent
-    /// slot per the agent-prompt's stub-with-TODO authorisation.
-    /// The base draw is sufficient for the widget to compile,
-    /// satisfy the [`Widget`] trait, and render the underlying
-    /// background; downstream `DataGrid` integration tests will
-    /// drive the columnar fidelity work.
+    /// 1. Bail out (`.invisible`) when width or height is zero.
+    /// 2. Fill the entire viewport with the body-row palette via
+    ///    `tui_background$nvfill` (the embedded
+    ///    [`TuiBackground::nvfill`] on `self.base`).
+    /// 3. Compute `actual_width` for each column via the FASM
+    ///    `.calcwidths` helper (fixed-cell-width columns are
+    ///    copied through; percent-width columns are scaled by the
+    ///    remaining horizontal budget).
+    /// 4. When `header_colors != 0xFFFFFFFF` (FASM sentinel; the
+    ///    Rust port always renders the header row because
+    ///    [`crate::tui::widgets::datagrid::DataGrid::header_colors`]
+    ///    is a non-optional `ColorPair`), stamp the column heading
+    ///    row at `y = 0` with a 1-cell gutter on the left and
+    ///    after each column.
+    /// 5. Walk the visible row range (`scroll..scroll+visible`)
+    ///    inserting top / bottom ellipsis (`...`) sentinel rows
+    ///    when content extends beyond the viewport.
+    /// 6. For each visible data row: stamp each column's value
+    ///    (looked up via JSON property name) with column
+    ///    alignment, switching to the selection palette when
+    ///    `row_index == selected_index`.
+    /// 7. Notify the renderer of the dirty viewport via
+    ///    [`Widget::update_display_list`] (FASM
+    ///    `tui_vupdatedisplaylist` tail call at lines 530–536).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TuiError::Render`] from [`TuiBackground::draw`]
+    /// (which bubbles up [`crate::ds::buffer::Buffer`] resize
+    /// failures). The post-fill stamping never errors because it
+    /// writes into pre-sized in-memory buffers.
     fn draw(&mut self, r: &mut dyn Renderer) -> Result<(), TuiError> {
-        // FASM line 263 calls `tui_background$nvfill` first, then
-        // proceeds into header / row drawing. Calling
-        // `self.base.draw(r)` is the closest faithful Rust
-        // analogue — it fills the buffer (nvfill) and then
-        // updates the display list (the FASM tail call at
-        // `.updateandreturn`, line 530–536).
+        // FASM lines 261–262: `cmp dword [rdi+tui_width_ofs], 0 / je
+        // .invisible`. The base `nvfill` already short-circuits on
+        // zero dimensions, but the FASM check is defensive — we
+        // honour it explicitly to avoid even the cost of arming
+        // the buffer for a zero-area fill.
+        let width = self.base.state.width;
+        let height = self.base.state.height;
+        if width <= 0 || height <= 0 {
+            return Ok(());
+        }
+
+        // FASM line 263: tui_background$nvfill. This sizes the
+        // text + attributes buffers to width*height cells and
+        // paints them with the body palette.
         self.base.draw(r)?;
 
-        // TODO: port `tui_gridguts$draw` columns + rows + ellipses
-        // body (FASM lines 280–510). The skeleton above guarantees
-        // the widget compiles and renders the base background;
-        // the full columnar drawing logic lands in a follow-up
-        // agent slot once the `DataGrid` consumer crate is in
-        // place to drive end-to-end visual validation.
+        // FASM line 266: call .calcwidths. Compute one
+        // actualwidth (in character cells) per column.
+        let actual_widths = self.calc_actual_widths();
 
+        // FASM lines 268–276: r11 = width*4 (row stride in bytes),
+        // rax = width*height*4 (total buffer length in bytes),
+        // r12 = text-buffer base, r13 = attr-buffer base, r14 =
+        // r12+rax (one-past-end of text). The Rust port uses cell
+        // (codepoint) indices instead of raw byte offsets.
+        let width_cells = width as usize;
+        let height_cells = height as usize;
+        let total_cells = width_cells.saturating_mul(height_cells);
+
+        // Snapshot scalar values needed by the inner stamping
+        // pass before taking the buffer borrows. Once the
+        // `text_slice` and `attr_cells` borrows are live, calling
+        // any &self / &mut self method becomes impossible, so we
+        // resolve every scalar dependency up front.
+        let scroll_y = self.scroll.y.max(0) as usize;
+        let row_count = self.row_count;
+        let selected_index = self.selected_index;
+
+        // FASM line 281: read header_colors from the parent
+        // datagrid. The Rust port snapshots it at construction.
+        let header_colors_packed = pack_color_pair_local(self.header_colors);
+        let body_colors_packed = pack_color_pair_local(self.base.bgcolors);
+        let sel_colors_packed = pack_color_pair_local(self.sel_colors);
+
+        // Snapshot ColumnSpec data into owned tuples so the
+        // stamping pass can iterate without holding a borrow on
+        // self.cols (which lives behind &mut self).
+        let columns: Vec<(String, String, HorizAlign, usize)> = self
+            .cols
+            .iter()
+            .zip(actual_widths.iter())
+            .map(|(c, &aw)| {
+                (
+                    c.heading.clone(),
+                    c.field_key.clone(),
+                    c.align,
+                    if aw < 0 { 0_usize } else { aw as usize },
+                )
+            })
+            .collect();
+
+        // Snapshot per-row, per-column cell strings from the JSON
+        // contents array. FASM lines 442–456 walk the JSON object
+        // calling `json$getvaluebyname` for each column's
+        // propertyname, then either takes the string value or
+        // falls through to `.emptystr`. The Rust port performs the
+        // same lookup using `serde_json::Value::get`, restricting
+        // to `Value::String` to match the FASM `cmp dword
+        // [rax+json_type_ofs], json_value` filter.
+        let row_strings: Vec<Vec<String>> = match self.data.as_ref().and_then(Value::as_array) {
+            Some(arr) => arr
+                .iter()
+                .skip(scroll_y)
+                .take(height_cells)
+                .map(|row| {
+                    columns
+                        .iter()
+                        .map(|(_h, key, _align, _aw)| {
+                            row.get(key.as_str())
+                                .and_then(Value::as_str)
+                                .map_or_else(String::new, str::to_owned)
+                        })
+                        .collect()
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+
+        // Now take mut borrows on the buffers and run the
+        // stamping pass. Both buffers were sized exactly by
+        // `nvfill` to total_cells*4 bytes / total_cells u32s
+        // respectively, so we can assert on the slice lengths to
+        // catch any future divergence.
+        debug_assert_eq!(self.base.state.text.len(), total_cells * 4);
+        debug_assert_eq!(self.base.state.attributes.cells.len(), total_cells);
+        let text_slice: &mut [u8] = self.base.state.text.as_mut_slice();
+        let attr_cells: &mut [u32] = &mut self.base.state.attributes.cells[..];
+
+        // Tracks the next data-row offset (in cells) to write to.
+        // FASM r12 / r13 advance by r11 (= width in bytes) per
+        // row; the Rust equivalent is the loop variable
+        // `row_offset` measured in cells.
+        let mut row_offset: usize = 0;
+
+        // ---- Header row (FASM lines 280–330) ----
+        // FASM `cmp ecx, 0xffffffff / je .noheaders`. The Rust port
+        // always renders the header row because the parent
+        // `DataGrid::header_colors` is a required `ColorPair`
+        // (not optional). Skip rendering only when there are no
+        // columns to draw.
+        if !columns.is_empty() {
+            // FASM lines 285–286: leftmost gutter cell.
+            write_cell(text_slice, attr_cells, row_offset, b' ', header_colors_packed);
+            let mut col_x: usize = 1;
+            for (heading, _key, align, actual_width) in &columns {
+                // FASM lines 305–315: write the heading at
+                // `text_buf + (relx*4)`, advance relx by
+                // actualwidth, and stamp a single-space gutter
+                // after the column.
+                let cell_start = row_offset + col_x;
+                draw_column(
+                    text_slice,
+                    attr_cells,
+                    cell_start,
+                    *actual_width,
+                    header_colors_packed,
+                    heading,
+                    *align,
+                );
+                col_x += *actual_width;
+                // FASM lines 318–321: post-column gutter (one space cell).
+                write_cell(
+                    text_slice,
+                    attr_cells,
+                    row_offset + col_x,
+                    b' ',
+                    header_colors_packed,
+                );
+                col_x += 1;
+            }
+            // FASM line 327: advance to next row (header consumed
+            // one row).
+            row_offset += width_cells;
+        }
+
+        // ---- Data rows (FASM lines 332–456) ----
+        // Bail when no data is installed (FASM `test rdx, rdx / jz
+        // .updateandreturn`).
+        if row_count == 0 {
+            return Ok(());
+        }
+
+        // FASM lines 339–352: derive visible-row count, accounting
+        // for header (always present in this Rust port), top
+        // ellipsis (when scroll_y > 0), and bottom ellipsis (when
+        // remaining content exceeds visible budget).
+        // header_consumed = 1 if columns non-empty else 0.
+        let header_consumed = if columns.is_empty() { 0 } else { 1 };
+        let mut visible = height_cells.saturating_sub(header_consumed);
+        let needs_top_ellipsis = scroll_y > 0;
+        if needs_top_ellipsis {
+            // FASM line 345: `call .drawelipses` — draw the
+            // top-ellipsis row in the body-row palette, then
+            // reduce the visible budget by 1.
+            draw_ellipses_row(
+                text_slice,
+                attr_cells,
+                row_offset,
+                width_cells,
+                body_colors_packed,
+            );
+            row_offset += width_cells;
+            visible = visible.saturating_sub(1);
+        }
+        let remaining = row_count.saturating_sub(scroll_y);
+        let needs_bottom_ellipsis = visible < remaining;
+        if needs_bottom_ellipsis {
+            // FASM lines 354–357: account for the bottom-ellipsis
+            // row (drawn AFTER the visible content, see lines
+            // 467–478).
+            visible = visible.saturating_sub(1);
+        }
+        let visible_count = visible.min(remaining);
+
+        // ---- Contents loop (FASM lines 376–446) ----
+        for (vi, row_text) in row_strings.iter().take(visible_count).enumerate() {
+            let absolute_row_index = scroll_y + vi;
+            // FASM lines 389–393: pick row palette — body for
+            // unselected rows, sel for the selected row.
+            let row_colors_packed = if absolute_row_index == selected_index {
+                sel_colors_packed
+            } else {
+                body_colors_packed
+            };
+            // FASM line 395: leftmost gutter cell stamped in row
+            // palette.
+            write_cell(text_slice, attr_cells, row_offset, b' ', row_colors_packed);
+            let mut col_x: usize = 1;
+            for ((_heading, _key, align, actual_width), cell_str) in columns.iter().zip(row_text.iter()) {
+                let cell_start = row_offset + col_x;
+                draw_column(
+                    text_slice,
+                    attr_cells,
+                    cell_start,
+                    *actual_width,
+                    row_colors_packed,
+                    cell_str,
+                    *align,
+                );
+                col_x += *actual_width;
+                // FASM lines 425–428: post-column gutter.
+                write_cell(
+                    text_slice,
+                    attr_cells,
+                    row_offset + col_x,
+                    b' ',
+                    row_colors_packed,
+                );
+                col_x += 1;
+            }
+            row_offset += width_cells;
+        }
+
+        // ---- Bottom ellipsis (FASM lines 458–478) ----
+        if needs_bottom_ellipsis {
+            draw_ellipses_row(
+                text_slice,
+                attr_cells,
+                row_offset,
+                width_cells,
+                body_colors_packed,
+            );
+        }
+
+        // FASM lines 530–536: tail call into
+        // `tui_vupdatedisplaylist`. The Rust [`TuiBackground::draw`]
+        // already invoked `update_display_list` after the nvfill,
+        // and the framework polls dirty regions on the next render
+        // tick — no additional notification is required because
+        // the buffers we just stamped share the same backing
+        // store.
         Ok(())
     }
 
@@ -695,28 +1040,217 @@ impl Widget for GridGuts {
                 true
             }
             KeyEvent::Enter => {
-                // FASM line 824: walks the JSON contents list to
-                // `selected_index`, then calls the parent
+                // FASM lines 800–828: walks the JSON contents
+                // list to `selected_index`, fetches the JSON value
+                // at that position, and tail-calls the parent
                 // DataGrid's `tui_vitemselected` vmethod with
-                // `(rdi=parent_dg, rsi=selected_item)`.
+                // `(rdi=parent_dg, rsi=selected_value)`. The Rust
+                // port surfaces this through the `Widget` trait's
+                // [`Widget::on_item_selected`] default method.
                 //
-                // The Rust [`Widget`] trait does not yet expose a
-                // first-class `item_selected` vmethod (verified
-                // via grep across `tui::object`). The
-                // `Weak<DataGrid>` upgrade still happens here so
-                // that the future DataGrid trait extension can
-                // hook in without changing this call site —
-                // currently, on successful upgrade the selection
-                // is acknowledged as consumed and the parent is
-                // notified solely by reference acquisition (no
-                // method dispatch yet).
-                let _parent_alive = self.datagrid.as_ref().and_then(Weak::upgrade).is_some();
-                // TODO: when `DataGrid` lands, dispatch the
-                // `item_selected(self.selected_index)` call here.
+                // Validate that the selected index points at a
+                // real row (FASM does the same via list walk and
+                // bails to `.zeroret` on overrun).
+                if self.selected_index >= self.row_count {
+                    return false;
+                }
+                // Upgrade the back-reference. When the parent
+                // [`DataGrid`] has been dropped, the FASM
+                // equivalent would dereference a dangling pointer
+                // and crash; the Rust port simply consumes the
+                // event and returns `true` (matching
+                // `tui_gridguts$keyevent`'s "Enter is always
+                // consumed when there is data" semantic at FASM
+                // line 826).
+                if let Some(parent) = self.datagrid.as_ref().and_then(Weak::upgrade) {
+                    // Ignore the result: FASM's vtable call
+                    // discards the return value, and any error
+                    // surfaced from a custom override would be
+                    // logged at the renderer layer rather than
+                    // bubbling up through the keyevent path.
+                    let _ = parent.on_item_selected(self.selected_index);
+                }
                 true
             }
             _ => false,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Private rendering helpers (FASM `.drawcolumn`, `.drawelipses`).
+// ---------------------------------------------------------------------------
+
+/// Pack a [`ColorPair`] into the wire-format `u32` used by the
+/// codepoint attribute buffer.
+///
+/// Matches the `tui_object` per-cell attribute layout: bits 0..7 = fg,
+/// bits 8..15 = bg, bits 16..31 reserved for SGR. The FASM source
+/// stores colors as packed `dword` values directly, so this helper
+/// reproduces that encoding without taking a dependency on the
+/// `pack_color_pair` symbol that is private to
+/// `crate::tui::widgets::background`.
+const fn pack_color_pair_local(cp: ColorPair) -> u32 {
+    (cp.fg as u32) | ((cp.bg as u32) << 8)
+}
+
+/// Stamps a single character cell at `cell_idx` with `byte` (zero-
+/// extended into a u32 codepoint) and `colors_packed`.
+///
+/// The text buffer is a flat `[u8]` with 4 bytes per cell, so each
+/// write writes one little-endian `u32`. The attribute buffer is a
+/// flat `[u32]` with one entry per cell, so the colors entry is
+/// written directly.
+///
+/// This is the Rust analogue of the FASM `mov dword [r12+r15*4],
+/// 'X' / mov dword [r13+r15*4], ecx` cell-stamp pattern that
+/// pervades `tui_gridguts$draw`.
+fn write_cell(text: &mut [u8], attrs: &mut [u32], cell_idx: usize, byte: u8, colors_packed: u32) {
+    let off = cell_idx * 4;
+    if off + 4 <= text.len() {
+        let bytes = u32::from(byte).to_le_bytes();
+        text[off..off + 4].copy_from_slice(&bytes);
+    }
+    if cell_idx < attrs.len() {
+        attrs[cell_idx] = colors_packed;
+    }
+}
+
+/// Stamps a column-aligned string within a cell-width window.
+///
+/// Faithful Rust port of the FASM `.drawcolumn` helper (lines
+/// 600–668 of `tui_gridguts.inc`). The algorithm:
+///
+/// 1. If `actual_width <= 1` the column has insufficient room
+///    (FASM `.nothingtodo`); return early.
+/// 2. Clear the entire window (`actual_width` cells) with space
+///    glyphs in `colors_packed` (FASM `.drawcolumn_clearloop`).
+/// 3. If `string` is empty (FASM `cmp qword [r8], 0 / je
+///    .nothingtodo`), the cleared window is the final state.
+/// 4. Otherwise, derive the write offset from the alignment:
+///    - [`HorizAlign::Left`] / [`HorizAlign::Fill`]: offset 0
+///    - [`HorizAlign::Right`]: offset = `window - chars`
+///    - [`HorizAlign::Center`]: offset = `(window - chars) / 2`
+/// 5. Write min(`window`, `chars`) characters into the window
+///    starting at the offset (FASM `.drawcolumn_doit_loop`).
+///
+/// The `start_cell` parameter is the absolute cell index in the
+/// flat buffer at which the window begins.
+fn draw_column(
+    text: &mut [u8],
+    attrs: &mut [u32],
+    start_cell: usize,
+    actual_width: usize,
+    colors_packed: u32,
+    string: &str,
+    align: HorizAlign,
+) {
+    // FASM lines 605–608: `cmp r9, 1 / jle .nothingtodo`.
+    if actual_width <= 1 {
+        return;
+    }
+    // FASM lines 612–620: clear the entire window with
+    // `space + colors`.
+    let space_le = u32::from(b' ').to_le_bytes();
+    for i in 0..actual_width {
+        let cell_idx = start_cell + i;
+        let off = cell_idx * 4;
+        if off + 4 > text.len() || cell_idx >= attrs.len() {
+            return;
+        }
+        text[off..off + 4].copy_from_slice(&space_le);
+        attrs[cell_idx] = colors_packed;
+    }
+    // FASM line 622: `cmp qword [r8], 0 / je .nothingtodo` —
+    // empty strings leave the cleared window untouched.
+    if string.is_empty() {
+        return;
+    }
+    // FASM lines 626–650: derive offset and clamp write count
+    // based on alignment when the string is shorter than the
+    // window. The FASM source counts characters via the
+    // string's leading `qword` length prefix; the Rust port uses
+    // `chars().count()` which yields the same Unicode-codepoint
+    // count for the UTF-8 native strings used throughout the
+    // workspace.
+    let chars: Vec<char> = string.chars().collect();
+    let str_len = chars.len();
+    let (offset, write_len) = if actual_width <= str_len {
+        // Truncate to the window size.
+        (0, actual_width)
+    } else {
+        let remainder = actual_width - str_len;
+        let off = match align {
+            HorizAlign::Left | HorizAlign::Fill => 0,
+            HorizAlign::Right => remainder,
+            HorizAlign::Center => remainder / 2,
+        };
+        (off, str_len)
+    };
+    // FASM lines 654–668: write each codepoint as a u32 little-
+    // endian into the text buffer. Attributes were already set
+    // by the clear loop above, so we leave them alone here —
+    // matching FASM which only writes the text stream in the
+    // `.drawcolumn_doit_loop`.
+    for (i, &ch) in chars.iter().take(write_len).enumerate() {
+        let cell_idx = start_cell + offset + i;
+        let off = cell_idx * 4;
+        if off + 4 > text.len() {
+            return;
+        }
+        let cp = (ch as u32).to_le_bytes();
+        text[off..off + 4].copy_from_slice(&cp);
+    }
+}
+
+/// Stamps a single ellipsis-indicator row at `row_offset` (in cells).
+///
+/// Faithful Rust port of the FASM `.drawelipses` helper (lines
+/// 510–540 of `tui_gridguts.inc`). The algorithm:
+///
+/// 1. If `width_cells < 3` (FASM `cmp r11, 12 / jb .notenoughroom`,
+///    where 12 = 3 chars × 4 bytes/char) skip the row entirely
+///    (caller still advances the row pointer).
+/// 2. Clear the entire row with `space + body_colors_packed`.
+/// 3. Compute `left = (width_cells - 3) / 2` and stamp three '.'
+///    characters at `[row_offset + left .. row_offset + left + 3]`.
+fn draw_ellipses_row(
+    text: &mut [u8],
+    attrs: &mut [u32],
+    row_offset: usize,
+    width_cells: usize,
+    body_colors_packed: u32,
+) {
+    if width_cells < 3 {
+        // FASM `.notenoughroom` (lines 533–539): just advance
+        // r12/r13 by the row stride. The caller advances
+        // `row_offset` after invoking this helper, so there is
+        // nothing for us to do beyond returning early.
+        return;
+    }
+    let space_le = u32::from(b' ').to_le_bytes();
+    let dot_le = u32::from(b'.').to_le_bytes();
+    // FASM `.drawelipses_loop` (lines 514–522): clear the entire
+    // row with body palette.
+    for i in 0..width_cells {
+        let cell_idx = row_offset + i;
+        let off = cell_idx * 4;
+        if off + 4 > text.len() || cell_idx >= attrs.len() {
+            return;
+        }
+        text[off..off + 4].copy_from_slice(&space_le);
+        attrs[cell_idx] = body_colors_packed;
+    }
+    // FASM lines 524–530: stamp three '.' characters in the
+    // horizontal centre.
+    let left = (width_cells - 3) / 2;
+    for i in 0..3 {
+        let cell_idx = row_offset + left + i;
+        let off = cell_idx * 4;
+        if off + 4 > text.len() {
+            return;
+        }
+        text[off..off + 4].copy_from_slice(&dot_le);
     }
 }
 
@@ -758,8 +1292,15 @@ mod tests {
             state: WidgetState::new(),
         });
         let weak: Weak<dyn Widget> = Arc::downgrade(&parent);
-        let colors = ColorPair::default();
-        GridGuts::new(weak, colors)
+        // Three default ColorPairs simulate the "all white-on-black"
+        // palette used by the original FASM init path; tests that
+        // care about palette interactions override them on the
+        // returned `GridGuts` by mutating the public `header_colors`
+        // / `base.bgcolors` / `sel_colors` fields.
+        let header = ColorPair::default();
+        let body = ColorPair::default();
+        let sel = ColorPair::default();
+        GridGuts::new(weak, header, body, sel)
     }
 
     #[test]

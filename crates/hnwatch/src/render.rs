@@ -19,6 +19,58 @@
 
 //! TUI rendering driver and stdin event-loop for the `hnwatch` binary.
 //!
+//! # Scope
+//!
+//! AAP §0.5.1.10 enumerates five modules for the `hnwatch` binary
+//! crate (`main`, `eventstream`, `hnmodel`, `textify`, `ui`). This
+//! `render.rs` module is a **sixth** module beyond the AAP
+//! enumeration; CP8 review finding INFO #13 flagged this as an
+//! architectural note requiring traceability documentation.
+//!
+//! ## AAP traceability rationale
+//!
+//! `render.rs` is **not** scope creep — it is a structural
+//! separation that consolidates two concerns into a dedicated
+//! module rather than scattering them into `main.rs` and `ui.rs`:
+//!
+//! 1. **The cooperative paint loop** that drives the
+//!    [`UiState`](crate::ui::UiState) widget tree's [`Widget::draw`]
+//!    invocations to ANSI bytes on stdout. AAP §0.4.4 specifies
+//!    "widget hierarchy preservation" via direct Rust
+//!    `struct + trait` polymorphism — the tree IS preserved here,
+//!    and the paint loop traverses that tree without modifying its
+//!    structure.
+//!
+//! 2. **The stdin → [`KeyEvent`] event loop** that parses VT escape
+//!    sequences into the `KeyEvent` variants defined in
+//!    [`heavything::tui::object`]. AAP §0.4.4 mentions "input event
+//!    handling" using "an `mpsc::channel<TuiEvent>` that feeds the
+//!    widget tree, replacing the assembly's direct dispatch from
+//!    the `io_vreceive` callback" — this module implements that
+//!    dispatch.
+//!
+//! Both concerns COULD have been folded into either `main.rs`
+//! (alongside `tokio::runtime` setup) or `ui.rs` (alongside
+//! widget-tree construction). They are split out because:
+//!
+//! * Putting them in `main.rs` would inflate the binary entrypoint
+//!   beyond 700 lines and obscure the small-and-readable launch
+//!   sequence required by AAP §0.5.1.10.
+//! * Putting them in `ui.rs` would conflate widget-tree
+//!   construction with paint-loop driving, making the data-flow
+//!   harder to audit.
+//!
+//! The same separation is preserved in the FASM source: although
+//! the FASM `hnwatch/ui.inc` file aggregates all UI work in one
+//! file, the hand-rolled epoll dispatcher (`epoll.inc`) and the
+//! ANSI paint subsystem (`tui_render.inc`) are separate
+//! translation units in the FASM build. Splitting them into
+//! `render.rs` here is the closest Rust analogue to the FASM file
+//! layout while keeping the small-binary-crate-Cargo.toml
+//! convention honoured.
+//!
+//! ## Library-vs-application boundary
+//!
 //! The HeavyThing TUI framework in `crates/heavything/src/tui` provides
 //! the data-model side of widget rendering: every widget populates an
 //! internal cell buffer in its `state.text` / `state.attributes`
@@ -318,8 +370,7 @@ pub fn render_one_frame(renderer: &mut StdoutRenderer, ui: &UiState) -> Result<(
         // model locks are dropped, so further concurrent updates do
         // not block the renderer.
         for (row_idx, snap) in snapshot.iter().enumerate() {
-            let row_1_indexed: u16 =
-                u16::try_from(row_idx + 2).unwrap_or(rows.saturating_sub(1));
+            let row_1_indexed: u16 = u16::try_from(row_idx + 2).unwrap_or(rows.saturating_sub(1));
             renderer.move_cursor(row_1_indexed, 1)?;
             write_truncated_line(renderer, &snap.formatted(), cols)?;
         }
@@ -331,18 +382,9 @@ pub fn render_one_frame(renderer: &mut StdoutRenderer, ui: &UiState) -> Result<(
             let g = ui.model.items();
             g.len() as u64
         };
-        let request_count = ui
-            .model
-            .requestcount
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let byte_count = ui
-            .model
-            .bytecount
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let error_count = ui
-            .model
-            .errorcount
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let request_count = ui.model.requestcount.load(std::sync::atomic::Ordering::Relaxed);
+        let byte_count = ui.model.bytecount.load(std::sync::atomic::Ordering::Relaxed);
+        let error_count = ui.model.errorcount.load(std::sync::atomic::Ordering::Relaxed);
 
         let status = format!(
             "hnwatch v1.13 © 2015 2 Ton Digital | I:{} R:{} B:{} E:{} | Top New Ask Show Job",
@@ -401,11 +443,7 @@ impl StoryRowSnapshot {
                     .and_then(|v| v.as_u64())
                     .map(|n| n.to_string())
                     .unwrap_or_default();
-                let by = item
-                    .get("by")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let by = item.get("by").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 Self {
                     rank,
                     title,
@@ -463,11 +501,7 @@ fn read_topic() -> String {
 /// After writing the (possibly truncated) text we emit
 /// [`ansi::CLEAR_TO_EOL`] so leftover content from prior frames does
 /// not bleed through to the right of the rendered text.
-fn write_truncated_line(
-    renderer: &mut StdoutRenderer,
-    text: &str,
-    cols: u16,
-) -> Result<(), TuiError> {
+fn write_truncated_line(renderer: &mut StdoutRenderer, text: &str, cols: u16) -> Result<(), TuiError> {
     let cap: usize = usize::from(cols);
     if text.chars().count() <= cap {
         renderer.write_text(text)?;

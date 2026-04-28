@@ -891,6 +891,35 @@ pub trait Widget: Send + Sync {
     /// handlers). Default is a no-op.
     fn clicked(&mut self, _event: ClickEvent) {}
 
+    /// FASM vtable slot 38 — item-selected notification.
+    ///
+    /// Mirrors `tui_datagrid$itemselected` (a no-op default in
+    /// `tui_datagrid.inc` lines 343–352). The
+    /// [`crate::tui::gridguts::GridGuts`] keyevent handler invokes
+    /// this on the parent widget when the user presses Enter on a
+    /// data row, passing the zero-based row index of the
+    /// selection.
+    ///
+    /// Receiver is `&self` because the call site holds an
+    /// [`std::sync::Arc<dyn Widget>`] upgraded from a
+    /// [`std::sync::Weak`] back-reference — `&mut Widget` would
+    /// require [`std::sync::Arc::get_mut`] which fails when the
+    /// widget is shared. Subclasses that need to mutate state on
+    /// selection should use interior mutability
+    /// ([`std::sync::Mutex`], [`std::sync::RwLock`], or
+    /// [`std::cell::RefCell`] inside a single-threaded scope).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TuiError`] when an override fails to dispatch the
+    /// selection (e.g. backing model mutation fails). The
+    /// [`crate::tui::gridguts::GridGuts`] caller discards the
+    /// result to match the FASM vtable convention of "selection
+    /// notification is fire-and-forget".
+    fn on_item_selected(&self, _row_index: usize) -> Result<(), TuiError> {
+        Ok(())
+    }
+
     // -------------------- Modal --------------------
 
     /// FASM vtable slot 13 — enter modal dispatch mode.

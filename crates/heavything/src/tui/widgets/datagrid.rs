@@ -447,7 +447,7 @@ impl DataGrid {
             // ~tui_gridguts:174 which passes the parent grid's
             // body colors through.
             let weak_self: Weak<dyn Widget> = Weak::<DataGrid>::new();
-            let mut guts = GridGuts::new(weak_self, self.colors);
+            let mut guts = GridGuts::new(weak_self, self.header_colors, self.colors, self.sel_colors);
 
             // Forward any pre-installed data into the freshly
             // created GridGuts so set_data-then-add_column produces

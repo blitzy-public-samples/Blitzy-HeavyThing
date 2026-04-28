@@ -43,7 +43,8 @@
 //! | 9       | Live TLS handshake vs `www.rust-lang.org` (Gate 4) | 1     | yes   |
 //! | 10      | Live HN API maxitem (Gate 5)                       | 1     | yes   |
 //! | 11      | NetError variants Display formatting               | 6     | no    |
-//! |         | **Total**                                          | **22**|       |
+//! | 12      | SSH handshake banner emission via IoChain          | 4     | no    |
+//! |         | **Total**                                          | **26**|       |
 //!
 //! ## Live-test gating
 //!
@@ -81,12 +82,15 @@
 use std::any::Any;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use bytes::Bytes;
 
 use heavything::config;
 use heavything::error::{HttpError, NetError, SshError, TlsError};
 use heavything::net::ssh::server::{SSH_IDENT, SSH_IDENT_BLACKLISTED};
+use heavything::net::ssh::{SshConfig, SshServer, SshSession, SshStage};
 use heavything::net::{
     blacklist, build_runtime, check_ulimit, link, url, Blacklist, BoxFuture, IoBase, IoChain, IoLinks, Url,
 };
@@ -978,4 +982,416 @@ fn test_url_error_can_be_constructed_and_displayed() {
     // smoke-test that those types format correctly.
     let _ = format!("{:?}", Shutdown::Both);
     let _ = format!("{:?}", IpAddr::V4(Ipv4Addr::LOCALHOST));
+}
+
+// ============================================================================
+// Section 12: SSH handshake banner emission via IoChain (4 tests)
+// ============================================================================
+//
+// This section drives the very first thing a peer observes on a fresh
+// SSH connection — the SSH-2.0 banner exchange — and verifies the
+// emitted bytes are byte-equal to the FASM baseline (`ssh.inc`
+// `ssh_ident_string` at line 41 — 20 bytes for unblacklisted peers,
+// `ssh_ident_blacklisted` at line 47 — 34 bytes for blacklisted peers).
+//
+// FASM provenance:
+//
+// - `ssh.inc` line 632 (`ssh$connected`) is the on-connect handler
+//   whose Rust analogue is `SshSession::connected` at
+//   `crates/heavything/src/net/ssh/server.rs` line 934.
+// - `io.inc` lines 168-182 (`io$send`) is the FORWARD-walking transport
+//   write helper whose Rust analogue is `default_send` at `io.rs:332`.
+// - `ssh.inc` lines ~1100-1300 (`ssh$receive` driver) is the binary
+//   packet-protocol receive pipeline whose Rust analogue is
+//   `drive_receive_loop` at `server.rs:1133`.
+// - `ssh.inc` `ssh$try_parse_ident` is the banner parser that, on
+//   success, advances `ssh_stage_ofs` from `Idents` (0) to
+//   `WantKexInit` (1) — Rust analogue at `server.rs:1158`-`1204`.
+//
+// Test architecture:
+//
+// A custom `CaptureLayer` IoChain leaf is wired downstream of the
+// `SshSession` via `link()` — the Rust analogue of FASM
+// `io$addchild` / `io$link` (`io.inc` lines 74-80 / 265-273). When the
+// session's `connected()` path calls FORWARD-walking `default_send`,
+// the captured bytes land in the leaf's `Mutex<Vec<Bytes>>` capture
+// buffer. We then assert the captured bytes are byte-equal to the
+// FASM-frozen `SSH_IDENT` / `SSH_IDENT_BLACKLISTED` constants. This
+// pattern matches the FASM integration-test idiom of asserting on the
+// wire format BEFORE any kernel transport: the assertion does not
+// depend on a loopback transport being available, and the byte-exact
+// comparison is the strictest possible expression of AAP §0.7.2's
+// "byte-for-byte identical to the FASM baseline" mandate for the
+// banner-exchange step.
+//
+// Tests 1, 2, 4 are pure in-process IoChain-bridge tests. Test 3
+// additionally uses a loopback `TcpListener::accept` to satisfy
+// `SshServer::accept_one`'s signature (it takes `tokio::net::TcpStream`
+// even though the function discards the stream — see the FASM-Rust
+// note at `server.rs:629`); the SSH bytes still flow through the
+// in-process bridge, not through the kernel.
+
+/// Test-only IoChain leaf that captures every `send` payload into a
+/// `Mutex`-protected `Vec<Bytes>`.
+///
+/// Mirrors the `IoBase` pattern in `crates/heavything/src/net/io.rs`
+/// lines 526-575: an [`IoLinks`] field plus a trivial [`IoChain`]
+/// impl. Because the `default_*` helpers (`default_destroy`,
+/// `default_send`, etc.) are not part of the public `heavything::net`
+/// surface, every method body is hand-rolled inline. The hand-rolled
+/// bodies preserve FASM directional-dispatch semantics:
+///
+/// - FORWARD `destroy` / `clone_chain` / `send`: we are the leaf, so
+///   there is no child to walk to. `destroy` is a no-op, `clone_chain`
+///   returns `None` (we are not safely clonable), and `send` records
+///   the payload into [`Self::captured`].
+/// - BACKWARD `connected` / `receive` / `error` / `timeout`: we have
+///   no parent inside the test fixture (the parent is `SshSession`,
+///   but the test never invokes these methods on the leaf — they are
+///   invoked on the session, which walks BACKWARD through `default_*`
+///   inside its own implementation). All four return trivial values
+///   that match the no-op semantics of `IoBase` at `io.rs:556-574`.
+struct CaptureLayer {
+    links: IoLinks,
+    captured: Mutex<Vec<Bytes>>,
+}
+
+impl CaptureLayer {
+    /// Build a fresh capture leaf wrapped in `Arc` for direct use as
+    /// an [`IoChain`] child. Mirrors [`IoBase::new`] at `io.rs:536`.
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            links: IoLinks::new(),
+            captured: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// Snapshot the captured payloads. Cloning the inner `Vec<Bytes>`
+    /// is cheap because each `Bytes` is reference-counted; this
+    /// mirrors the `bytes::Bytes` zero-copy clone semantics. Returns
+    /// an empty `Vec` if the mutex is poisoned (matching the
+    /// `if let Ok(_) = ...lock()` pattern used throughout the
+    /// `heavything::net` library code per AAP §0.8.3).
+    fn snapshot(&self) -> Vec<Bytes> {
+        match self.captured.lock() {
+            Ok(g) => g.clone(),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+impl IoChain for CaptureLayer {
+    fn links(&self) -> &IoLinks {
+        &self.links
+    }
+
+    fn destroy(self: Arc<Self>) -> BoxFuture<()> {
+        Box::pin(async move {})
+    }
+
+    fn clone_chain(self: Arc<Self>) -> BoxFuture<Option<Arc<dyn IoChain>>> {
+        Box::pin(async move { None })
+    }
+
+    fn connected(self: Arc<Self>, _peer: Option<SocketAddr>) -> BoxFuture<()> {
+        Box::pin(async move {})
+    }
+
+    fn send(self: Arc<Self>, data: Bytes) -> BoxFuture<Result<(), NetError>> {
+        Box::pin(async move {
+            // Lock-poison handling per AAP §0.8.3 — silent no-op
+            // matches `Blacklist::insert` at
+            // `crates/heavything/src/net/blacklist.rs:258`.
+            if let Ok(mut g) = self.captured.lock() {
+                g.push(data);
+            }
+            Ok(())
+        })
+    }
+
+    fn receive(self: Arc<Self>, _data: Bytes) -> BoxFuture<bool> {
+        Box::pin(async move { false })
+    }
+
+    fn error(self: Arc<Self>, _err: NetError) -> BoxFuture<()> {
+        Box::pin(async move {})
+    }
+
+    fn timeout(self: Arc<Self>) -> BoxFuture<bool> {
+        Box::pin(async move { false })
+    }
+}
+
+/// Test 1 — Server-mode `connected()` MUST emit `SSH_IDENT` (20 B)
+/// through the FORWARD-walking IoChain `send` path.
+///
+/// FASM `ssh$connected` (line 632) for server mode (`ssh.inc`):
+///
+/// ```text
+///   ; rdi = ssh_object, rsi = peer_sockaddr
+///   call ssh$send_ident                   ; writes SSH_IDENT bytes
+///   mov dword [rdi + ssh_stage_ofs], 0    ; SshStage::Idents
+/// ```
+///
+/// Per AAP §0.7.2, the banner bytes "MUST be byte-for-byte identical
+/// to the FASM baseline". This test pins down that contract.
+///
+/// `SshSession::new_server` loads host keys from `/etc/ssh`, but
+/// `crates/heavything/src/crypto/x509.rs:910` (`load_ssh_host_keys_from`)
+/// silently skips missing key files via
+/// `let Ok(file) = File::open(&priv_path) else { continue; };`, so an
+/// empty `/etc/ssh` directory yields `Ok(vec![])` and the constructor
+/// succeeds. This matches the test environment that ships with the
+/// CI image — only `ssh_config` + `ssh_config.d/` are present.
+#[tokio::test]
+async fn test_ssh_banner_server_mode_emits_ssh_ident() {
+    let config = SshConfig::default();
+    let session: Arc<SshSession> =
+        SshSession::new_server(&config, None).expect("new_server must succeed in /etc/ssh-empty env");
+
+    // Verify the session started in the Idents stage. FASM
+    // `ssh_stage_ofs` initial value is 0 = `SshStage::Idents`.
+    assert_eq!(
+        session.stage(),
+        SshStage::Idents,
+        "fresh server session must start in Idents stage"
+    );
+
+    // Wire CaptureLayer downstream so `default_send` lands at our
+    // capture buffer. FASM `io$addchild` analogue at `io.inc:74`.
+    let captor = CaptureLayer::new();
+    let session_dyn: Arc<dyn IoChain> = Arc::clone(&session) as Arc<dyn IoChain>;
+    let captor_dyn: Arc<dyn IoChain> = Arc::clone(&captor) as Arc<dyn IoChain>;
+    link(&session_dyn, captor_dyn);
+
+    // Drive the on-connect handler. `connected()` AWAITS its
+    // `send_to_child` call BEFORE spawning the outbound pump and
+    // walking BACKWARD via `default_connected`, so by the time the
+    // future resolves the captured bytes are already in `captor`.
+    // (See `SshSession::connected` body at `server.rs:934`.)
+    let peer: SocketAddr = "127.0.0.1:65000".parse().unwrap();
+    Arc::clone(&session).connected(Some(peer)).await;
+
+    // Assert exactly one Bytes payload landed at the leaf, byte-equal
+    // to the FASM `ssh_ident_string` (20 B = b"SSH-2.0-HeavyThing\r\n").
+    let captured = captor.snapshot();
+    assert_eq!(
+        captured.len(),
+        1,
+        "server-mode connected() must emit exactly one banner; got {} payloads",
+        captured.len()
+    );
+    assert_eq!(
+        captured[0].as_ref(),
+        SSH_IDENT,
+        "captured banner must be byte-equal to SSH_IDENT (20 B); got {} bytes",
+        captured[0].len()
+    );
+
+    // Stage must remain Idents after the emission (FASM line 952:
+    // `mov dword [rdi+ssh_stage_ofs], 0`).
+    assert_eq!(
+        session.stage(),
+        SshStage::Idents,
+        "after server-mode banner emission stage must be Idents (waiting for peer's banner)"
+    );
+}
+
+/// Test 2 — Client-mode `connected()` MUST NOT emit a banner.
+///
+/// RFC 4253 §4.2 specifies that either party MAY send their banner
+/// first; FASM `ssh$connected` for client mode (the non-server branch
+/// at `ssh.inc` line 633) is a NO-OP for banner emission — the
+/// client's banner is sent only after `try_parse_ident` consumes the
+/// server's banner and triggers the next stage. This test pins down
+/// that asymmetric behaviour: the client waits for the peer's banner
+/// before sending its own.
+#[tokio::test]
+async fn test_ssh_banner_client_mode_emits_no_banner_until_peer_banner_received() {
+    let session = SshSession::new_client(None, None);
+
+    // Wire CaptureLayer leaf.
+    let captor = CaptureLayer::new();
+    let session_dyn: Arc<dyn IoChain> = Arc::clone(&session) as Arc<dyn IoChain>;
+    let captor_dyn: Arc<dyn IoChain> = Arc::clone(&captor) as Arc<dyn IoChain>;
+    link(&session_dyn, captor_dyn);
+
+    // Drive the on-connect handler.
+    let peer: SocketAddr = "127.0.0.1:65000".parse().unwrap();
+    Arc::clone(&session).connected(Some(peer)).await;
+
+    // Assert NO bytes were captured — client must wait for the peer's
+    // banner first per RFC 4253 §4.2 + FASM ssh.inc line 633 branch.
+    let captured = captor.snapshot();
+    assert!(
+        captured.is_empty(),
+        "client-mode connected() must NOT emit a banner; got {} payloads",
+        captured.len()
+    );
+}
+
+/// Test 3 — A peer whose key is in the IP blacklist on accept MUST
+/// receive `SSH_IDENT_BLACKLISTED` (34 B) instead of `SSH_IDENT`.
+///
+/// FASM `ssh$connected` (line 632) checks the
+/// `ssh_stage_ofs == SshStage::Goaway` branch first and emits the
+/// blacklisted banner; AAP §0.7.1.1 mandates 86 400 s default ban
+/// duration and the same banner-replacement on every connect from
+/// the banned peer.
+///
+/// We need to drive `SshServer::accept_one` because it is the only
+/// public path that sets `stage = Goaway` (the field is private and
+/// there is no public setter). `accept_one` requires a real
+/// `tokio::net::TcpStream` even though it discards the stream
+/// (`_stream: TcpStream` at `server.rs:629`). We satisfy the type
+/// signature with a loopback connection — no SSH bytes flow over
+/// the kernel; the in-process IoChain bridge captures them, mirroring
+/// the FASM `ssh_serverside_test` integration-test idiom.
+#[tokio::test]
+async fn test_ssh_banner_blacklisted_peer_emits_goaway_banner() {
+    use tokio::net::{TcpListener, TcpStream};
+
+    // Set up loopback to obtain a real TcpStream + peer SocketAddr.
+    // Address 127.0.0.1:0 lets the kernel choose an ephemeral port,
+    // making the test hermetic against host port collisions.
+    let listener = TcpListener::bind(("127.0.0.1", 0u16))
+        .await
+        .expect("bind 127.0.0.1:0 must succeed in CI");
+    let listener_addr = listener
+        .local_addr()
+        .expect("local_addr must succeed for a freshly bound listener");
+
+    // Spawn a connector. We don't care about the connector's stream —
+    // we let it drop after connect succeeds; the listener-side accept
+    // gives us the SocketAddr we need.
+    let connector = tokio::spawn(async move {
+        let _ = TcpStream::connect(listener_addr).await;
+    });
+
+    let (stream, peer) = listener.accept().await.expect("loopback accept must succeed");
+    connector.await.expect("connector task must complete cleanly");
+
+    // Build the server with a fresh blacklist whose TTL outlasts the
+    // test by a wide margin (86 400 s would also work but 3 600 s
+    // keeps the test contract obvious). Use the public
+    // `SshServer::new` constructor at `server.rs:597`.
+    let server = SshServer::new(SshConfig::default());
+    let key = blacklist::key_from_socket_addr(peer);
+    server.blacklist.insert(key, Duration::from_secs(3600));
+    assert!(
+        server.blacklist.contains(key),
+        "blacklist insert must take effect before accept_one"
+    );
+
+    // Run accept_one — this constructs the SshSession, sets remote
+    // addr, then sets stage = Goaway because the blacklist contains
+    // the peer's key (`server.rs:639-641`).
+    let session = server
+        .accept_one(stream, peer)
+        .await
+        .expect("accept_one must succeed for a valid peer");
+    assert_eq!(
+        session.stage(),
+        SshStage::Goaway,
+        "blacklisted peer's session must be in Goaway stage"
+    );
+
+    // Wire CaptureLayer.
+    let captor = CaptureLayer::new();
+    let session_dyn: Arc<dyn IoChain> = Arc::clone(&session) as Arc<dyn IoChain>;
+    let captor_dyn: Arc<dyn IoChain> = Arc::clone(&captor) as Arc<dyn IoChain>;
+    link(&session_dyn, captor_dyn);
+
+    // Drive connected — must emit SSH_IDENT_BLACKLISTED, NOT SSH_IDENT.
+    Arc::clone(&session).connected(Some(peer)).await;
+
+    let captured = captor.snapshot();
+    assert_eq!(
+        captured.len(),
+        1,
+        "Goaway connected() must emit exactly one banner; got {} payloads",
+        captured.len()
+    );
+    assert_eq!(
+        captured[0].as_ref(),
+        SSH_IDENT_BLACKLISTED,
+        "Goaway banner must be byte-equal to SSH_IDENT_BLACKLISTED (34 B); got {} bytes",
+        captured[0].len()
+    );
+
+    // Stage must remain Goaway after the emission (FASM does not
+    // re-store the stage on this path — the early-return at
+    // `server.rs:942-948` does not touch ssh_stage_ofs).
+    assert_eq!(
+        session.stage(),
+        SshStage::Goaway,
+        "after blacklisted banner emission stage must remain Goaway"
+    );
+}
+
+/// Test 4 — Drive a full banner round trip — server emits its banner
+/// via `connected()`, then we feed the peer's banner via `receive()`
+/// and assert the protocol stage advances from `Idents` to
+/// `WantKexInit`.
+///
+/// FASM `ssh$try_parse_ident` (`ssh.inc` lines ~1100-1300) is the
+/// banner parser that, on successful parsing of the peer's
+/// `SSH-2.0-...\r\n` line, stores the trimmed banner into
+/// `kex.remote_ident` and advances `ssh_stage_ofs` to
+/// `WantKexInit` (Rust analogue at `server.rs:1158`-`1204`). This
+/// test exercises that state transition end-to-end through the
+/// public IoChain `receive` entry point.
+#[tokio::test]
+async fn test_ssh_banner_round_trip_advances_stage_to_want_kex_init() {
+    let config = SshConfig::default();
+    let session: Arc<SshSession> =
+        SshSession::new_server(&config, None).expect("new_server must succeed in /etc/ssh-empty env");
+
+    // Wire CaptureLayer + drive on-connect.
+    let captor = CaptureLayer::new();
+    let session_dyn: Arc<dyn IoChain> = Arc::clone(&session) as Arc<dyn IoChain>;
+    let captor_dyn: Arc<dyn IoChain> = Arc::clone(&captor) as Arc<dyn IoChain>;
+    link(&session_dyn, captor_dyn);
+
+    let peer: SocketAddr = "127.0.0.1:65000".parse().unwrap();
+    Arc::clone(&session).connected(Some(peer)).await;
+
+    // Pre-condition for the banner-round-trip: server has emitted
+    // SSH_IDENT and is awaiting the peer's banner.
+    assert_eq!(
+        captor.snapshot().len(),
+        1,
+        "must have one captured banner before round-trip"
+    );
+    assert_eq!(
+        session.stage(),
+        SshStage::Idents,
+        "before round-trip, server stage must be Idents"
+    );
+
+    // Feed a representative OpenSSH 8.x banner through the BACKWARD
+    // `receive` path. This is an `Arc<dyn IoChain>::receive` call,
+    // which in `SshSession::receive` (`server.rs:984`) appends to
+    // `accbuf` and drives `drive_receive_loop`. The loop sees
+    // stage == Idents, calls `try_parse_ident`, advances stage to
+    // `WantKexInit` (`server.rs:1201`), and returns Ok(()). The
+    // `bool` return value of `receive` is the session's `dead` flag;
+    // we are not dead because the banner parsed cleanly.
+    let peer_banner = Bytes::from_static(b"SSH-2.0-OpenSSH_8.0\r\n");
+    let teardown = Arc::clone(&session).receive(peer_banner).await;
+    assert!(
+        !teardown,
+        "after a normal banner round-trip the chain must NOT be torn down"
+    );
+
+    // Stage MUST have advanced from Idents to WantKexInit. This is
+    // the load-bearing assertion: the FASM-equivalent state-machine
+    // transition at `server.rs:1201` has occurred and the next
+    // protocol step (server emits its KEXINIT in response to the
+    // peer's KEXINIT) is unblocked.
+    assert_eq!(
+        session.stage(),
+        SshStage::WantKexInit,
+        "after consuming peer's SSH-2.0 banner, stage must advance to WantKexInit"
+    );
 }

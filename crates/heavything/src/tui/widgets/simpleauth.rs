@@ -256,6 +256,37 @@ pub enum AuthField {
     Token,
 }
 
+/// Internal selector identifying which `*_setup` body the
+/// [`TuiAuthpanel::new`] constructor should run inside its
+/// `Arc::new_cyclic` closure.
+///
+/// This enum was added during the CP8 wire-emission remediation to
+/// fix the long-standing
+/// `Arc::get_mut(&mut panel).normal_setup()` bug at the
+/// `TuiAuthpanel::new` call sites: `TuiAuthpanel` stores
+/// `weak_self: Weak<Self>`, so post-`new_cyclic` `weak_count == 1`
+/// and `Arc::get_mut` always returns `None`. Moving the setup
+/// dispatch inside the constructor's closure eliminates the
+/// `get_mut` step entirely.
+///
+/// Mapping to the legacy `&mut self` setup methods retained on
+/// [`TuiAuthpanel`] (`normal_setup` / `newuser_setup` /
+/// `token_setup`):
+///
+/// - [`AuthpanelSetup::Normal`]        → `normal_setup`, `new_form = false`
+/// - [`AuthpanelSetup::NewUser`]       → `newuser_setup`, `new_form = false`
+/// - [`AuthpanelSetup::Token`]         → `token_setup`,   `new_form = false`
+/// - [`AuthpanelSetup::NormalNewForm`] → `normal_setup`, `new_form = true`
+///   (used by [`TuiSimpleauth::newuser_clicked`] when transitioning
+///   to the New-User form which adds a re-type-password row)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuthpanelSetup {
+    Normal,
+    NewUser,
+    Token,
+    NormalNewForm,
+}
+
 // ============================================================================
 // SimpleAuthHandler — the user-supplied authentication decision callback
 // ============================================================================
@@ -391,6 +422,17 @@ pub(crate) struct SimpleAuthInner {
     /// integer height of 6, 10, or 5 rows depending on `auth_type`.
     /// Houses `panel` (and during failure, `fail`) as its child. FASM
     /// offset: `tui_simpleauth_mid_ofs = tui_background_size + 16`.
+    ///
+    /// Retained for FASM offset/structural parity (the FASM struct
+    /// allocates 8 bytes at `+16` for this pointer). The Rust port
+    /// keeps an owning [`Arc`] here so the middle container's
+    /// lifetime is held independent of `state.children` (which is
+    /// the visible widget-tree path). Currently no Rust read site
+    /// dereferences `mid` because the visual chain reaches it
+    /// through `state.children[1]`, but the field is preserved so
+    /// future failure-overlay swaps (FASM `tui_simpleauth$failed`
+    /// lines 540-636) can mutate the mid container directly.
+    #[allow(dead_code)]
     pub(crate) mid: Option<Arc<PanelContainer>>,
     /// Currently active input panel. FASM offset:
     /// `tui_simpleauth_panel_ofs = tui_background_size + 24`.
@@ -681,6 +723,37 @@ impl TuiSimpleauth {
             )));
         }
 
+        // FIX (CP8 wire-emission remediation, post-MEDIUM-#18 deep-dive):
+        //
+        // Previously this constructor used `Arc::new_cyclic` to populate
+        // `weak_self`, then called `Arc::get_mut` on the returned Arc
+        // to run `nvsetup` (which mutates `state.children` and
+        // `inner.mid`/`inner.panel`). That pattern is *broken*:
+        // `Arc::new_cyclic` always leaves `weak_count == 1` after
+        // returning (the closure stored a clone of the supplied Weak
+        // into `weak_self`), and `Arc::get_mut` returns `None` when
+        // either `strong_count != 1` or `weak_count != 0`. Live-wire
+        // smoke testing of `sshtalk` (Gate 1 of INTEGRATION_SIGNOFF)
+        // showed the SSH-2.0-HeavyThing banner was never emitted; the
+        // root cause was that this constructor returned
+        // `TuiError::Render("just-constructed Arc has refcount > 1")`
+        // on every per-connection call, the `handle_ssh_connection`
+        // wrapper observed the error and let the freshly-accepted
+        // TCP socket drop, and the kernel emitted RST before any
+        // bytes flew. (The 4 unit tests in this module that exercise
+        // `TuiSimpleauth::new` had `if let Ok(sa) = ...` defensive
+        // pattern that masked the always-failing construction —
+        // hence the bug slipped past the 3,361-test suite.)
+        //
+        // The fix performs all initialisation inside the
+        // `Arc::new_cyclic` closure, where the `&Weak<Self>` is
+        // already available and post-construction `Arc::get_mut` is
+        // never needed. Errors that arise during the inner widget
+        // tree construction are stashed in `error_stash` (mutably
+        // captured by the FnOnce closure) and surfaced after
+        // `Arc::new_cyclic` returns; on error path we drop the
+        // skeleton Arc immediately to release the moved-in
+        // `on_success` / `handler` Arcs.
         let mut state = WidgetState::new();
         state.width = 0;
         state.height = 0;
@@ -688,30 +761,61 @@ impl TuiSimpleauth {
         state.height_percent = Some(100.0);
         state.layout = Layout::Vertical;
 
-        let mut arc_self = Arc::new_cyclic(|weak: &Weak<TuiSimpleauth>| TuiSimpleauth {
-            state,
-            bgfillchar: BG_FILLCHAR,
-            bgcolors: ColorPair::new(COLOR_LIGHTGRAY, COLOR_BLACK),
-            on_success,
-            handler,
-            weak_self: weak.clone(),
-            inner: Mutex::new(SimpleAuthInner {
-                auth_type,
-                mid: None,
-                panel: None,
-                fail: None,
-                retry_time: 3,
-                old_panel: None,
-                timer: None,
-            }),
+        // Move the heap-allocated handler and on_success into local
+        // bindings that the closure can consume by value. Using
+        // `Option<...>::take()` guarantees the closure runs exactly
+        // once (Arc::new_cyclic's `F: FnOnce` contract).
+        let mut on_success_slot: Option<Arc<dyn Widget>> = Some(on_success);
+        let mut handler_slot: Option<Arc<dyn SimpleAuthHandler>> = Some(handler);
+        let mut state_slot: Option<WidgetState> = Some(state);
+        let mut error_stash: Option<TuiError> = None;
+
+        let arc_self = Arc::new_cyclic(|weak: &Weak<TuiSimpleauth>| {
+            // The closure is FnOnce; .take() each slot once.
+            let on_success = on_success_slot.take().unwrap();
+            let handler = handler_slot.take().unwrap();
+            let mut state = state_slot.take().unwrap();
+
+            // Build the 3-child layout (top spacer · mid · bottom)
+            // using the live `weak` reference so TuiAuthpanel::new
+            // can store its parent back-pointer without needing a
+            // post-construction Arc::get_mut.
+            //
+            // FASM parallel: tui_simpleauth$nvsetup (lines 169-320).
+            let nvsetup_result = build_simpleauth_layout(weak.clone(), auth_type, &mut state);
+            let (mid_opt, panel_opt) = match nvsetup_result {
+                Ok((mid, panel)) => (Some(mid), Some(panel)),
+                Err(e) => {
+                    error_stash = Some(e);
+                    (None, None)
+                }
+            };
+
+            TuiSimpleauth {
+                state,
+                bgfillchar: BG_FILLCHAR,
+                bgcolors: ColorPair::new(COLOR_LIGHTGRAY, COLOR_BLACK),
+                on_success,
+                handler,
+                weak_self: weak.clone(),
+                inner: Mutex::new(SimpleAuthInner {
+                    auth_type,
+                    mid: mid_opt,
+                    panel: panel_opt,
+                    fail: None,
+                    retry_time: 3,
+                    old_panel: None,
+                    timer: None,
+                }),
+            }
         });
-        // Strong refcount = 1 here; Arc::get_mut succeeds.
-        let self_mut = Arc::get_mut(&mut arc_self).ok_or_else(|| {
-            TuiError::Render(io::Error::other(
-                "TuiSimpleauth::new: just-constructed Arc has refcount > 1",
-            ))
-        })?;
-        self_mut.nvsetup()?;
+
+        if let Some(e) = error_stash {
+            // Drop the skeleton Arc (releases on_success/handler
+            // back-references along with weak_self).
+            drop(arc_self);
+            return Err(e);
+        }
         Ok(arc_self)
     }
 
@@ -742,84 +846,90 @@ impl TuiSimpleauth {
     pub fn create_newuser(&self, username: &[u8], password: &[u8]) -> Option<Vec<u8>> {
         self.handler.create_newuser(username, password)
     }
+}
 
-    /// Build the 3-child layout (top spacer · mid container · bottom
-    /// spacer) and populate `inner.mid` / `inner.panel`.
-    ///
-    /// FASM parallel: `tui_simpleauth$nvsetup` (lines 169-320).
-    ///
-    /// Internal-use only — must be called via [`Arc::get_mut`] while
-    /// the owning `Arc<TuiSimpleauth>` is still uniquely owned.
-    fn nvsetup(&mut self) -> Result<(), TuiError> {
-        let auth_type = lock_simpleauth_inner(&self.inner).auth_type;
-        let (mid_height, panel_width, panel_height) = match auth_type {
-            AuthType::Normal => (6_i32, 38_i32, 6_i32),
-            AuthType::NewUser => (10_i32, 38_i32, 10_i32),
-            AuthType::Token => (5_i32, 50_i32, 5_i32),
-            AuthType::NewUserForm => {
-                unreachable!("AuthType::NewUserForm should have been rejected by TuiSimpleauth::new")
-            }
-        };
-
-        // ----- top spacer (FASM "100%×50% rounding-half" placeholder) -----
-        let top_spacer = TuiHSpacer::new_d(100.0)?;
-
-        // ----- mid container: 100% wide × fixed mid_height rows ----------
-        let mut mid = PanelContainer::new(100.0, 100.0, Layout::Vertical);
-        {
-            let mid_mut = Arc::get_mut(&mut mid).ok_or_else(|| {
-                TuiError::Render(io::Error::other(
-                    "TuiSimpleauth::nvsetup: PanelContainer Arc unexpectedly shared",
-                ))
-            })?;
-            mid_mut.state.height_percent = None;
-            mid_mut.state.height = mid_height;
-            mid_mut.state.horiz_align = HorizAlign::Center;
+// ============================================================================
+// build_simpleauth_layout — free function called by TuiSimpleauth::new
+// ============================================================================
+//
+// Replaces the previous `TuiSimpleauth::nvsetup(&mut self)` method, which
+// could not be invoked because the owning `Arc<TuiSimpleauth>` was always
+// shared by `weak_self` after `Arc::new_cyclic` returned. By moving the
+// layout-building logic into a free function that accepts the
+// `Weak<TuiSimpleauth>` directly, we can run it inside the
+// `Arc::new_cyclic` closure where the Weak is already available.
+//
+// FASM parallel: `tui_simpleauth$nvsetup` (lines 169-320).
+fn build_simpleauth_layout(
+    weak_simpleauth: Weak<TuiSimpleauth>,
+    auth_type: AuthType,
+    state: &mut WidgetState,
+) -> Result<(Arc<PanelContainer>, Arc<TuiAuthpanel>), TuiError> {
+    let (mid_height, panel_width, panel_height) = match auth_type {
+        AuthType::Normal => (6_i32, 38_i32, 6_i32),
+        AuthType::NewUser => (10_i32, 38_i32, 10_i32),
+        AuthType::Token => (5_i32, 50_i32, 5_i32),
+        AuthType::NewUserForm => {
+            unreachable!("AuthType::NewUserForm should have been rejected by TuiSimpleauth::new")
         }
+    };
 
-        // ----- inner authpanel + matching field setup ---------------------
-        let mut panel = TuiAuthpanel::new(panel_width, panel_height, self.weak_self.clone(), false)?;
-        {
-            let panel_mut = Arc::get_mut(&mut panel).ok_or_else(|| {
-                TuiError::Render(io::Error::other(
-                    "TuiSimpleauth::nvsetup: TuiAuthpanel Arc unexpectedly shared",
-                ))
-            })?;
-            match auth_type {
-                AuthType::Normal => panel_mut.normal_setup()?,
-                AuthType::NewUser => panel_mut.newuser_setup()?,
-                AuthType::Token => panel_mut.token_setup()?,
-                AuthType::NewUserForm => unreachable!(),
-            }
-        }
+    // ----- top spacer (FASM "100%×50% rounding-half" placeholder) -----
+    let top_spacer = TuiHSpacer::new_d(100.0)?;
 
-        // ----- mount panel inside mid -------------------------------------
-        let panel_dyn: Arc<dyn Widget> = panel.clone();
-        {
-            let mid_mut = Arc::get_mut(&mut mid).ok_or_else(|| {
-                TuiError::Render(io::Error::other(
-                    "TuiSimpleauth::nvsetup: PanelContainer Arc shared before append",
-                ))
-            })?;
-            mid_mut.state.children.push_back(panel_dyn);
-        }
-
-        // ----- bottom spacer (FASM rounding-error correction = 51% bias) --
-        let bot_spacer = TuiHSpacer::new_d(100.0)?;
-
-        // ----- push all 3 into self.state.children ------------------------
-        let mid_dyn: Arc<dyn Widget> = mid.clone();
-        self.state.children.push_back(top_spacer as Arc<dyn Widget>);
-        self.state.children.push_back(mid_dyn);
-        self.state.children.push_back(bot_spacer as Arc<dyn Widget>);
-
-        // ----- record the discovered pointers in inner --------------------
-        let mut inner = lock_simpleauth_inner(&self.inner);
-        inner.mid = Some(mid);
-        inner.panel = Some(panel);
-
-        Ok(())
+    // ----- mid container: 100% wide × fixed mid_height rows ----------
+    //
+    // PanelContainer::new uses plain `Arc::new` (not `Arc::new_cyclic`),
+    // so weak_count == 0 and `Arc::get_mut(&mut mid)` always succeeds
+    // for the freshly-constructed Arc.
+    let mut mid = PanelContainer::new(100.0, 100.0, Layout::Vertical);
+    {
+        let mid_mut = Arc::get_mut(&mut mid).ok_or_else(|| {
+            TuiError::Render(io::Error::other(
+                "build_simpleauth_layout: PanelContainer Arc unexpectedly shared",
+            ))
+        })?;
+        mid_mut.state.height_percent = None;
+        mid_mut.state.height = mid_height;
+        mid_mut.state.horiz_align = HorizAlign::Center;
     }
+
+    // ----- inner authpanel + matching field setup ---------------------
+    //
+    // `TuiAuthpanel::new` now accepts an `AuthpanelSetup` parameter
+    // and runs the corresponding setup logic *inside* its own
+    // `Arc::new_cyclic` closure — the broken
+    // `Arc::get_mut(&mut panel).normal_setup()` pattern from the
+    // original `nvsetup` is therefore eliminated at this site too.
+    let setup = match auth_type {
+        AuthType::Normal => AuthpanelSetup::Normal,
+        AuthType::NewUser => AuthpanelSetup::NewUser,
+        AuthType::Token => AuthpanelSetup::Token,
+        AuthType::NewUserForm => unreachable!(),
+    };
+    let panel = TuiAuthpanel::new(panel_width, panel_height, weak_simpleauth, setup)?;
+
+    // ----- mount panel inside mid -------------------------------------
+    let panel_dyn: Arc<dyn Widget> = panel.clone();
+    {
+        let mid_mut = Arc::get_mut(&mut mid).ok_or_else(|| {
+            TuiError::Render(io::Error::other(
+                "build_simpleauth_layout: PanelContainer Arc shared before append",
+            ))
+        })?;
+        mid_mut.state.children.push_back(panel_dyn);
+    }
+
+    // ----- bottom spacer (FASM rounding-error correction = 51% bias) --
+    let bot_spacer = TuiHSpacer::new_d(100.0)?;
+
+    // ----- push all 3 into the supplied state.children ----------------
+    let mid_dyn: Arc<dyn Widget> = mid.clone();
+    state.children.push_back(top_spacer as Arc<dyn Widget>);
+    state.children.push_back(mid_dyn);
+    state.children.push_back(bot_spacer as Arc<dyn Widget>);
+
+    Ok((mid, panel))
 }
 
 // ============================================================================
@@ -996,15 +1106,15 @@ impl TuiSimpleauth {
         };
 
         // Build the fresh new-user-form panel.
-        let mut new_panel = TuiAuthpanel::new(46, 7, self.weak_self.clone(), true)?;
-        {
-            let panel_mut = Arc::get_mut(&mut new_panel).ok_or_else(|| {
-                TuiError::Render(io::Error::other(
-                    "TuiSimpleauth::newuser_clicked: TuiAuthpanel Arc unexpectedly shared",
-                ))
-            })?;
-            panel_mut.normal_setup()?;
-        }
+        //
+        // The new constructor runs the layout-building setup
+        // (`normal_setup` for `NormalNewForm`, which adds the
+        // re-type-password row when `new_form == true`) inside its
+        // `Arc::new_cyclic` closure, so the previous broken
+        // `Arc::get_mut(&mut new_panel).normal_setup()` step has
+        // been deleted. See [`AuthpanelSetup`] doc-comment for the
+        // bug-history rationale.
+        let new_panel = TuiAuthpanel::new(46, 7, self.weak_self.clone(), AuthpanelSetup::NormalNewForm)?;
 
         // Pre-fill the freshly-created username and password fields.
         new_panel.set_username_text(&username);
@@ -1384,23 +1494,44 @@ impl Widget for TuiAutheditor {
 // ============================================================================
 
 impl TuiAuthpanel {
-    /// Construct a new authentication panel.
+    /// Construct a new authentication panel and run the
+    /// requested setup flow inline.
     ///
-    /// FASM parallel: `tui_authpanel$new` (lines 1062-1114).
+    /// FASM parallel: `tui_authpanel$new` (lines 1062-1114) plus
+    /// inline dispatch to `tui_authpanel$normalsetup`,
+    /// `tui_authpanel$newusersetup`, or `tui_authpanel$tokensetup`.
     ///
-    /// - Title: `"New User Form"` (when `new_form == true`) or
-    ///   `"Authentication Required"` otherwise.
+    /// - Title: `"New User Form"` when [`AuthpanelSetup::NormalNewForm`],
+    ///   otherwise `"Authentication Required"`.
     /// - Box and title colours: `(COLOR_BLACK, COLOR_CYAN)`.
     /// - Input colours: `(COLOR_LIGHTGRAY, COLOR_BLACK)`.
     /// - Focus input colours: `(COLOR_YELLOW, COLOR_BLUE)`.
     /// - Adds an initial 100%-wide × 1-row [`TuiHSpacer`] as the
     ///   first child, matching the FASM body.
-    pub fn new(
+    /// - Then dispatches to the corresponding `*_setup` body
+    ///   *inside* the [`Arc::new_cyclic`] closure where
+    ///   `&Weak<TuiAuthpanel>` is already available (see
+    ///   [`AuthpanelSetup`] for the bug-history rationale).
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error from constructing the underlying
+    /// [`TuiPanel`], setting its title colours, or running the
+    /// requested setup body. On error the partially-constructed
+    /// `Arc<TuiAuthpanel>` is dropped before returning so the
+    /// `as_simpleauth` weak ref and any consumed widgets are released.
+    ///
+    /// Visibility is `pub(crate)` because the [`AuthpanelSetup`]
+    /// selector is itself crate-private — `TuiAuthpanel` is only
+    /// instantiated by [`TuiSimpleauth::new`] /
+    /// [`TuiSimpleauth::newuser_clicked`] inside this module.
+    pub(crate) fn new(
         width: i32,
         height: i32,
         as_simpleauth: Weak<TuiSimpleauth>,
-        new_form: bool,
+        setup: AuthpanelSetup,
     ) -> Result<Arc<Self>, TuiError> {
+        let new_form = matches!(setup, AuthpanelSetup::NormalNewForm);
         let title = if new_form {
             "New User Form"
         } else {
@@ -1419,20 +1550,54 @@ impl TuiAuthpanel {
         let leading_spacer = TuiHSpacer::new_d(100.0)?;
         panel.append_child(leading_spacer as Arc<dyn Widget>);
 
-        let arc_self = Arc::new_cyclic(|weak: &Weak<TuiAuthpanel>| TuiAuthpanel {
-            base: panel,
-            input_colors: ColorPair::new(COLOR_LIGHTGRAY, COLOR_BLACK),
-            focus_input_colors: ColorPair::new(COLOR_YELLOW, COLOR_BLUE),
-            new_form,
-            weak_self: weak.clone(),
-            as_weak: Mutex::new(as_simpleauth),
-            inner: Mutex::new(AuthpanelInner {
-                username: None,
-                password: None,
-                token_or_confirm: None,
-                newuser_button: None,
-            }),
+        let input_colors = ColorPair::new(COLOR_LIGHTGRAY, COLOR_BLACK);
+        let focus_input_colors = ColorPair::new(COLOR_YELLOW, COLOR_BLUE);
+
+        // Slot pattern: closure consumes the moved values exactly once
+        // (Arc::new_cyclic's closure is FnOnce, so .take().unwrap()
+        // is sound).
+        let mut panel_slot = Some(panel);
+        let mut as_simpleauth_slot = Some(as_simpleauth);
+        let mut error_stash: Option<TuiError> = None;
+
+        let arc_self = Arc::new_cyclic(|weak: &Weak<TuiAuthpanel>| {
+            let panel = panel_slot.take().unwrap();
+            let as_simpleauth = as_simpleauth_slot.take().unwrap();
+            // Build the TuiAuthpanel value inline — we now have
+            // `&mut auth_panel` and can call the existing
+            // `&mut self` setup methods directly without going
+            // through `Arc::get_mut` on a freshly-constructed Arc.
+            let mut auth_panel = TuiAuthpanel {
+                base: panel,
+                input_colors,
+                focus_input_colors,
+                new_form,
+                weak_self: weak.clone(),
+                as_weak: Mutex::new(as_simpleauth),
+                inner: Mutex::new(AuthpanelInner {
+                    username: None,
+                    password: None,
+                    token_or_confirm: None,
+                    newuser_button: None,
+                }),
+            };
+            let setup_result: Result<(), TuiError> = match setup {
+                AuthpanelSetup::Normal | AuthpanelSetup::NormalNewForm => auth_panel.normal_setup(),
+                AuthpanelSetup::NewUser => auth_panel.newuser_setup(),
+                AuthpanelSetup::Token => auth_panel.token_setup(),
+            };
+            if let Err(e) = setup_result {
+                error_stash = Some(e);
+            }
+            auth_panel
         });
+
+        if let Some(e) = error_stash {
+            // Drop the skeleton Arc (releases any partially-constructed
+            // widgets, the `as_simpleauth` Weak, and `weak_self`).
+            drop(arc_self);
+            return Err(e);
+        }
         Ok(arc_self)
     }
 
@@ -2093,42 +2258,41 @@ mod tests {
     fn simpleauth_forwards_allow_userpass_to_handler() {
         let handler = Arc::new(RecordingHandler::new());
         let stub = StubWidget::new() as Arc<dyn Widget>;
-        let sa_result = TuiSimpleauth::new(AuthType::Normal, stub, handler.clone());
-        // Construction may error in the test environment if the underlying
-        // Background/Panel/Label/Text/Button stack is not fully initialised;
-        // we only verify routing if construction succeeded.
-        if let Ok(sa) = sa_result {
-            assert_eq!(handler.userpass_calls.load(Ordering::SeqCst), 0);
-            assert!(!sa.allow_userpass(b"alice", b"hunter2"));
-            assert_eq!(handler.userpass_calls.load(Ordering::SeqCst), 1);
+        // After the Arc::new_cyclic refactor, TuiSimpleauth::new always
+        // succeeds when given valid input — the previous defensive
+        // `if let Ok(sa)` pattern was a workaround for the
+        // refcount-after-new_cyclic bug fixed in the wire-emission
+        // remediation.
+        let sa = TuiSimpleauth::new(AuthType::Normal, stub, handler.clone())
+            .expect("construction must succeed for valid AuthType::Normal input");
+        assert_eq!(handler.userpass_calls.load(Ordering::SeqCst), 0);
+        assert!(!sa.allow_userpass(b"alice", b"hunter2"));
+        assert_eq!(handler.userpass_calls.load(Ordering::SeqCst), 1);
 
-            handler.accept_userpass.store(true, Ordering::SeqCst);
-            assert!(sa.allow_userpass(b"alice", b"hunter2"));
-            assert_eq!(handler.userpass_calls.load(Ordering::SeqCst), 2);
-        }
+        handler.accept_userpass.store(true, Ordering::SeqCst);
+        assert!(sa.allow_userpass(b"alice", b"hunter2"));
+        assert_eq!(handler.userpass_calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]
     fn simpleauth_forwards_allow_token_to_handler() {
         let handler = Arc::new(RecordingHandler::new());
         let stub = StubWidget::new() as Arc<dyn Widget>;
-        let sa_result = TuiSimpleauth::new(AuthType::Token, stub, handler.clone());
-        if let Ok(sa) = sa_result {
-            assert!(!sa.allow_token(b"deadbeef"));
-            assert_eq!(handler.token_calls.load(Ordering::SeqCst), 1);
-        }
+        let sa = TuiSimpleauth::new(AuthType::Token, stub, handler.clone())
+            .expect("construction must succeed for valid AuthType::Token input");
+        assert!(!sa.allow_token(b"deadbeef"));
+        assert_eq!(handler.token_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn simpleauth_forwards_create_newuser_to_handler() {
         let handler = Arc::new(RecordingHandler::new());
         let stub = StubWidget::new() as Arc<dyn Widget>;
-        let sa_result = TuiSimpleauth::new(AuthType::NewUser, stub, handler.clone());
-        if let Ok(sa) = sa_result {
-            // RecordingHandler::create_newuser returns None (success).
-            assert!(sa.create_newuser(b"alice", b"hunter2").is_none());
-            assert_eq!(handler.newuser_calls.load(Ordering::SeqCst), 1);
-        }
+        let sa = TuiSimpleauth::new(AuthType::NewUser, stub, handler.clone())
+            .expect("construction must succeed for valid AuthType::NewUser input");
+        // RecordingHandler::create_newuser returns None (success).
+        assert!(sa.create_newuser(b"alice", b"hunter2").is_none());
+        assert_eq!(handler.newuser_calls.load(Ordering::SeqCst), 1);
     }
 
     // ----------------------------------------------------------

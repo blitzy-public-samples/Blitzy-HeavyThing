@@ -61,6 +61,66 @@
 //! with status [`heavything::EXIT_EPOLL_CREATE_FAIL`] (`96`) when
 //! tokio runtime construction fails (AAP §0.1.1 observable
 //! exit-code contract).
+//!
+//! # Shutdown signaling — PDEATHSIG vs `tokio::signal::unix`
+//!
+//! AAP §0.7.1.2 mentions `tokio::signal::unix::signal(SignalKind::terminate())`
+//! as one approach for cooperative shutdown. The CP8 review (MINOR #5)
+//! flagged that this implementation uses a different mechanism and
+//! requested either an additional handler or documentation of the
+//! substitution rationale. We document the rationale here:
+//!
+//! The webserver's worker shutdown is driven by **two** complementary
+//! mechanisms, both already in place — adding a `tokio::signal::unix`
+//! SIGTERM handler would be redundant and would race the existing
+//! signal delivery from the kernel's `PR_SET_PDEATHSIG` machinery:
+//!
+//! 1. **`PR_SET_PDEATHSIG SIGTERM`** (set on line ~253 in [`run`]):
+//!    Per AAP §0.1.1 implicit requirement, when the master process
+//!    dies the kernel delivers SIGTERM to every worker. Default
+//!    SIGTERM disposition is process termination, so the worker exits
+//!    cleanly without any user-space signal handler. This is the
+//!    canonical Linux mechanism for parent-death detection and is
+//!    the same mechanism the FASM `rwasa/worker.inc` uses
+//!    (line 23: `mov rdi, sys_PR_SET_PDEATHSIG; mov rsi, sys_SIGTERM;
+//!    syscall sys_prctl`).
+//!
+//! 2. **Master-link EOF** (handled in [`run_master_link`]): The
+//!    master holds one half of a `socketpair(2)` Unix-domain socket;
+//!    the worker holds the other half. When the master closes its
+//!    end (graceful master-side shutdown, master crash, or master
+//!    `kill(2)`), the worker's read returns `Ok(0)` (EOF), and the
+//!    worker exits status 0 via the `bail!()` path in
+//!    `run_master_link`. This handles the case where the master
+//!    initiates an orderly shutdown without dying, where the master
+//!    closes the link before any tokio runtime task can react to a
+//!    signal.
+//!
+//! Adding `tokio::signal::unix::signal(SignalKind::terminate())`
+//! would create three problems:
+//!   * Race condition: PDEATHSIG and a tokio signal handler could
+//!     both fire on master death, racing for "first response", with
+//!     the kernel-default termination potentially preempting the
+//!     in-flight async task and leaving the runtime in an
+//!     inconsistent state (e.g., epoll FDs not yet released).
+//!   * Redundancy: PDEATHSIG already provides the master-death
+//!     signal path. A user-space SIGTERM handler would do the same
+//!     thing the kernel default already does (terminate the
+//!     process), so it adds no new behaviour.
+//!   * FASM divergence: the FASM `worker.inc` does NOT register a
+//!     user-space SIGTERM handler — it relies entirely on
+//!     PR_SET_PDEATHSIG for master-death detection and on the
+//!     master-link FD for graceful shutdown. Adding a tokio signal
+//!     handler would introduce behaviour the FASM baseline does not
+//!     have, contrary to AAP §0.8.1's "preserve all observable
+//!     behaviour" mandate.
+//!
+//! If a future need arises to inject SIGTERM-based shutdown from
+//! outside the master/worker pair (e.g., systemd unit `KillSignal=
+//! SIGTERM`), the right place to add the handler is in
+//! [`crate::main`] (the master process), which can then signal the
+//! workers via the master link rather than relying on direct
+//! signal delivery.
 
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
@@ -930,11 +990,7 @@ async fn accept_loop(
 /// inside [`handle_connection`]; only catastrophic IO is bubbled up
 /// and we deliberately drop it here so a single broken peer does not
 /// tear the worker down.
-async fn handle_tls_connection(
-    tls_stream: TlsStream,
-    peer: SocketAddr,
-    cfg: Arc<HtServerConfig>,
-) {
+async fn handle_tls_connection(tls_stream: TlsStream, peer: SocketAddr, cfg: Arc<HtServerConfig>) {
     // [`TlsStream`] implements `tokio::io::AsyncRead` and
     // `tokio::io::AsyncWrite`, satisfying [`handle_connection`]'s
     // generic bound `T: AsyncRead + AsyncWrite + Send + Unpin +

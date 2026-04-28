@@ -927,14 +927,30 @@ impl Chatpanel {
 /// chatroom-replication path. A complete reimplementation of
 /// `TuiText::key_event` is out of scope for this module; instead,
 /// the FASM behavior is preserved by **best-effort** dispatch: when
-/// `Arc::get_mut` succeeds, the keystroke lands; when it fails, the
-/// keystroke is dropped silently. This matches the practical
-/// behavior under heavy concurrent activity and does not regress the
-/// happy path (typing into a freshly-installed in-progress widget).
+/// `Arc::get_mut` succeeds, the keystroke lands; when it fails, a
+/// warning is emitted via syslog so operators can detect the
+/// dispatch miss in production logs (CP8 review finding MINOR #11
+/// resolved this from "silently dropped" to "warned-and-dropped").
+/// This matches the practical behavior under heavy concurrent
+/// activity and does not regress the happy path (typing into a
+/// freshly-installed in-progress widget).
 fn widget_dispatch_key(widget: &Arc<dyn Widget>, key: KeyEvent) {
     let mut clone = widget.clone();
     if let Some(w) = Arc::get_mut(&mut clone) {
         let _ = w.key_event(key);
+    } else {
+        // Arc::get_mut returned None — at least one other strong reference
+        // is alive. Emit a syslog warning so operators can correlate
+        // dropped keystrokes with concurrent map/list activity.
+        // syslog::warning is non-blocking (unbounded logger queue;
+        // see heavything::util::syslog::log) and falls back to stderr
+        // on AF_UNIX failure, so this branch is safe to invoke from
+        // the chatroom-replication hot path without affecting key
+        // dispatch latency.
+        heavything::util::syslog::warning(
+            "chatpanel::widget_dispatch_key: Arc::get_mut returned None; \
+             keystroke dropped (multiple strong refs to in-progress widget)",
+        );
     }
 }
 
@@ -1838,37 +1854,36 @@ impl ChatpanelOpener for ChatpanelOpenerImpl {
         cp.title_update()
             .context("chatpanel: open_by_name: title_update")?;
 
-        // Append the chatpanel to screen.main. We need a mutable
-        // handle to main; main is exposed as `&Arc<TuiBackground>`.
-        let main_arc = screen.main().clone();
-        let _ = main_arc; // Acknowledge we got it; appending in the
-                          // current Arc-shared model requires the
-                          // caller-side wrapper-pattern equivalent
-                          // that screen.rs uses for buddylist.
-                          //
-                          // The screen itself owns `main` and walks
-                          // `main_bg` children during render. To
-                          // install our chatpanel as a child we must
-                          // call `Arc::get_mut` on `main_arc` —
-                          // which fails when the screen also holds
-                          // a strong reference (it always does).
-                          //
-                          // The screen.rs file does not expose a
-                          // public "append child to main" method, so
-                          // we use an alternative path: append the
-                          // chatpanel to the screen's state.children
-                          // directly via the chatpanel's existence in
-                          // the chatroom's users map (which the
-                          // four-way fan-out walks). The actual
-                          // visual mounting on screen.main is
-                          // performed by the screen's own
-                          // initialization on the next layout pass.
-                          // For now, the chatpanel is held alive by
-                          // the chatroom::join above (the room's
-                          // users map holds a strong screen
-                          // reference, and the screen tree will pick
-                          // up the chatpanel when fanout drops it
-                          // into the rendered tree).
+        // Mount the chatpanel onto the screen (resolves CP8 review
+        // finding MEDIUM #10).
+        //
+        // FASM mapping: `chatpanel$new` ends with
+        // `tui_vappendchild [rbx+screen_main_ofs], rdi` — appending
+        // the new chatpanel into `main.children`. The Rust port
+        // cannot do that directly because:
+        //
+        //   * `screen.main()` returns `&Arc<TuiBackground>` — an
+        //     immutable shared reference.
+        //   * The [`heavything::tui::object::WidgetState::children`]
+        //     list is a plain (non-`Mutex`-protected)
+        //     [`heavything::ds::list::List<Arc<dyn Widget>>`].
+        //   * Mutation requires `Arc::get_mut(&mut main_arc)` which
+        //     always returns `None` post-construction — the screen
+        //     itself, the `outer_wrapper.children[0]` clone, and any
+        //     transient handles the caller might hold all keep the
+        //     strong refcount above 1.
+        //
+        // Instead, we route through [`Screen::mount_chatpanel`]
+        // which pushes onto a Mutex-protected slot on the screen
+        // itself. The observable end-state — "the chatpanel is
+        // discoverable via [`Screen::chatpanel_find`], visible to
+        // [`Screen::on_tab`] / [`Screen::on_shift_tab`] focus
+        // cycling, and held alive by a strong reference rooted at
+        // the screen" — is preserved.
+        let cp_dyn: Arc<dyn Widget> = cp.clone();
+        screen
+            .mount_chatpanel(Arc::clone(&cp_dyn))
+            .context("chatpanel: open_by_name: mount_chatpanel")?;
 
         // Focus handling: when called from a remote-driven context,
         // FASM grants focus only when the new panel is the only
@@ -1876,13 +1891,13 @@ impl ChatpanelOpener for ChatpanelOpenerImpl {
         // always granting focus on local-driven opens and never
         // grabbing focus on remote-driven opens.
         if !from_remote {
-            let cp_dyn: Arc<dyn Widget> = cp.clone();
             let _ = screen.change_focus(cp_dyn);
         }
 
-        // Drop our local handle — the chatroom's users map and the
-        // screen's main children list (when the layout pass runs)
-        // will keep the chatpanel alive.
+        // Drop our local handle — the screen's `mounted_chatpanels`
+        // slot now holds the canonical strong reference, so the
+        // chatpanel will live until [`Screen::unmount_chatpanel_by_name`]
+        // is invoked (or the screen itself is dropped).
         drop(cp);
 
         Ok(())

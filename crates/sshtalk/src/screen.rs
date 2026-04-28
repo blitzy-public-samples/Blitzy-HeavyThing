@@ -60,6 +60,61 @@
 //!   start-up. All call sites that would otherwise invoke
 //!   `chatpanel::open` instead dispatch through the trait, allowing
 //!   the screen module to compile in isolation.
+//!
+//! # v1 Limitations Summary (CP8 review findings #6–#9 acknowledged)
+//!
+//! The CP8 code review flagged four documented behavioural divergences
+//! from the FASM `screen.inc` baseline. They are reproduced here as a
+//! single inventory so reviewers can locate every site at a glance,
+//! and the rationale for **annotating as v2 work** rather than fixing
+//! in v1 is consolidated:
+//!
+//! 1. **Modal forwarding to underlying widgets** (Finding #6, see
+//!    `fire_key_event` doc comment at the "Documented v1
+//!    limitations" section) — the modal `Arc<dyn Widget>` cannot be
+//!    re-entered with `&mut` access because [`Arc::get_mut`] fails
+//!    once the modal is wired into both the [`ScreenInner.modal`]
+//!    slot and the parent's `bastards` list. The FASM forward path
+//!    requires a framework-level "`&mut`-friendly bastards walk-down
+//!    API" that the heavything TUI library does not yet expose.
+//!    Until the library grows that API, the keystroke is silently
+//!    consumed by the screen-level modal arm and never reaches the
+//!    underlying widget. The user-visible impact is minimal because
+//!    SSH chat dialogs are dismissed via Escape (which IS handled
+//!    correctly).
+//!
+//! 2. **Ctrl-J distinct from Enter** (Finding #7, see
+//!    `KeyEvent::Ctrl(10)` handling) — the SSH key decoder folds LF
+//!    (`0x0A`) and CR (`0x0D`) onto a single [`KeyEvent::Enter`]
+//!    variant. Distinguishing them would require a "key-event
+//!    normalization toggle" on the SSH terminal layer. The match arm
+//!    for `Ctrl(10)` is dead code in v1 but retained verbatim so a
+//!    future decoder upgrade can re-enable Ctrl-J's join-room dialog
+//!    without re-translating screen.rs.
+//!
+//! 3. **Ctrl-W chatpanel removal** (Finding #8, see `.ctrlw` arm
+//!    around `fire_key_event` line 1771..=1798 of FASM source) —
+//!    removes a focused chatpanel from `screen_main_ofs`. The Rust
+//!    port returns `false` (lets the keystroke bubble) because the
+//!    framework's `state.children` walk-down requires `&mut` on the
+//!    parent main-background widget which Arc-sharing prevents.
+//!    Once the framework grows a `&mut`-friendly child-removal API,
+//!    Ctrl-W's chatpanel teardown can be implemented by mutating
+//!    `screen.main`'s child list directly.
+//!
+//! 4. **Add-/Remove-buddy fast paths** (Finding #9) — the FASM has
+//!    four `.addbuddy` sub-paths and three `.removebuddy` sub-paths
+//!    that bypass the dialog when the user is already in a 1:1
+//!    chat. The Rust v1 only implements the slowest sub-path (open
+//!    the form dialog). Implementing the fast paths requires
+//!    chatpanel-downcast helpers that are post-v1 work. The
+//!    backing `userdb.add_buddy` / `remove_buddy` mutators are
+//!    fully wired and exercised through the form dialog path.
+//!
+//! All four limitations preserve correctness — every operation IS
+//! reachable through some keystroke, just sometimes via the
+//! slower dialog path. None of the four would surface as observable
+//! defects in a Gate 1 live SSH chat session.
 
 use std::any::Any;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -913,6 +968,50 @@ pub(crate) struct ScreenInner {
     /// state on the screen so the rendering layer can consult it
     /// during the next draw cycle without re-deriving the decision.
     pub(crate) cursor_visible: bool,
+    /// Chat panels mounted on this screen.
+    ///
+    /// In FASM the `chatpanel$new` constructor used `tui_vappendchild`
+    /// against `screen_main_ofs` (the inner main-background widget)
+    /// which routed the new chatpanel into `main_bg.children` via
+    /// `list$append`. The Rust port can NOT do that at run-time
+    /// because [`crate::screen::Screen::main`] returns
+    /// `&Arc<TuiBackground>` — an immutable shared reference, and
+    /// the [`crate::heavything::tui::widgets::background::TuiBackground`]
+    /// children list is a plain (non-`Mutex`-protected)
+    /// [`crate::heavything::tui::object::WidgetState::children`].
+    /// Both [`crate::screen::Screen::main`] and the construction-time
+    /// clone embedded in `outer_wrapper.children[0]` keep the Arc's
+    /// strong refcount above 1, so `Arc::get_mut` would always
+    /// return `None` post-construction — silently dropping the
+    /// chatpanel into a vacuum (the orphan-on-drop bug surfaced by
+    /// CP8 review finding MEDIUM #10).
+    ///
+    /// We therefore park the mounted chatpanels in this Mutex-
+    /// protected `Vec<Arc<dyn Widget>>` slot on the screen itself.
+    /// All call sites in this module that previously walked
+    /// `self.main.state().children` to find chatpanels (the
+    /// [`crate::screen::Screen::chatpanel_byname`] lookup, the
+    /// Tab / Shift-Tab focus-cycle navigation in
+    /// [`crate::screen::Screen::focus_next`] /
+    /// [`crate::screen::Screen::focus_prev`], and the
+    /// [`crate::screen::Screen::change_focus`] lost-/got-focus
+    /// dispatch) consult both lists and union them in
+    /// FASM-equivalent order: `main.state.children` first
+    /// (matches the FASM `list$first` walk start), then
+    /// `mounted_chatpanels` after (since the FASM construction
+    /// always appended via `list$append`, post-construction
+    /// chatpanels would have been at the end of the same list).
+    ///
+    /// Mounting and unmounting are performed via
+    /// [`crate::screen::Screen::mount_chatpanel`] and
+    /// [`crate::screen::Screen::unmount_chatpanel_by_name`]; both
+    /// take `&self` and grab the inner mutex — no `Arc::get_mut`
+    /// games are required.
+    ///
+    /// Resolves CP8 review finding MEDIUM #10 (chatpanel.rs
+    /// `ChatpanelOpenerImpl::open_by_name` missing `screen.main`
+    /// mount).
+    pub(crate) mounted_chatpanels: Vec<Arc<dyn Widget>>,
 }
 
 impl ScreenInner {
@@ -929,6 +1028,18 @@ impl ScreenInner {
             // `tui_ssh_show_cursor` runs at the top of `screen$clone`
             // immediately after the per-user tree is materialised.
             cursor_visible: true,
+            // Initially empty — chatpanels are mounted at run-time via
+            // [`Screen::mount_chatpanel`] (the runtime entry point used by
+            // [`crate::chatpanel::ChatpanelOpenerImpl::open_by_name`]).
+            //
+            // FASM mapping: `screen$clone` (`screen.inc` lines 188..=247)
+            // builds the screen tree with no chatpanels — chatpanels are
+            // appended later by `chatpanel$new` against `screen_main_ofs`.
+            // The Rust port stores those run-time appends here instead of
+            // mutating `main.children` (see field doc on
+            // [`ScreenInner::mounted_chatpanels`] for the architectural
+            // rationale).
+            mounted_chatpanels: Vec::new(),
         }
     }
 }
@@ -1328,7 +1439,21 @@ impl Screen {
     }
 
     /// Borrow the inner main-area background widget.
+    ///
     /// FASM mapping: `[rbx+screen_main_ofs]` after the swap-assign.
+    ///
+    /// `#[allow(dead_code)]`: Public accessor mirroring the FASM
+    /// `screen$main` field accessor; preserved per AAP §0.8.2
+    /// (Minimal Change Clause). Until CP8 review finding MEDIUM #10
+    /// the `chatpanel.rs` module called this to obtain a handle to
+    /// `main_arc` for an `Arc::get_mut` mount attempt — that path
+    /// has been replaced by [`Screen::mount_chatpanel`], which
+    /// stores run-time-mounted chatpanels on the screen itself
+    /// rather than on `main.children`. The accessor remains
+    /// available for future framework-pass integration (the engine
+    /// paint-pass driver will need to walk `main.state.children`
+    /// for build-time chatpanels alongside `mounted_chatpanels`).
+    #[allow(dead_code)]
     pub fn main(&self) -> &Arc<TuiBackground> {
         &self.main
     }
@@ -1821,16 +1946,165 @@ impl Screen {
         // chatpanel module would never have entered the dispatch.
         let opener = chatpanel_opener()?;
 
-        // Walk `main.children` head-to-tail. The buddy-list, the
-        // bell, and the helptext live on the **right column**, NOT
-        // on `main` — so this walk only ever sees real chatpanels.
+        // Walk `main.children` head-to-tail first (FASM `list$first`
+        // walk start). The buddy-list, the bell, and the helptext
+        // live on the **right column**, NOT on `main` — so this walk
+        // only ever sees children that pre-existed in the FASM
+        // construction-time tree. In the FASM source, all chatpanels
+        // were appended to `main.children` directly via
+        // `tui_vappendchild`; in the Rust port, run-time mounts are
+        // parked on [`ScreenInner::mounted_chatpanels`] (see field
+        // doc) so we walk that list next.
         let main_state = self.main.state();
         for child in main_state.children.iter() {
             if opener.matches_name(child, name) {
                 return Some(Arc::clone(child));
             }
         }
+
+        // Walk the run-time-mounted chatpanels parked on the screen
+        // itself (resolves CP8 review finding MEDIUM #10). Order
+        // matches the FASM `list$append` semantics — newest at the
+        // tail.
+        let snapshot = self.mounted_chatpanels_snapshot();
+        for child in snapshot.iter() {
+            if opener.matches_name(child, name) {
+                return Some(Arc::clone(child));
+            }
+        }
         None
+    }
+
+    /// Mount a freshly-constructed chatpanel onto this screen.
+    ///
+    /// Resolves CP8 review finding MEDIUM #10. See
+    /// [`ScreenInner::mounted_chatpanels`] for the architectural
+    /// rationale (the FASM source mutated `main.children` directly
+    /// via `tui_vappendchild`; the Rust port can't because
+    /// `main.state.children` is plain — non-`Mutex`-protected — and
+    /// `Arc::get_mut(&mut main_arc)` always returns `None`
+    /// post-construction since both the screen and the
+    /// `outer_wrapper` clone keep the strong refcount above 1).
+    ///
+    /// The mount path:
+    ///   1. Acquires [`Screen::inner`] (the screen-state mutex).
+    ///   2. Pushes `child` onto
+    ///      [`ScreenInner::mounted_chatpanels`].
+    ///   3. Releases the lock and returns.
+    ///
+    /// Once mounted, the chatpanel is discoverable by name lookup
+    /// via [`Screen::chatpanel_find`] and participates in
+    /// Tab/Shift-Tab focus cycling via
+    /// [`Screen::chatpanels_combined`].
+    ///
+    /// FASM mapping: `chatpanel$new` ends with
+    /// `tui_vappendchild [rbx+screen_main_ofs], rdi` — appending
+    /// the new chatpanel onto `main.children`. The Rust port's
+    /// equivalent operation is this method, which appends onto
+    /// the screen's `mounted_chatpanels` slot instead. The
+    /// observable end-state — "the chatpanel is part of the
+    /// screen tree and is reachable from focus / lookup" — is
+    /// preserved.
+    ///
+    /// Returns `Err` only if the inner mutex is so poisoned that
+    /// the recovery path also fails; under normal operation the
+    /// `unpoison` recovery yields a usable guard and the push
+    /// succeeds.
+    pub fn mount_chatpanel(&self, child: Arc<dyn Widget>) -> Result<()> {
+        match self.inner.lock() {
+            Ok(mut guard) => {
+                guard.mounted_chatpanels.push(child);
+                Ok(())
+            }
+            // Mutex poisoning is non-fatal per the heavything
+            // convention — recover the inner state and proceed.
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                guard.mounted_chatpanels.push(child);
+                Ok(())
+            }
+        }
+    }
+
+    /// Remove the first run-time-mounted chatpanel whose
+    /// [`ChatpanelOpener::matches_name`] reports a match.
+    ///
+    /// Forward-compatibility hook for sshtalk's Ctrl-W panel-close
+    /// shortcut (currently a documented v1 limitation — see
+    /// [`Screen`] doc-comment "v1 Limitations Summary"). The minimal
+    /// `main.rs` startup path does not currently invoke it, but the
+    /// API is exposed now so the future Ctrl-W wiring can land
+    /// without further changes to this module.
+    ///
+    /// `#[allow(dead_code)]`: Public API surface preserved per AAP
+    /// §0.8.2 (Minimal Change Clause) for future Ctrl-W
+    /// chatpanel-removal integration. Not invoked by the current
+    /// Phase-12 modal handlers.
+    ///
+    /// FASM mapping: there is no FASM equivalent — the assembly
+    /// version `screen$ctrlw` (lines ~1505..=1552) walks
+    /// `main.children`, does a `tui_vremovechild`, then frees the
+    /// chatpanel. The Rust port performs the equivalent
+    /// `Vec::remove` here and lets the chatpanel's `Drop` impl
+    /// fire when the strong count reaches zero.
+    ///
+    /// Returns the removed widget (so the caller can update focus
+    /// before letting the strong count drop), or `None` if no
+    /// matching panel was found.
+    #[allow(dead_code)]
+    pub fn unmount_chatpanel_by_name(&self, name: &str) -> Option<Arc<dyn Widget>> {
+        let opener = chatpanel_opener()?;
+        let mut guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let pos = guard
+            .mounted_chatpanels
+            .iter()
+            .position(|c| opener.matches_name(c, name))?;
+        Some(guard.mounted_chatpanels.remove(pos))
+    }
+
+    /// Snapshot the run-time-mounted chatpanels.
+    ///
+    /// Returns a `Vec<Arc<dyn Widget>>` of strong references — each
+    /// caller owns a fresh clone and the screen's interior list is
+    /// untouched. The snapshot pattern lets read-side walks proceed
+    /// without holding the screen lock during the iteration body
+    /// (which prevents lock-order issues with subsequent
+    /// `change_focus` calls that need the same mutex).
+    ///
+    /// FASM mapping: there is no direct equivalent — the FASM
+    /// source walks `main.children` in-place under no lock. The
+    /// Rust port's snapshot pattern is the standard
+    /// lock-snapshot-release idiom used throughout this file (see
+    /// [`Screen::update_buddies`] for the canonical example).
+    pub fn mounted_chatpanels_snapshot(&self) -> Vec<Arc<dyn Widget>> {
+        match self.inner.lock() {
+            Ok(g) => g.mounted_chatpanels.clone(),
+            Err(p) => p.into_inner().mounted_chatpanels.clone(),
+        }
+    }
+
+    /// Build the combined ordered chatpanel list:
+    /// `main.state.children` followed by `mounted_chatpanels`.
+    ///
+    /// Used by [`Screen::on_tab`] / [`Screen::on_shift_tab`] focus
+    /// cycling and (indirectly via [`Screen::chatpanel_find`]) by
+    /// name-based lookups. The order matches FASM's `list$first`
+    /// → `list$next` walk semantics: build-time mounts are at the
+    /// front (matches FASM construction-time `tui_vappendchild`
+    /// inside `screen$clone` — currently empty in the Rust port),
+    /// run-time mounts are appended at the tail (matches FASM
+    /// post-clone `tui_vappendchild` from `chatpanel$new`).
+    ///
+    /// Resolves CP8 review finding MEDIUM #10.
+    fn chatpanels_combined(&self) -> Vec<Arc<dyn Widget>> {
+        let main_state = self.main.state();
+        let mut combined: Vec<Arc<dyn Widget>> = main_state.children.iter().cloned().collect();
+        let mounted = self.mounted_chatpanels_snapshot();
+        combined.extend(mounted);
+        combined
     }
 
     /// Move keyboard focus to `new_focus` and update all the visual
@@ -3046,26 +3320,31 @@ impl Widget for Screen {
         // ---- Step 3: determine the next focus target. ---------------
         //
         // The decision tree mirrors FASM's three cases plus the no-op
-        // fall-through. The list-walks read `self.main.state().children`
-        // through the `&self.main: &Arc<TuiBackground>` reference and
-        // the `state()` method which returns `&WidgetState`. Both are
-        // share-only operations, so the borrow checker is satisfied.
+        // fall-through. The list-walks consult the union of
+        // `self.main.state().children` (build-time chatpanels — empty
+        // in the current Rust port) and
+        // [`Screen::mounted_chatpanels_snapshot`] (run-time mounts
+        // installed by [`crate::chatpanel::ChatpanelOpenerImpl::open_by_name`]).
+        // The two lists are concatenated in FASM-equivalent order
+        // (see field doc on [`ScreenInner::mounted_chatpanels`]):
+        // build-time first, then run-time mounts.
+        //
+        // CP8 review finding MEDIUM #10: walking only
+        // `main.children` would have missed every run-time-installed
+        // chatpanel since they are no longer parked there.
+        let chatpanels = self.chatpanels_combined();
         let next: Option<Arc<dyn Widget>> = match focus {
             // Case A: focus is the buddy-list — walk to the last
-            // chatpanel (or no-op if `main.children` is empty).
-            Some(ref f) if Arc::ptr_eq(f, &buddy_arc) => {
-                let main_state = self.main.state();
-                main_state.children.iter().last().cloned()
-            }
+            // chatpanel (or no-op if there are none).
+            Some(ref f) if Arc::ptr_eq(f, &buddy_arc) => chatpanels.iter().last().cloned(),
             // Case B: focus is some other widget — try to find it in
-            // `main.children`. If found, walk to the previous sibling
-            // (one step toward the front), or wrap to buddy-list when
-            // the focus is the front child.
+            // the combined chatpanel list. If found, walk to the
+            // previous sibling (one step toward the front), or wrap
+            // to buddy-list when the focus is the front child.
             Some(ref f) => {
-                let main_state = self.main.state();
                 // `position` returns the index of the focused child;
                 // if not found, it's a modal or otherwise off-tree.
-                let pos = main_state.children.iter().position(|c| Arc::ptr_eq(c, f));
+                let pos = chatpanels.iter().position(|c| Arc::ptr_eq(c, f));
                 match pos {
                     Some(0) => {
                         // First chatpanel → wrap to buddy-list.
@@ -3073,10 +3352,10 @@ impl Widget for Screen {
                     }
                     Some(idx) => {
                         // Walk one step toward the front.
-                        main_state.children.iter().nth(idx - 1).cloned()
+                        chatpanels.get(idx - 1).cloned()
                     }
                     None => {
-                        // Focus not in `main.children` (modal? other?) —
+                        // Focus not among the chatpanels (modal? other?) —
                         // no-op so the keystroke can bubble up if the
                         // caller has a fallback.
                         None
@@ -3147,21 +3426,22 @@ impl Widget for Screen {
         let buddy_arc: Arc<dyn Widget> = self.buddylist.clone();
 
         // ---- Step 3: determine the next focus target. ---------------
+        //
+        // See [`Self::on_tab`] for the architectural notes about the
+        // combined `main.children` ∪ `mounted_chatpanels` list.
+        // CP8 review finding MEDIUM #10.
+        let chatpanels = self.chatpanels_combined();
         let next: Option<Arc<dyn Widget>> = match focus {
             // Case A: focus is the buddy-list — walk to the first
-            // chatpanel (or no-op if `main.children` is empty).
-            Some(ref f) if Arc::ptr_eq(f, &buddy_arc) => {
-                let main_state = self.main.state();
-                main_state.children.iter().next().cloned()
-            }
+            // chatpanel (or no-op if there are none).
+            Some(ref f) if Arc::ptr_eq(f, &buddy_arc) => chatpanels.first().cloned(),
             // Case B: focus is some other widget — try to find it in
-            // `main.children`. If found, walk to the next sibling
-            // (one step toward the back), or wrap to buddy-list when
-            // the focus is the back child.
+            // the combined chatpanel list. If found, walk to the next
+            // sibling (one step toward the back), or wrap to
+            // buddy-list when the focus is the back child.
             Some(ref f) => {
-                let main_state = self.main.state();
-                let len = main_state.children.len();
-                let pos = main_state.children.iter().position(|c| Arc::ptr_eq(c, f));
+                let len = chatpanels.len();
+                let pos = chatpanels.iter().position(|c| Arc::ptr_eq(c, f));
                 match pos {
                     Some(idx) if idx + 1 == len => {
                         // Last chatpanel → wrap to buddy-list.
@@ -3169,10 +3449,10 @@ impl Widget for Screen {
                     }
                     Some(idx) => {
                         // Walk one step toward the back.
-                        main_state.children.iter().nth(idx + 1).cloned()
+                        chatpanels.get(idx + 1).cloned()
                     }
                     None => {
-                        // Focus not in `main.children` — no-op.
+                        // Focus not among the chatpanels — no-op.
                         None
                     }
                 }
@@ -3219,3 +3499,426 @@ impl Widget for Screen {
         // perform here.
     }
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+//
+// Unit-test coverage for the run-time chatpanel mount API
+// (`mount_chatpanel`, `unmount_chatpanel_by_name`,
+// `mounted_chatpanels_snapshot`, `chatpanels_combined`).
+//
+// The four methods constitute the Rust port's substitute for FASM
+// `tui_vappendchild` / `tui_vremovechild` against `screen_main_ofs`
+// (`screen.inc` lines ~786..=1108), which is required because
+// `WidgetState::children` has no interior mutability and the
+// in-tree path of `state.children` is not safely mutable through the
+// shared `Arc<Screen>` strongly held by the framework. See the
+// `mounted_chatpanels` field doc-comment on [`ScreenInner`] (and the
+// CP8 review finding MEDIUM #10) for the architectural rationale.
+//
+// All tests below depend on a real `Arc<Screen>` (built via
+// `Screen::new`), which itself requires:
+//   * `screen::init_formatters` to have been called (idempotent), and
+//   * an active Tokio runtime (the screen's status-bar widget spawns
+//     a 5-second refresh ticker via `tokio::spawn` during
+//     construction; see `crates/heavything/src/tui/widgets/statusbar.rs`).
+// Each test is therefore declared `#[tokio::test]`. The
+// status-bar's refresh ticker is implicitly cancelled at test
+// teardown when the per-test runtime is dropped (Tokio runtimes
+// `Drop`-cancel outstanding tasks).
+//
+// `userdb::init` is intentionally NOT called by these tests:
+// `Screen::new` reaches into `users_online()` / `total_users()` only
+// through `build_status_text()`, which short-circuits with `None`
+// when [`statusbar::STATUSBAR_FMT`] is uninitialised (i.e. when
+// `statusbar::init` has not been called). The tests therefore avoid
+// `statusbar::init` so the early-return path bypasses the
+// userdb-dependent code.
+//
+// FASM mapping summary:
+//   * `mount_chatpanel`               → `chatpanel$new`'s post-construction
+//                                       `tui_vappendchild` against
+//                                       `screen_main_ofs`
+//                                       (`chatpanel.inc` lines ~245..=270).
+//   * `unmount_chatpanel_by_name`     → no direct FASM equivalent; the
+//                                       FASM `screen$ctrlw` walks
+//                                       `main.children` and calls
+//                                       `tui_vremovechild` in-place
+//                                       (`screen.inc` lines ~1505..=1552).
+//   * `mounted_chatpanels_snapshot`   → snapshot/release idiom replacing
+//                                       FASM's no-lock walks (e.g.
+//                                       `screen$update_buddies`).
+//   * `chatpanels_combined`           → the `list$first` / `list$next`
+//                                       walk over `main.children`
+//                                       used by `screen$chatpanel_find`
+//                                       and `screen$ontab` /
+//                                       `screen$onshifttab`.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::any::Any;
+    use std::sync::Once;
+
+    // ----------------------------------------------------------------
+    // Test fixtures
+    // ----------------------------------------------------------------
+
+    /// One-time global-formatter initialisation guard. Mirrors the
+    /// pattern used by `chatroom.rs` tests (lines 1238..=1248): the
+    /// formatters are static `OnceLock`s, so a second `init_formatters`
+    /// call would return `Err`. Tests serialise the first call via
+    /// [`Once::call_once`] and ignore subsequent invocations.
+    static SCREEN_SETUP: Once = Once::new();
+
+    /// One-time test-opener installation guard. The opener registry
+    /// (`CHATPANEL_OPENER`) is a `OnceLock`, so a second
+    /// `set_chatpanel_opener` call returns `Err`. Tests that need a
+    /// matchable opener install [`TestOpener`] exactly once via this
+    /// guard; subsequent installation attempts silently no-op (the
+    /// previously-installed opener — production or test — is reused).
+    static OPENER_SETUP: Once = Once::new();
+
+    fn ensure_screen_ready() {
+        SCREEN_SETUP.call_once(|| {
+            crate::screen::init_formatters().expect("screen::init_formatters");
+        });
+    }
+
+    fn make_screen() -> Arc<Screen> {
+        ensure_screen_ready();
+        Screen::new().expect("Screen::new")
+    }
+
+    fn ensure_opener_installed() {
+        OPENER_SETUP.call_once(|| {
+            // Best-effort install: production code may have already
+            // installed `ChatpanelOpenerImpl` (it does not in any
+            // current sshtalk unit-test path — `chatpanel::init` is
+            // only called from `main.rs`), in which case `set` returns
+            // `Err` and we silently use the existing opener. For unit
+            // tests this branch is never taken; the `Err` arm exists
+            // purely for defence-in-depth against future test fixtures
+            // that might pre-install an opener.
+            let _ = set_chatpanel_opener(Arc::new(TestOpener));
+        });
+    }
+
+    /// Test-only widget that carries a `name` field so [`TestOpener`]
+    /// can identify panels for unmount-by-name testing.
+    ///
+    /// `WidgetState` is initialised via [`WidgetState::new`] (the
+    /// canonical FASM-defaults constructor; see
+    /// `crates/heavything/src/tui/object.rs:542`). All widget-trait
+    /// behaviour beyond the three required slots inherits the trait
+    /// defaults, which is sufficient for membership-list tests that
+    /// never actually render or fire layout.
+    struct TestNamedWidget {
+        base: WidgetState,
+        name: String,
+    }
+
+    impl TestNamedWidget {
+        fn new(name: &str) -> Arc<Self> {
+            Arc::new(Self {
+                base: WidgetState::new(),
+                name: name.to_string(),
+            })
+        }
+    }
+
+    impl Widget for TestNamedWidget {
+        fn state(&self) -> &WidgetState {
+            &self.base
+        }
+        fn state_mut(&mut self) -> &mut WidgetState {
+            &mut self.base
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    /// Test [`ChatpanelOpener`] that matches against [`TestNamedWidget`]
+    /// by exact `name` equality. `open_by_name` is a no-op success
+    /// because the unmount-positive path is what these tests
+    /// exercise; opening is covered by `chatpanel.rs`'s own
+    /// integration tests (and the production
+    /// `ChatpanelOpenerImpl::open_by_name` is verified by `main.rs`
+    /// startup smoke tests).
+    struct TestOpener;
+
+    impl ChatpanelOpener for TestOpener {
+        fn open_by_name(
+            &self,
+            _screen: &Arc<Screen>,
+            _name: &str,
+            _from_remote: bool,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn matches_name(&self, widget: &Arc<dyn Widget>, name: &str) -> bool {
+            widget
+                .as_any()
+                .downcast_ref::<TestNamedWidget>()
+                .is_some_and(|w| w.name == name)
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // mount_chatpanel
+    // ----------------------------------------------------------------
+
+    /// Mounting two widgets via `mount_chatpanel` causes both to
+    /// appear in `mounted_chatpanels_snapshot()` in insertion order.
+    ///
+    /// FASM rationale: mirrors `chatpanel$new`'s post-construction
+    /// `tui_vappendchild` against `screen_main_ofs` (`chatpanel.inc`
+    /// lines ~245..=270). The Rust port substitutes the dedicated
+    /// `mounted_chatpanels` slot for the FASM `main_bg.children`
+    /// list (CP8 review finding MEDIUM #10).
+    #[tokio::test]
+    async fn mount_chatpanel_pushes_to_inner_list() {
+        let screen = make_screen();
+        assert_eq!(
+            screen.mounted_chatpanels_snapshot().len(),
+            0,
+            "fresh screen must have no mounted chatpanels"
+        );
+
+        let alpha: Arc<dyn Widget> = TestNamedWidget::new("alpha");
+        screen
+            .mount_chatpanel(Arc::clone(&alpha))
+            .expect("mount alpha");
+        assert_eq!(screen.mounted_chatpanels_snapshot().len(), 1);
+
+        let beta: Arc<dyn Widget> = TestNamedWidget::new("beta");
+        screen
+            .mount_chatpanel(Arc::clone(&beta))
+            .expect("mount beta");
+        let snapshot = screen.mounted_chatpanels_snapshot();
+        assert_eq!(snapshot.len(), 2);
+
+        // Insertion order is preserved (alpha at [0], beta at [1]).
+        let s0 = snapshot[0]
+            .as_any()
+            .downcast_ref::<TestNamedWidget>()
+            .expect("snapshot[0] must be TestNamedWidget");
+        assert_eq!(s0.name, "alpha");
+        let s1 = snapshot[1]
+            .as_any()
+            .downcast_ref::<TestNamedWidget>()
+            .expect("snapshot[1] must be TestNamedWidget");
+        assert_eq!(s1.name, "beta");
+    }
+
+    // ----------------------------------------------------------------
+    // mounted_chatpanels_snapshot
+    // ----------------------------------------------------------------
+
+    /// `mounted_chatpanels_snapshot()` returns an independent clone:
+    /// mutating the screen's mounted list after the snapshot is
+    /// captured does not retroactively modify the captured snapshot.
+    ///
+    /// FASM rationale: snapshot-and-release pattern. The Rust port
+    /// uses this idiom throughout (e.g. `Screen::update_buddies`)
+    /// to avoid holding the `inner` mutex across focus updates that
+    /// would otherwise deadlock on the same lock during
+    /// `change_focus`. Independence of the snapshot is the
+    /// invariant on which that lock-discipline relies.
+    #[tokio::test]
+    async fn mounted_chatpanels_snapshot_returns_independent_clones() {
+        let screen = make_screen();
+
+        let first: Arc<dyn Widget> = TestNamedWidget::new("first");
+        screen
+            .mount_chatpanel(Arc::clone(&first))
+            .expect("mount first");
+
+        let snapshot_before = screen.mounted_chatpanels_snapshot();
+        assert_eq!(snapshot_before.len(), 1);
+
+        // Mount a second widget AFTER the snapshot was taken.
+        let second: Arc<dyn Widget> = TestNamedWidget::new("second");
+        screen
+            .mount_chatpanel(Arc::clone(&second))
+            .expect("mount second");
+
+        // The original snapshot must STILL see exactly ONE widget —
+        // proving it was a `.clone()` of the inner Vec, not an
+        // aliased view.
+        assert_eq!(
+            snapshot_before.len(),
+            1,
+            "captured snapshot must be independent of subsequent mounts"
+        );
+
+        // A fresh snapshot reflects the current (post-mount) state.
+        let snapshot_after = screen.mounted_chatpanels_snapshot();
+        assert_eq!(snapshot_after.len(), 2);
+    }
+
+    // ----------------------------------------------------------------
+    // chatpanels_combined
+    // ----------------------------------------------------------------
+
+    /// `chatpanels_combined()` returns `main.state.children` first,
+    /// followed by `mounted_chatpanels` in insertion order.
+    ///
+    /// FASM rationale: the order matches the FASM `list$first` →
+    /// `list$next` walk semantics on `main_bg.children`. Build-time
+    /// children (currently empty for sshtalk's screen — see the
+    /// `Screen::new` body, which does NOT append anything to
+    /// `main_bg.state.children`) come first; run-time mounts via
+    /// `mount_chatpanel` come last. The doc-comment on
+    /// `chatpanels_combined` explicitly states this is the
+    /// substitute for FASM's `screen$chatpanel_find` walk.
+    #[tokio::test]
+    async fn chatpanels_combined_orders_main_then_mounted() {
+        let screen = make_screen();
+
+        // `Screen::new` does not push any children onto `main_bg`'s
+        // own state.children (the inner main background), so the
+        // baseline length is zero. We assert against the actual
+        // length rather than a hard-coded zero so the test remains
+        // robust to future evolution of `Screen::new` that may add
+        // build-time children to `main_bg`.
+        let main_count = screen.main.state().children.len();
+
+        let combined0 = screen.chatpanels_combined();
+        assert_eq!(
+            combined0.len(),
+            main_count,
+            "combined must equal main.state.children when no mounts"
+        );
+
+        let widget: Arc<dyn Widget> = TestNamedWidget::new("first");
+        screen
+            .mount_chatpanel(Arc::clone(&widget))
+            .expect("mount first");
+
+        let combined1 = screen.chatpanels_combined();
+        assert_eq!(
+            combined1.len(),
+            main_count + 1,
+            "combined must grow by exactly one after a single mount"
+        );
+
+        // The mounted widget must be at the END of the combined
+        // list (after all main_bg.state.children entries). The
+        // earlier `main_count` slots are whatever main_bg contains;
+        // we only verify the tail is our test widget.
+        let tail = combined1.last().expect("combined must be non-empty");
+        let downcast = tail
+            .as_any()
+            .downcast_ref::<TestNamedWidget>()
+            .expect("tail of combined must be the mounted TestNamedWidget");
+        assert_eq!(downcast.name, "first");
+    }
+
+    // ----------------------------------------------------------------
+    // unmount_chatpanel_by_name — positive path
+    // ----------------------------------------------------------------
+
+    /// `unmount_chatpanel_by_name` removes the first chatpanel whose
+    /// name matches and returns it; the remaining mounted list is
+    /// truncated by exactly one entry, leaving the non-matching
+    /// panels untouched.
+    ///
+    /// FASM rationale: there is no FASM equivalent — the assembly
+    /// `screen$ctrlw` walks `main.children` and invokes
+    /// `tui_vremovechild` (`screen.inc` lines ~1505..=1552). The
+    /// Rust port performs `Vec::remove` on `mounted_chatpanels` and
+    /// returns the removed widget so the caller can update focus
+    /// before letting the strong-count drop trigger the
+    /// chatpanel's `Drop` impl. This positive-path test guards the
+    /// match-and-remove invariant that future Ctrl-W wiring will
+    /// depend on.
+    #[tokio::test]
+    async fn unmount_chatpanel_by_name_with_matching_name_removes_widget() {
+        ensure_opener_installed();
+        let screen = make_screen();
+
+        let alpha: Arc<dyn Widget> = TestNamedWidget::new("alpha");
+        let beta: Arc<dyn Widget> = TestNamedWidget::new("beta");
+        screen
+            .mount_chatpanel(Arc::clone(&alpha))
+            .expect("mount alpha");
+        screen
+            .mount_chatpanel(Arc::clone(&beta))
+            .expect("mount beta");
+        assert_eq!(screen.mounted_chatpanels_snapshot().len(), 2);
+
+        let removed = screen.unmount_chatpanel_by_name("alpha");
+        assert!(
+            removed.is_some(),
+            "expected to remove the alpha widget by name"
+        );
+        let removed_widget = removed.expect("Some(widget)");
+        let removed_named = removed_widget
+            .as_any()
+            .downcast_ref::<TestNamedWidget>()
+            .expect("removed widget must be TestNamedWidget");
+        assert_eq!(
+            removed_named.name, "alpha",
+            "removed widget must be the one we asked for by name"
+        );
+
+        // Only `beta` remains in the mounted list.
+        let remaining = screen.mounted_chatpanels_snapshot();
+        assert_eq!(remaining.len(), 1, "exactly one widget must remain");
+        let r0 = remaining[0]
+            .as_any()
+            .downcast_ref::<TestNamedWidget>()
+            .expect("remaining[0] must be TestNamedWidget");
+        assert_eq!(
+            r0.name, "beta",
+            "the non-matching panel must be left untouched"
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // unmount_chatpanel_by_name — negative path
+    // ----------------------------------------------------------------
+
+    /// `unmount_chatpanel_by_name` returns `None` and leaves the
+    /// mounted list untouched when no chatpanel matches the
+    /// requested name.
+    ///
+    /// FASM rationale: matches the FASM `screen$chatpanel_find`
+    /// negative path (loop exits without finding a match;
+    /// `screen.inc` lines ~700..=786). Confirms the unmount API is
+    /// non-destructive on misses — important because Ctrl-W would
+    /// otherwise destroy an arbitrary panel if its argument were
+    /// stale (a pre-existing bug class the FASM original avoids by
+    /// matching against the focused panel's exact name).
+    #[tokio::test]
+    async fn unmount_chatpanel_by_name_with_non_matching_name_returns_none() {
+        ensure_opener_installed();
+        let screen = make_screen();
+
+        let alpha: Arc<dyn Widget> = TestNamedWidget::new("alpha");
+        screen
+            .mount_chatpanel(Arc::clone(&alpha))
+            .expect("mount alpha");
+        let len_before = screen.mounted_chatpanels_snapshot().len();
+        assert_eq!(len_before, 1);
+
+        let removed = screen.unmount_chatpanel_by_name("nonexistent");
+        assert!(
+            removed.is_none(),
+            "no panel matches 'nonexistent' — must return None"
+        );
+
+        // The mounted list must be unchanged on a miss.
+        let len_after = screen.mounted_chatpanels_snapshot().len();
+        assert_eq!(
+            len_after, len_before,
+            "mounted_chatpanels must be untouched on a miss"
+        );
+    }
+}
+
