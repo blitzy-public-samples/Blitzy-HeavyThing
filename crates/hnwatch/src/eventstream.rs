@@ -165,6 +165,30 @@ const DATA_PREFACE_SKIP: usize = 6;
 /// a 307 response (line 272–274).
 const REDIRECT_307_PATTERN: &str = " 307 ";
 
+/// HTTP 200 OK status marker pattern.
+///
+/// QA Checkpoint 13 Issue #2: when the original FASM port was
+/// authored, `hacker-news.firebaseio.com` always responded to the
+/// initial GET with `HTTP/1.1 307 Temporary Redirect` to a regional
+/// endpoint (`firebaseio.com` directly redirected to `*.firebaseio.com`
+/// for geographic load-balancing). As of the testing date the live HN
+/// API returns `HTTP/1.1 200 OK` with `Content-Type: text/event-stream`
+/// directly when the `Accept: text/event-stream` request header is
+/// present — no intermediate redirect hop occurs.
+///
+/// The redirect-phase parser must recognise both wire-protocol shapes:
+/// it follows a 307 to its `Location`, OR (per QA Checkpoint 13) it
+/// transitions directly into [`StreamPhase::Streaming`] on a 200 OK,
+/// replaying any residual body bytes from the same TLS frame into
+/// [`EventStream::handle_streaming_bytes`].
+///
+/// PCAP evidence at `/tmp/qa_evidence/phase13b_pcap.pcap` confirmed
+/// the original failure mode: 8 SYN packets in 60 seconds at exactly
+/// 15.05-second cadence (matching [`RETRY_DELAY`]) — the redirect
+/// parser unconditionally rejected every 200 OK as
+/// [`EventStreamError::UnexpectedStatus`] and rescheduled.
+const REDIRECT_200_PATTERN: &str = " 200 ";
+
 /// Socket read timeout: **60 seconds**. From `eventstream.inc` line 156:
 /// `mov qword [rax+epoll_readtimeout_ofs], 60000`. DO NOT MODIFY
 /// (AAP §0.8.2).
@@ -323,6 +347,18 @@ enum StreamPhase {
 /// connect phase (no streaming branch is wired yet), so only `Done`
 /// is currently constructed. `Continue` is preserved for FASM-baseline
 /// parity per AAP §0.8.2.
+///
+/// QA Checkpoint 13 Issue #2: a third variant, [`Self::StreamHere`],
+/// signals that the initial response was a `200 OK` with
+/// `Content-Type: text/event-stream` body — the
+/// [`EventStream::connection_loop`] driver transitions the local
+/// `phase` from [`StreamPhase::Redirect`] to [`StreamPhase::Streaming`]
+/// in-place and replays any residual body bytes (those after the
+/// header terminator `CRLFCRLF`) through
+/// [`EventStream::handle_streaming_bytes`] without tearing down the
+/// existing TLS connection. This is required because the live
+/// Hacker News API no longer issues a 307 redirect hop — see
+/// [`REDIRECT_200_PATTERN`] for the full historical context.
 enum ControlFlow {
     /// Keep reading more bytes on the current connection.
     #[allow(dead_code)]
@@ -330,6 +366,43 @@ enum ControlFlow {
     /// Redirect followed — the relaunch task is now driving a new
     /// streaming connection; this connection's job is done.
     Done,
+    /// QA Checkpoint 13 Issue #2: the initial response was a 200 OK
+    /// direct streaming start. The wrapped `usize` is the body
+    /// offset within the original read buffer (the value returned
+    /// by [`crate::heavything::Mimelike::parse_len`] on the
+    /// headers-only parse): bytes `[body_offset..]` of the buffer
+    /// that produced this `ControlFlow` are residual SSE event
+    /// bytes that must be replayed through
+    /// [`EventStream::handle_streaming_bytes`] before the next
+    /// socket read.
+    StreamHere(usize),
+}
+
+/// Outcome of parsing the initial response from the Firebase host.
+///
+/// Replaces the previous `Result<Url, EventStreamError>` return type
+/// of [`parse_redirect_response`]. Distinguishes between:
+///
+/// * 307 Temporary Redirect → carry an owned [`Url`] for the
+///   relaunch path (matches the FASM `eventstream_redirect$received`
+///   line 287–290 / 294–299 behaviour).
+/// * 200 OK → the new direct-streaming path added for QA Checkpoint
+///   13 Issue #2. The wrapped `body_offset` is the byte index of the
+///   first body byte within the original input buffer (i.e. the
+///   value of [`crate::heavything::Mimelike::parse_len`] after a
+///   successful `headers_only=true` parse).
+///
+/// Any other status is rejected as
+/// [`EventStreamError::UnexpectedStatus`] inside
+/// [`parse_redirect_response`].
+#[derive(Debug)]
+enum RedirectAction {
+    /// Follow this URL (HTTP 307 Temporary Redirect path).
+    Redirect(Url),
+    /// QA Checkpoint 13 Issue #2: HTTP 200 OK direct-streaming
+    /// start. `body_offset` is the position of the first body byte
+    /// within the input buffer.
+    DirectStreaming { body_offset: usize },
 }
 
 // ============================================================================
@@ -491,17 +564,40 @@ impl EventStream {
     ///    [`READ_TIMEOUT`] (FASM line 156).
     /// 3. Dispatch each chunk to either
     ///    [`Self::handle_redirect_bytes`] or
-    ///    [`Self::handle_streaming_bytes`] based on `phase`
-    ///    (replaces the assembly's vtable dispatch).
+    ///    [`Self::handle_streaming_bytes`] based on the local
+    ///    `current_phase` variable (replaces the assembly's vtable
+    ///    dispatch).
     /// 4. On any error, timeout, or EOF: schedule a 15-second retry
     ///    (port of `eventstream$error` lines 320–357 and
     ///    `eventstream$timeout` lines 360–366) and propagate the
     ///    error to the spawning task.
+    ///
+    /// # QA Checkpoint 13 Issue #2
+    ///
+    /// The `phase` parameter is bound into a mutable local
+    /// `current_phase` so this function can transition from
+    /// [`StreamPhase::Redirect`] to [`StreamPhase::Streaming`]
+    /// **on the same connection** without a relaunch when the
+    /// initial response is a 200 OK (rather than a 307 redirect).
+    /// This mirrors the live behaviour of
+    /// `https://hacker-news.firebaseio.com/v0/topstories.json` as
+    /// of testing date — see [`REDIRECT_200_PATTERN`] for the full
+    /// rationale and PCAP evidence.
     async fn connection_loop(
         self: Arc<Self>,
         phase: StreamPhase,
         mut stream: TlsStream,
     ) -> Result<(), EventStreamError> {
+        // QA Checkpoint 13 Issue #2: bind the immutable parameter
+        // into a mutable local so we can transition from
+        // `Redirect` to `Streaming` in-place when a 200 OK
+        // direct-streaming response arrives. The FASM original
+        // used vtable dispatch (separate `eventstream_redirect`
+        // and `eventstream` vtables — `eventstream.inc` lines
+        // 376–399 vs. line 459–end); the Rust port collapses the
+        // two into a single async function with a runtime-mutable
+        // phase tag.
+        let mut current_phase = phase;
         // -------------------------------------------------------------
         // eventstream$connected — FASM lines 174–250.
         //
@@ -567,32 +663,71 @@ impl EventStream {
                 Err(_elapsed) => {
                     // eventstream$timeout (lines 360–366) → forwards to
                     // eventstream$error.
-                    let _ = self.schedule_retry(phase).await;
+                    let _ = self.schedule_retry(current_phase).await;
                     return Err(EventStreamError::Timeout);
                 }
                 Ok(Err(e)) => {
                     // EPOLLHUP/EPOLLERR backward dispatch →
                     // eventstream$error.
-                    let _ = self.schedule_retry(phase).await;
+                    let _ = self.schedule_retry(current_phase).await;
                     return Err(EventStreamError::Io(e));
                 }
                 Ok(Ok(0)) => {
                     // Peer closed (read returned 0 bytes) → treated
                     // identically to error per the FASM convention.
-                    let _ = self.schedule_retry(phase).await;
+                    let _ = self.schedule_retry(current_phase).await;
                     return Err(EventStreamError::Closed);
                 }
                 Ok(Ok(n)) => n,
             };
 
-            match phase {
+            match current_phase {
                 StreamPhase::Redirect => {
                     // eventstream_redirect$received — FASM lines 253–315.
                     match self.handle_redirect_bytes(&read_buf[..n]).await {
                         Ok(ControlFlow::Continue) => continue,
                         Ok(ControlFlow::Done) => return Ok(()),
+                        Ok(ControlFlow::StreamHere(body_offset)) => {
+                            // QA Checkpoint 13 Issue #2: 200 OK
+                            // direct-streaming response. The current
+                            // TLS connection stays alive, but bytes
+                            // `[body_offset..n]` of `read_buf` are
+                            // the residual SSE body that arrived in
+                            // the same TCP segment as the headers.
+                            // Replay them through the streaming
+                            // handler before the next socket read so
+                            // no events are dropped.
+                            //
+                            // Edge case: if the server sent only the
+                            // headers in this read (`body_offset == n`,
+                            // i.e. body bytes will arrive in a
+                            // subsequent read), `body_offset >= n` so
+                            // we skip the replay. The
+                            // `body_offset > n` case (which would
+                            // indicate `parse_len()` overshot the
+                            // buffer) is defensively handled by the
+                            // same `>=` guard.
+                            if body_offset < n {
+                                if let Err(e) = self
+                                    .handle_streaming_bytes(&read_buf[body_offset..n])
+                                    .await
+                                {
+                                    let _ = self.schedule_retry(current_phase).await;
+                                    return Err(e);
+                                }
+                            }
+                            // Transition phase in-place. All
+                            // subsequent socket reads will be
+                            // dispatched through the streaming
+                            // handler. `schedule_retry` calls below
+                            // will now report
+                            // `StreamPhase::Streaming` so any
+                            // retry-spawned `launch` skips the
+                            // redirect parser entirely.
+                            current_phase = StreamPhase::Streaming;
+                        }
                         Err(e) => {
-                            let _ = self.schedule_retry(phase).await;
+                            let _ = self.schedule_retry(current_phase).await;
                             return Err(e);
                         }
                     }
@@ -604,7 +739,7 @@ impl EventStream {
                     // genuinely catastrophic conditions; we still
                     // propagate via `?` for forward compatibility.
                     if let Err(e) = self.handle_streaming_bytes(&read_buf[..n]).await {
-                        let _ = self.schedule_retry(phase).await;
+                        let _ = self.schedule_retry(current_phase).await;
                         return Err(e);
                     }
                 }
@@ -649,43 +784,77 @@ impl EventStream {
         // `Mimelike` value (which contains `*const` raw pointers and
         // implements `Send`/`Sync` only via an `unsafe impl`) cannot
         // possibly be alive at any `.await` suspension point in this
-        // function. The helper returns an owned `Url` — no borrows
-        // into `Mimelike` escape, and the `Future` auto-trait checker
-        // therefore proves this future `Send`, which `tokio::spawn`
-        // at the call site requires.
+        // function. The helper returns an owned [`RedirectAction`] —
+        // no borrows into `Mimelike` escape, and the `Future`
+        // auto-trait checker therefore proves this future `Send`,
+        // which `tokio::spawn` at the call site requires.
+        //
+        // QA Checkpoint 13 Issue #2: the helper now distinguishes
+        // between the legacy 307 redirect path and the new 200 OK
+        // direct-streaming path observed against the live Hacker
+        // News API. The 200 OK case must NOT spawn a fresh
+        // connection — the existing TLS connection is already on
+        // the right host and ready to receive event-stream body
+        // bytes. We hand back [`ControlFlow::StreamHere`] carrying
+        // the body offset so the caller (`connection_loop`) can
+        // replay the residual body bytes from the same read buffer.
         // -------------------------------------------------------------
-        let new_url = parse_redirect_response(bytes)?;
+        match parse_redirect_response(bytes)? {
+            RedirectAction::Redirect(new_url) => {
+                // Atomically replace url in the eventstream object.
+                // FASM lines 287–290:
+                //   xchg rax, [rbx+eventstream_url_ofs]
+                //   mov rdi, rax  ; old url
+                //   call url$destroy
+                //
+                // Rust does the equivalent under the Mutex: the previous Url
+                // is dropped automatically when the lock guard's `*` deref
+                // assignment overwrites it.
+                *self.url.lock().await = new_url;
 
-        // Atomically replace url in the eventstream object.
-        // FASM lines 287–290:
-        //   xchg rax, [rbx+eventstream_url_ofs]
-        //   mov rdi, rax  ; old url
-        //   call url$destroy
-        //
-        // Rust does the equivalent under the Mutex: the previous Url
-        // is dropped automatically when the lock guard's `*` deref
-        // assignment overwrites it.
-        *self.url.lock().await = new_url;
+                // Re-launch with streaming vtable against the new host.
+                // FASM lines 294–299 (`eventstream$launch(self,
+                // eventstream_vtable, new_host)`).
+                //
+                // We do NOT pass the new host explicitly: `launch` derives the
+                // hostname from `self.url.host_str()` which we just updated
+                // atomically above.
+                let relaunch_self = Arc::clone(self);
+                tokio::spawn(async move {
+                    let _ = relaunch_self.launch(StreamPhase::Streaming).await;
+                });
 
-        // Re-launch with streaming vtable against the new host.
-        // FASM lines 294–299 (`eventstream$launch(self,
-        // eventstream_vtable, new_host)`).
-        //
-        // We do NOT pass the new host explicitly: `launch` derives the
-        // hostname from `self.url.host_str()` which we just updated
-        // atomically above.
-        let relaunch_self = Arc::clone(self);
-        tokio::spawn(async move {
-            let _ = relaunch_self.launch(StreamPhase::Streaming).await;
-        });
-
-        // Return 1 (destroy current comms). FASM line 301.
-        Ok(ControlFlow::Done)
+                // Return 1 (destroy current comms). FASM line 301.
+                Ok(ControlFlow::Done)
+            }
+            RedirectAction::DirectStreaming { body_offset } => {
+                // QA Checkpoint 13 Issue #2: the live HN API returns
+                // `HTTP/1.1 200 OK` with `Content-Type: text/event-stream`
+                // body directly — no 307 hop. The connection on which
+                // those bytes arrived is already terminated to the
+                // correct host:port (the original
+                // `https://hacker-news.firebaseio.com/v0/topstories.json`
+                // endpoint), so we keep it alive and signal the driver
+                // loop to:
+                //
+                //   1. Replay residual bytes `[body_offset..n]` from the
+                //      current read buffer through `handle_streaming_bytes`
+                //      (the SSE parser).
+                //   2. Transition `current_phase` from
+                //      [`StreamPhase::Redirect`] to
+                //      [`StreamPhase::Streaming`] in-place.
+                //
+                // No URL replacement, no relaunch, no `Done` —
+                // [`ControlFlow::StreamHere`] is the explicit signal that
+                // this connection survives the phase change.
+                Ok(ControlFlow::StreamHere(body_offset))
+            }
+        }
     }
 }
 
-/// Synchronous helper that parses the bytes of a redirect response
-/// and produces an owned [`Url`] for the new endpoint.
+/// Synchronous helper that parses the bytes of an initial response
+/// from the Firebase host and classifies the outcome.
 ///
 /// Port of the synchronous core of `eventstream_redirect$received`
 /// (`eventstream.inc` lines 253–315). Factored out of
@@ -695,44 +864,99 @@ impl EventStream {
 /// `.await` in the caller — the resulting `Future` is therefore
 /// trivially `Send`.
 ///
-/// Steps:
+/// # Outcomes (QA Checkpoint 13 Issue #2)
+///
+/// The original FASM code unconditionally rejected anything that
+/// was not `" 307 "` in the preface, which caused the live
+/// `https://hacker-news.firebaseio.com/v0/topstories.json` endpoint
+/// (which now answers with `HTTP/1.1 200 OK` directly when the
+/// `Accept: text/event-stream` request header is set) to retry
+/// every 15 seconds forever — see PCAP evidence at
+/// `/tmp/qa_evidence/phase13b_pcap.pcap` (8 SYN packets in 60s,
+/// 4 connection cycles spaced exactly 15.05 s apart, matching
+/// [`RETRY_DELAY`]). The function now branches on the preface:
+///
+/// * `" 307 "` → [`RedirectAction::Redirect`] carrying the parsed
+///   `Location` header (legacy path, still supported in case a
+///   future Firebase reconfiguration reintroduces a redirect hop).
+/// * `" 200 "` → [`RedirectAction::DirectStreaming`] carrying the
+///   body offset reported by [`Mimelike::parse_len`] — the
+///   header terminator `CRLFCRLF` ends at this offset, so any
+///   bytes already read at `[body_offset..]` are residual SSE
+///   event bytes that the caller must replay.
+/// * Anything else → [`EventStreamError::UnexpectedStatus`] (still
+///   funnels to a 15-second retry by the caller — acceptable
+///   degraded behaviour for a genuinely unexpected response).
+///
+/// # Steps
+///
 /// 1. `mimelike$new_parse(headers_only=1, preface=1)` — FASM line 265.
-/// 2. Check the preface contains `" 307 "` — FASM lines 269–274.
-/// 3. Read the `Location:` header — FASM lines 275–280.
-/// 4. Parse it as a URL and confirm it carries a host — FASM
-///    lines 282–286.
-fn parse_redirect_response(bytes: &[u8]) -> Result<Url, EventStreamError> {
+/// 2. Inspect the preface to choose between the redirect path and
+///    the new direct-streaming path.
+/// 3. For redirects: extract the `Location:` header — FASM lines
+///    275–280 — and parse it as a [`Url`] — FASM lines 282–286.
+/// 4. For direct streaming: read [`Mimelike::parse_len`] which is
+///    the byte index immediately after the `\r\n\r\n` terminator
+///    in the input buffer (i.e. the start of the body).
+fn parse_redirect_response(bytes: &[u8]) -> Result<RedirectAction, EventStreamError> {
     // mimelike$new_parse(headers_only=1, preface=1). FASM line 265.
     let parsed = Mimelike::new_parse(bytes, true, true).map_err(|_| EventStreamError::MimelikeParse)?;
 
-    // Check preface for " 307 ". FASM lines 269–274 + cleartext line
-    // 315 (`.p307 = ' 307 '`).
+    // Inspect preface. FASM lines 269–274 originally checked only for
+    // " 307 "; QA Checkpoint 13 Issue #2 widens the contract to also
+    // accept " 200 ". cleartext line 315 (`.p307 = ' 307 '`) defined
+    // the original constant; [`REDIRECT_200_PATTERN`] is the new
+    // companion constant.
     let preface = parsed.preface().ok_or(EventStreamError::MimelikeParse)?;
-    if !preface.contains(REDIRECT_307_PATTERN) {
-        return Err(EventStreamError::UnexpectedStatus);
+
+    if preface.contains(REDIRECT_307_PATTERN) {
+        // Legacy 307 redirect path — extract Location, parse URL,
+        // hand back to the caller for atomic URL replacement and
+        // relaunch.
+
+        // Extract Location header. FASM lines 275–280:
+        //   mov rdi, mimelike$location  ; static "Location" string
+        //   call mimelike$getheader     ; case-insensitive lookup
+        //   test rax, rax               ; null check
+        //   jz .error                   ; missing → retry
+        //
+        // We pass HEADER_LOCATION = "Location" exported by mimelike.rs
+        // for byte-exact name matching.
+        let location = parsed
+            .get_header(HEADER_LOCATION)
+            .ok_or(EventStreamError::MissingLocation)?;
+
+        // Parse new URL. FASM lines 282–286 (`url$new(location)`).
+        // Validate the redirect target carries a host so a malformed
+        // Location header surfaces as a typed error instead of a later
+        // DNS failure.
+        let parsed_url = Url::parse(location)?;
+        parsed_url
+            .host_str()
+            .ok_or_else(|| EventStreamError::Dns("redirect URL missing host".into()))?;
+        Ok(RedirectAction::Redirect(parsed_url))
+    } else if preface.contains(REDIRECT_200_PATTERN) {
+        // QA Checkpoint 13 Issue #2: HTTP/1.1 200 OK direct-streaming
+        // start. Compute the body offset for residual-byte replay.
+        //
+        // `parse_len()` returns `Mimelike::parselen`, the total bytes
+        // consumed from the input by `new_parse` — for a
+        // headers-only parse this equals the position immediately
+        // after the `\r\n\r\n` header/body separator. The caller
+        // (`connection_loop`) uses this to slice `[body_offset..n]`
+        // as the residual SSE body to feed into
+        // `handle_streaming_bytes`.
+        Ok(RedirectAction::DirectStreaming {
+            body_offset: parsed.parse_len(),
+        })
+    } else {
+        // Anything that is neither 307 nor 200 is unexpected —
+        // funnel to a 15-second retry through the caller. This
+        // includes HTTP/1.1 500/502/503 transient failures and
+        // any future status code Firebase chooses to use that we
+        // have not yet been informed about.
+        Err(EventStreamError::UnexpectedStatus)
     }
-
-    // Extract Location header. FASM lines 275–280:
-    //   mov rdi, mimelike$location  ; static "Location" string
-    //   call mimelike$getheader     ; case-insensitive lookup
-    //   test rax, rax               ; null check
-    //   jz .error                   ; missing → retry
-    //
-    // We pass HEADER_LOCATION = "Location" exported by mimelike.rs
-    // for byte-exact name matching.
-    let location = parsed
-        .get_header(HEADER_LOCATION)
-        .ok_or(EventStreamError::MissingLocation)?;
-
-    // Parse new URL. FASM lines 282–286 (`url$new(location)`).
-    // Validate the redirect target carries a host so a malformed
-    // Location header surfaces as a typed error instead of a later
-    // DNS failure.
-    let parsed_url = Url::parse(location)?;
-    parsed_url
-        .host_str()
-        .ok_or_else(|| EventStreamError::Dns("redirect URL missing host".into()))?;
-    Ok(parsed_url)
 }
 
 impl EventStream {
@@ -1528,5 +1752,183 @@ mod tests {
             "url::ParseError must wrap into EventStreamError::UrlParse \
              so the constructor's `?` operator surfaces the right variant",
         );
+    }
+
+    /// QA Checkpoint 13 Issue #2: verify the `REDIRECT_200_PATTERN`
+    /// constant is `" 200 "` with both surrounding spaces — the same
+    /// false-positive disambiguation as `REDIRECT_307_PATTERN`.
+    #[test]
+    fn test_redirect_200_pattern_constant() {
+        assert_eq!(REDIRECT_200_PATTERN, " 200 ");
+        assert_eq!(REDIRECT_200_PATTERN.len(), 5);
+        // True positive: an actual `HTTP/1.1 200 OK` status line.
+        assert!("HTTP/1.1 200 OK".contains(REDIRECT_200_PATTERN));
+        // False positive prevention: a header value containing the
+        // bare digits "200" (e.g., `Content-Length: 2000`) MUST NOT
+        // match the strict `" 200 "` pattern with surrounding spaces.
+        let header_with_200_substring = "Content-Length: 2000\r\n";
+        assert!(header_with_200_substring.contains("200"));
+        assert!(!header_with_200_substring.contains(REDIRECT_200_PATTERN));
+        // 307 must NOT match (so the 307 vs. 200 dispatch is
+        // unambiguous).
+        assert!(!"HTTP/1.1 307 Temporary Redirect".contains(REDIRECT_200_PATTERN));
+    }
+
+    /// QA Checkpoint 13 Issue #2: verify `parse_redirect_response`
+    /// dispatches a 307 Temporary Redirect to
+    /// [`RedirectAction::Redirect`] carrying the parsed Location URL.
+    /// This exercises the legacy redirect path which the FASM
+    /// original was the only behaviour for.
+    #[test]
+    fn parse_redirect_response_307_returns_redirect() {
+        let response = b"HTTP/1.1 307 Temporary Redirect\r\n\
+                         Location: https://hacker-news-host-east.firebaseio.com/v0/topstories.json\r\n\
+                         Content-Length: 0\r\n\
+                         \r\n";
+        let result = parse_redirect_response(response).expect("307 must parse");
+        match result {
+            RedirectAction::Redirect(url) => {
+                assert_eq!(
+                    url.as_str(),
+                    "https://hacker-news-host-east.firebaseio.com/v0/topstories.json",
+                    "Location header URL must be preserved verbatim",
+                );
+                assert!(url.host_str().is_some(), "redirect URL must carry a host");
+            }
+            other => panic!("expected RedirectAction::Redirect, got {other:?}"),
+        }
+    }
+
+    /// QA Checkpoint 13 Issue #2: verify `parse_redirect_response`
+    /// dispatches a 200 OK direct-streaming response to
+    /// [`RedirectAction::DirectStreaming`] carrying the body offset.
+    ///
+    /// This is the new path that fixes the infinite 15-second retry
+    /// loop observed against the live HN API as of testing date.
+    /// The body offset must equal the byte index immediately after
+    /// the `\r\n\r\n` header terminator.
+    #[test]
+    fn parse_redirect_response_200_returns_direct_streaming() {
+        // Response with headers + a partial SSE body residual.
+        let headers = "HTTP/1.1 200 OK\r\n\
+                       Content-Type: text/event-stream\r\n\
+                       Cache-Control: no-cache\r\n\
+                       \r\n";
+        let body_residual = "event: put\ndata: {\"path\":\"/\",\"data\":[]}\n\n";
+        let response: Vec<u8> = format!("{headers}{body_residual}").into_bytes();
+
+        let result = parse_redirect_response(&response).expect("200 OK must parse");
+        match result {
+            RedirectAction::DirectStreaming { body_offset } => {
+                // body_offset must point to the byte immediately
+                // after the `\r\n\r\n` header terminator. We
+                // computed `headers.len()` to be that exact value.
+                assert_eq!(
+                    body_offset,
+                    headers.len(),
+                    "body_offset must be at the first body byte (immediately after CRLFCRLF)",
+                );
+                // The slice [body_offset..] must equal the residual.
+                assert_eq!(
+                    &response[body_offset..],
+                    body_residual.as_bytes(),
+                    "residual body bytes must match input bytes after the header terminator",
+                );
+            }
+            other => panic!("expected RedirectAction::DirectStreaming, got {other:?}"),
+        }
+    }
+
+    /// QA Checkpoint 13 Issue #2: verify `parse_redirect_response`
+    /// returns [`EventStreamError::UnexpectedStatus`] for any HTTP
+    /// status that is neither 307 nor 200.
+    ///
+    /// This preserves the FASM degraded-fallback behaviour for
+    /// genuinely unexpected responses (5xx transient failures, etc.)
+    /// — they funnel to a 15-second retry through the caller.
+    #[test]
+    fn parse_redirect_response_unexpected_status_errors() {
+        // 500 Internal Server Error.
+        let response = b"HTTP/1.1 500 Internal Server Error\r\n\r\n";
+        assert!(matches!(
+            parse_redirect_response(response),
+            Err(EventStreamError::UnexpectedStatus)
+        ));
+
+        // 404 Not Found.
+        let response = b"HTTP/1.1 404 Not Found\r\n\r\n";
+        assert!(matches!(
+            parse_redirect_response(response),
+            Err(EventStreamError::UnexpectedStatus)
+        ));
+
+        // 301 Moved Permanently (a redirect, but not 307).
+        let response = b"HTTP/1.1 301 Moved Permanently\r\n\
+                         Location: https://example.com/\r\n\
+                         \r\n";
+        assert!(matches!(
+            parse_redirect_response(response),
+            Err(EventStreamError::UnexpectedStatus)
+        ));
+
+        // 308 Permanent Redirect (also not 307).
+        let response = b"HTTP/1.1 308 Permanent Redirect\r\n\
+                         Location: https://example.com/\r\n\
+                         \r\n";
+        assert!(matches!(
+            parse_redirect_response(response),
+            Err(EventStreamError::UnexpectedStatus)
+        ));
+    }
+
+    /// QA Checkpoint 13 Issue #2: verify a 200 OK response with no
+    /// residual body bytes (headers fill the entire read buffer)
+    /// returns `body_offset == response.len()` so the caller's
+    /// `if body_offset < n` guard correctly skips the no-op replay
+    /// and waits for the next socket read.
+    #[test]
+    fn parse_redirect_response_200_headers_only_no_residual() {
+        let response = b"HTTP/1.1 200 OK\r\n\
+                         Content-Type: text/event-stream\r\n\
+                         \r\n";
+        let result = parse_redirect_response(response).expect("200 OK must parse");
+        match result {
+            RedirectAction::DirectStreaming { body_offset } => {
+                assert_eq!(
+                    body_offset,
+                    response.len(),
+                    "body_offset must equal response length when no body residual is present",
+                );
+            }
+            other => panic!("expected RedirectAction::DirectStreaming, got {other:?}"),
+        }
+    }
+
+    /// QA Checkpoint 13 Issue #2: verify a 307 redirect with no
+    /// `Location` header returns
+    /// [`EventStreamError::MissingLocation`].
+    #[test]
+    fn parse_redirect_response_307_missing_location_errors() {
+        let response = b"HTTP/1.1 307 Temporary Redirect\r\n\
+                         Content-Length: 0\r\n\
+                         \r\n";
+        assert!(matches!(
+            parse_redirect_response(response),
+            Err(EventStreamError::MissingLocation)
+        ));
+    }
+
+    /// QA Checkpoint 13 Issue #2: verify a 307 redirect with a
+    /// malformed `Location` URL surfaces as
+    /// [`EventStreamError::UrlParse`].
+    #[test]
+    fn parse_redirect_response_307_malformed_location_errors() {
+        let response = b"HTTP/1.1 307 Temporary Redirect\r\n\
+                         Location: not a url at all\r\n\
+                         \r\n";
+        assert!(matches!(
+            parse_redirect_response(response),
+            Err(EventStreamError::UrlParse(_))
+        ));
     }
 }

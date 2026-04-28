@@ -156,6 +156,33 @@ const ERR_CLOSED: &str = "Connection closed: ";
 /// FASM line 607: `cleartext .err_timeout, 'Timed out: '`.
 const ERR_TIMEOUT: &str = "Timed out: ";
 
+/// EventStream error prefix.
+///
+/// Mirrors `STATUS_ERROR` defined privately in
+/// `crates/hnwatch/src/eventstream.rs:147`: the EventStream emits
+/// `"Error: <url>"` via `(self.statuscb)(&format!("{STATUS_ERROR}{url}"))`
+/// when its retry path fires (eventstream.rs lines 1213–1214 / FASM
+/// line 357 cleartext `.err = 'Error: '`).
+///
+/// **QA Checkpoint 13 INFO #1 (silent-failure mode)**: the EventStream
+/// status callback is wired to [`HnModel::status_update`] (this file's
+/// `new` constructor at lines 424, 439, 514). Originally
+/// `status_update` only forwarded the message to the registered UI
+/// callback — it did NOT increment [`HnModel::errorcount`]. The result
+/// was that any EventStream-side failure (DNS down, TLS handshake
+/// failure, redirect parser rejecting a 200 OK as in QA Checkpoint
+/// 13 Issue #2, etc.) showed `E:0` on the status bar forever even
+/// though connection cycles were thrashing every 15 seconds in the
+/// background. This constant lets `status_update` recognise such
+/// EventStream-level errors and increment `errorcount` so the
+/// status bar (`E:` counter, see [`crate::ui::statusbar_update`])
+/// reflects them — restoring user feedback on connectivity
+/// failures.
+///
+/// The string is byte-equivalent to `eventstream::STATUS_ERROR`; both
+/// match FASM `eventstream.inc:357` cleartext literal `.err = 'Error: '`.
+const ERR_EVENTSTREAM_PREFIX: &str = "Error: ";
+
 // ---------------------------------------------------------------------------
 // Numeric constants — preserved EXACTLY from the FASM baseline.
 // ---------------------------------------------------------------------------
@@ -691,7 +718,55 @@ impl HnModel {
     /// closure's environment, so this method only needs to clone the
     /// callback Arc out of the lock (releasing the lock before invoking
     /// the closure to avoid re-entrancy on poison).
+    ///
+    /// # QA Checkpoint 13 INFO #1 — silent-failure mode fix
+    ///
+    /// Before the fix, only the WebClient retry/give-up paths
+    /// ([`HnModel::on_not_200`] and [`HnModel::report_error_and_retry`])
+    /// incremented [`HnModel::errorcount`]. EventStream-side
+    /// failures (DNS down, TLS handshake failure, the redirect
+    /// parser rejecting a 200 OK as in QA Checkpoint 13 Issue #2,
+    /// 60-second read-timeout, peer close, mimelike parse failure,
+    /// etc.) were forwarded through this function as a `"Error: <url>"`
+    /// status message but the [`HnModel::errorcount`] never moved —
+    /// users saw `E:0` on the status bar even when the network was
+    /// completely unavailable and connection cycles were thrashing
+    /// every 15 seconds (PCAP evidence
+    /// `/tmp/qa_evidence/phase13b_pcap.pcap`).
+    ///
+    /// We now detect the [`ERR_EVENTSTREAM_PREFIX`] (`"Error: "`)
+    /// substring at the start of the message and increment
+    /// [`HnModel::errorcount`] before forwarding. The increment
+    /// happens **before** the callback dispatch so the status bar
+    /// re-render — driven by the UI's status callback at
+    /// `crate::ui::statusbar_update` — sees the new counter value.
+    ///
+    /// The check is a string-prefix test rather than an explicit
+    /// constructor argument because:
+    ///
+    /// 1. The EventStream's `STATUS_ERROR` constant is private to
+    ///    `eventstream.rs` — making it `pub` would expand the
+    ///    public surface unnecessarily for what is a one-call-site
+    ///    detail.
+    /// 2. The FASM original treated status messages as opaque
+    ///    strings; mirroring that here keeps the type signatures
+    ///    minimal and matches AAP §0.8.2 ("minimal change
+    ///    discipline").
+    /// 3. The non-error status prefixes (`"Connect: "`, `"Get: "`,
+    ///    `"Received: "`) cannot collide because none of them is
+    ///    a prefix of `"Error: "` and vice-versa.
     fn status_update(&self, msg: &str) {
+        // QA Checkpoint 13 INFO #1: detect EventStream-side error
+        // status messages and increment `errorcount` before
+        // forwarding so the UI's `E:` counter reflects them.
+        // Done before the lock acquisition so even a poisoned
+        // statuscb mutex (which would silently no-op the forward
+        // below) still updates the counter — the user still sees
+        // some indication of trouble even in degraded states.
+        if msg.starts_with(ERR_EVENTSTREAM_PREFIX) {
+            self.errorcount.fetch_add(1, Ordering::Relaxed);
+        }
+
         // Read out the callback Arc with the lock held briefly, then
         // release the lock before invoking. This avoids deadlock if
         // the callback decides to acquire any of the HnModel's other
@@ -750,20 +825,46 @@ impl HnModel {
             };
             mainorder.clear();
             for elem in data.iter() {
-                // The FASM checks `cmp dword [rdi+json_type_ofs], json_value`
-                // where `json_value` (in the heavything json.inc enum) means
-                // a JSON string. Per the assembly's strict type discipline
-                // we skip non-strings here. This matches the actual HN API
-                // which always returns string IDs in topic arrays.
-                let JsonValue::String(id_str) = elem else {
-                    continue;
+                // QA Checkpoint 13 Issue #2 follow-on: the FASM port's
+                // original comment claimed "the actual HN API always
+                // returns string IDs in topic arrays" and accepted only
+                // [`JsonValue::String`]. Live measurement against
+                // `https://hacker-news.firebaseio.com/v0/topstories.json`
+                // (Apr 2026) demonstrates the assertion is incorrect:
+                // the topic endpoints return JSON **integers** like
+                // `47939079`, not quoted strings like `"47939079"`.
+                //
+                // The FASM `cmp dword [rdi+json_type_ofs], json_value`
+                // dispatch in `hnmodel.inc:223-227` actually accepted
+                // BOTH numeric and string-typed JSON elements via the
+                // `string$decimal_int` conversion path implicit in the
+                // FASM's untyped representation. When porting, the
+                // assembly's loose-typed flow was lost; this port
+                // restores parity by accepting either variant and
+                // converting [`JsonValue::Number`] to its decimal
+                // string form via `n.to_string()`. The downstream
+                // [`Self::retrieve`] takes the string id and inserts
+                // it into the URL `https://.../v0/item/{id}.json` —
+                // the HN API accepts numeric ids as path components
+                // regardless of whether they were quoted on the wire.
+                //
+                // Without this branch every item is silently skipped,
+                // `mainorder` stays empty, the `requestcount` counter
+                // never increments, and the UI status bar perpetually
+                // displays `I:0 R:0 B:0 E:0` — the exact symptom
+                // captured in `/tmp/qa_evidence/phase13b_pcap.pcap`
+                // even after the EventStream redirect fix lands.
+                let id_str = match elem {
+                    JsonValue::String(s) => s.clone(),
+                    JsonValue::Number(n) => n.to_string(),
+                    _ => continue,
                 };
                 // FASM LIMITER (lines 223-227): break if we've hit
                 // MAIN_ITEM_LIMIT.
                 if (mainorder.len() as u32) >= crate::MAIN_ITEM_LIMIT {
                     break;
                 }
-                mainorder.push_back(id_str.clone());
+                mainorder.push_back(id_str);
             }
             // Snapshot the IDs we just pushed so we can dispatch
             // retrieve outside the mainorder lock.
@@ -798,9 +899,15 @@ impl HnModel {
     ///
     /// Logic:
     ///
-    /// 1. Extract `data.items`; verify it's a JSON array of strings.
-    /// 2. For each string element, call [`HnModel::retrieve`] with
-    ///    `is_update=true` (FASM `mov esi, 1` at line 285).
+    /// 1. Extract `data.items`; verify it's a non-empty JSON array.
+    /// 2. For each string-or-number element, call
+    ///    [`HnModel::retrieve`] with `is_update=true` (FASM
+    ///    `mov esi, 1` at line 285). Per QA Checkpoint 13 Issue #2
+    ///    follow-on the live `/v0/updates.json` payload returns
+    ///    integer ids; both [`JsonValue::String`] and
+    ///    [`JsonValue::Number`] are accepted (the latter is converted
+    ///    to its decimal string form for use as a URL path
+    ///    component).
     ///
     /// Note: the FASM does NOT clear `mainorder` here — the updates
     /// stream is purely an "item changed" signal, not a feed
@@ -815,10 +922,19 @@ impl HnModel {
         };
 
         for elem in items_array.iter() {
-            if let JsonValue::String(id_str) = elem {
-                // is_update = true (FASM line 285: `mov esi, 1`).
-                let _ = self.retrieve(id_str, true);
-            }
+            // QA Checkpoint 13 Issue #2 follow-on: identical to the
+            // type-handling fix at the [`Self::on_mainstream`] call
+            // site above — the live `/v0/updates.json` endpoint also
+            // returns integer ids in `data.items`, not strings. See
+            // the long-form rationale at `on_mainstream` for the
+            // FASM-vs-Rust loose-typing parity argument.
+            let id_str = match elem {
+                JsonValue::String(s) => s.clone(),
+                JsonValue::Number(n) => n.to_string(),
+                _ => continue,
+            };
+            // is_update = true (FASM line 285: `mov esi, 1`).
+            let _ = self.retrieve(&id_str, true);
         }
     }
 }
@@ -1334,6 +1450,11 @@ mod tests {
         assert_eq!(ERR_PRECONNECT, "Preconnect fail: ");
         assert_eq!(ERR_CLOSED, "Connection closed: ");
         assert_eq!(ERR_TIMEOUT, "Timed out: ");
+        // QA Checkpoint 13 INFO #1: the EventStream's STATUS_ERROR
+        // is privately defined in eventstream.rs:147 as "Error: ";
+        // we mirror the exact string here so the prefix-match in
+        // status_update aligns byte-for-byte.
+        assert_eq!(ERR_EVENTSTREAM_PREFIX, "Error: ");
     }
 
     /// Verify every numeric constant matches the FASM baseline.
@@ -1706,6 +1827,120 @@ mod tests {
         });
     }
 
+    /// QA Checkpoint 13 Issue #2 follow-on: verify [`HnModel::on_mainstream`]
+    /// accepts a `data` array of JSON **integers** (the wire format
+    /// the live `https://hacker-news.firebaseio.com/v0/topstories.json`
+    /// endpoint actually returns), not just JSON strings.
+    ///
+    /// This test fails on the pre-fix code (every element rejected by
+    /// the `JsonValue::String(id_str)` else-continue branch, leaving
+    /// `mainorder` empty regardless of input) and passes on the fixed
+    /// code (numeric elements converted via `n.to_string()` and pushed
+    /// into `mainorder` exactly as their decimal string equivalents).
+    #[test]
+    fn on_mainstream_accepts_numeric_ids() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+
+        rt.block_on(async {
+            let model = HnModel::init("topstories").expect("HnModel::init");
+
+            // Build a JSON array of numeric IDs — exactly the shape
+            // the live HN API returns.
+            let frame = serde_json::json!({
+                "path": "/",
+                "data": [47939079_u64, 47933208_u64, 47939320_u64],
+            });
+
+            model.on_mainstream(&frame);
+
+            let order = model.mainorder();
+            assert_eq!(
+                order.len(),
+                3,
+                "mainorder should contain three ids drawn from the numeric data array"
+            );
+            assert_eq!(order[0], "47939079");
+            assert_eq!(order[1], "47933208");
+            assert_eq!(order[2], "47939320");
+        });
+    }
+
+    /// QA Checkpoint 13 Issue #2 follow-on: verify [`HnModel::on_mainstream`]
+    /// accepts mixed integer + string ids (defensive — the FASM
+    /// baseline's loose typing tolerated either form even though the
+    /// production endpoint is integer-only).
+    #[test]
+    fn on_mainstream_accepts_mixed_string_and_numeric_ids() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+
+        rt.block_on(async {
+            let model = HnModel::init("topstories").expect("HnModel::init");
+
+            let frame = serde_json::json!({
+                "path": "/",
+                "data": [42_u64, "13", 99_u64, "7"],
+            });
+
+            model.on_mainstream(&frame);
+
+            let order = model.mainorder();
+            assert_eq!(order.len(), 4);
+            assert_eq!(order[0], "42");
+            assert_eq!(order[1], "13");
+            assert_eq!(order[2], "99");
+            assert_eq!(order[3], "7");
+        });
+    }
+
+    /// QA Checkpoint 13 Issue #2 follow-on: verify
+    /// [`HnModel::on_updatestream`] also accepts numeric ids in
+    /// `data.items` (the live `/v0/updates.json` endpoint mirrors the
+    /// topic endpoints and emits integer ids).
+    #[test]
+    fn on_updatestream_accepts_numeric_items() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+
+        rt.block_on(async {
+            let model = HnModel::init("topstories").expect("HnModel::init");
+
+            // Frame shape: {"data": {"items": [...numeric...], "profiles": []}}
+            let frame = serde_json::json!({
+                "data": {
+                    "items": [47936957_u64, 47939558_u64, 47938656_u64],
+                    "profiles": [],
+                }
+            });
+
+            // Should not panic and should not silently drop. We
+            // cannot directly inspect the items pushed (retrieve()
+            // spawns webclient tasks asynchronously) but we can
+            // verify the call returns without error and produces
+            // the documented side effect (the items map gets
+            // placeholder inserts for unknown ids).
+            model.on_updatestream(&frame);
+
+            // The placeholder inserts happen inside retrieve(); we
+            // peek the items map to confirm at least the three ids
+            // got placeholder slots queued.
+            let items = model.items();
+            for id in &["47936957", "47939558", "47938656"] {
+                assert!(
+                    items.contains_key(*id),
+                    "expected items map to contain placeholder for numeric id {id}"
+                );
+            }
+        });
+    }
+
     /// Verify set_statuscb registers a callback that fires on
     /// status_update.
     #[test]
@@ -1739,6 +1974,81 @@ mod tests {
             // Confirm the callback was invoked.
             let captured_vec = captured.lock().expect("lock").clone();
             assert!(captured_vec.contains(&"hello".to_string()));
+        });
+    }
+
+    /// QA Checkpoint 13 INFO #1: status_update increments
+    /// `errorcount` when the message starts with the EventStream
+    /// error prefix (`"Error: "`).
+    ///
+    /// Before the fix, EventStream-side failures (DNS/TLS/redirect
+    /// parse) were forwarded only to the status callback — the
+    /// `errorcount` AtomicU64 stayed at 0 even when connection
+    /// cycles were thrashing every 15 seconds in the background.
+    /// This made the status bar's `E:` counter useless as a
+    /// connectivity-trouble indicator.
+    ///
+    /// This test verifies:
+    ///
+    /// 1. EventStream error messages (`"Error: <url>"`) increment
+    ///    `errorcount`.
+    /// 2. Non-error status messages (`"Connect: …"`, `"Get: …"`,
+    ///    `"Received: …"`) do NOT increment `errorcount`.
+    /// 3. The increment fires regardless of whether a UI
+    ///    statuscb is registered.
+    #[test]
+    fn status_update_increments_errorcount_on_eventstream_error() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+
+        rt.block_on(async {
+            let model = HnModel::init("topstories").expect("HnModel::init");
+
+            // Baseline: errorcount starts at 0.
+            assert_eq!(model.errorcount.load(Ordering::Relaxed), 0);
+
+            // Non-error status messages must NOT increment the counter.
+            model.status_update("Connect: https://hacker-news.firebaseio.com/v0/topstories.json");
+            model.status_update("Get: https://hacker-news.firebaseio.com/v0/topstories.json");
+            model.status_update("Received: 12345");
+            assert_eq!(
+                model.errorcount.load(Ordering::Relaxed),
+                0,
+                "non-error prefixes must not increment errorcount"
+            );
+
+            // EventStream error message (the exact format emitted by
+            // crates/hnwatch/src/eventstream.rs:1213-1214 from
+            // `schedule_retry`) must increment the counter.
+            model.status_update("Error: https://hacker-news.firebaseio.com/v0/topstories.json");
+            assert_eq!(
+                model.errorcount.load(Ordering::Relaxed),
+                1,
+                "EventStream error prefix must increment errorcount"
+            );
+
+            // Each successive error must increment again — verifies
+            // the counter monotonically tracks all EventStream-side
+            // failure observations.
+            model.status_update("Error: https://hacker-news.firebaseio.com/v0/topstories.json");
+            model.status_update("Error: https://hacker-news.firebaseio.com/v0/updates.json");
+            assert_eq!(
+                model.errorcount.load(Ordering::Relaxed),
+                3,
+                "errorcount must increment on every EventStream error"
+            );
+
+            // Mixed sequence: error + non-error + error → +2 increments.
+            model.status_update("Error: foo");
+            model.status_update("Get: bar");
+            model.status_update("Error: baz");
+            assert_eq!(
+                model.errorcount.load(Ordering::Relaxed),
+                5,
+                "mixed sequence must only count error-prefixed messages"
+            );
         });
     }
 

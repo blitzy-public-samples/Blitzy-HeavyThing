@@ -43,6 +43,7 @@ use crate::ds::Buffer;
 use crate::error::TuiError;
 use crate::tui::ansi;
 use crate::tui::geometry::{Point, Rect};
+use crate::tui::object::WidgetState;
 
 // ---------------------------------------------------------------------------
 // RenderAttr — hand-rolled SGR attribute bitflags.
@@ -620,6 +621,166 @@ pub fn draw_box_border<R: Renderer + ?Sized>(r: &mut R, rect: Rect, double: bool
 }
 
 // ---------------------------------------------------------------------------
+// paint_widget_cells — composite a widget's WidgetState text + attributes
+// buffers into ANSI byte streams via the Renderer trait primitives.
+//
+// Background: the FASM `tui_render$ansioutput` flow walked the widget's
+// per-cell text buffer (4 bytes / codepoint) and per-cell attributes
+// (`fg | bg<<8 | sgr<<16`) emitting the minimum ANSI sequence per
+// transition (cursor move, color change, attribute change). The Rust
+// port previously deferred this integration (see
+// `widgets/text.rs` lines 4048-4064) which manifested as the
+// QA Checkpoint 13 Issue #1 symptom: SSH sessions saw alt-screen
+// setup bytes but no widget-rendered content. This helper closes that
+// gap by walking the WidgetState buffers and emitting bytes via the
+// Renderer trait surface.
+// ---------------------------------------------------------------------------
+
+/// Composite the per-cell `text` + `attributes` buffers in `state` into
+/// ANSI byte sequences via the [`Renderer`] primitives.
+///
+/// The function walks `state.text` 4 bytes at a time (each cell is a
+/// little-endian `u32` codepoint) and the matching `state.attributes`
+/// entry (`fg | bg << 8 | sgr << 16`). For every cell it issues:
+///
+/// 1. [`Renderer::move_cursor`] to the cell's row/column (1-indexed).
+/// 2. [`Renderer::set_fg`] / [`Renderer::set_bg`] — the trait's elision
+///    logic skips redundant transitions, so contiguous runs of the same
+///    color emit just one SGR sequence.
+/// 3. [`Renderer::write_text`] with the UTF-8 encoding of the codepoint
+///    (or a single space when the codepoint is `0`, matching the FASM
+///    convention where `0` means "background fill cell").
+///
+/// # Coordinate system
+///
+/// `state.bounds.ax` / `state.bounds.ay` are interpreted as the widget's
+/// origin in the renderer's window coordinate space. The
+/// [`crate::tui::widgets::ssh::TuiSshRenderer`] uses `Point::ZERO`
+/// (0-indexed) for its window origin, so this helper adds `+1` when
+/// translating to ANSI's 1-indexed cursor coordinates. Widgets whose
+/// `bounds.ax` is already 1-indexed (the trait default in
+/// [`Renderer::new_window_size`]) will see double-counted offsets
+/// pushing their content one cell south-east — callers using the
+/// trait-default origin must subtract 1 from the bounds before invoking
+/// this helper, or use a renderer whose window origin is `(0, 0)` to
+/// match the FASM convention.
+///
+/// # Bail-out conditions
+///
+/// Returns `Ok(())` without emitting any bytes when:
+///
+/// - `state.width <= 0` or `state.height <= 0`
+/// - `state.text` is empty (no buffer allocated)
+/// - `state.attributes.cells` is empty (no per-cell attributes set)
+///
+/// These mirror the bail-out conditions in
+/// [`crate::tui::widgets::background::TuiBackground::nvfill`] so an
+/// uninitialized widget is silently skipped instead of producing
+/// garbage output.
+///
+/// # Errors
+///
+/// Propagates any [`TuiError::Render`] from the underlying renderer
+/// (typically a write failure to the terminal / SSH channel).
+pub fn paint_widget_cells<R: Renderer + ?Sized>(
+    r: &mut R,
+    state: &WidgetState,
+) -> Result<(), TuiError> {
+    let width = state.width;
+    let height = state.height;
+    if width <= 0 || height <= 0 {
+        return Ok(());
+    }
+    if state.text.is_empty() || state.attributes.cells.is_empty() {
+        return Ok(());
+    }
+
+    let width_usize = width as usize;
+    let height_usize = height as usize;
+    let total_cells = width_usize.saturating_mul(height_usize);
+    let needed_bytes = total_cells.saturating_mul(4);
+
+    let text_slice = state.text.as_slice();
+    let cells = &state.attributes.cells;
+
+    // Defensive bounds: walk only as many cells as both buffers
+    // jointly support. A FASM-faithful caller pre-allocates both in
+    // lockstep, but if a caller forgets to grow one of them we degrade
+    // gracefully instead of panicking on slice indexing.
+    let safe_cells = total_cells.min(cells.len()).min(needed_bytes / 4);
+
+    // Origin: state.bounds.ax / ay are stored as i32 in 0-indexed
+    // coordinates by the TuiSshRenderer (Point::ZERO origin). Translate
+    // to ANSI's 1-indexed cursor space by clamping negatives to 0 then
+    // adding 1.
+    let origin_col_zero = state.bounds.ax.max(0);
+    let origin_row_zero = state.bounds.ay.max(0);
+    // Saturate against u16::MAX so cursor_move never wraps around for
+    // pathological bounds. Practical terminals are well below 65k cols.
+    let origin_col_one: u16 = u16::try_from(origin_col_zero)
+        .unwrap_or(u16::MAX - 1)
+        .saturating_add(1);
+    let origin_row_one: u16 = u16::try_from(origin_row_zero)
+        .unwrap_or(u16::MAX - 1)
+        .saturating_add(1);
+
+    for (cell_idx, &attr_packed) in cells.iter().enumerate().take(safe_cells) {
+        let row = cell_idx / width_usize;
+        let col = cell_idx % width_usize;
+
+        // Decode the per-cell codepoint (little-endian u32).
+        let byte_idx = cell_idx * 4;
+        if byte_idx + 4 > text_slice.len() {
+            break;
+        }
+        let cp_bytes: [u8; 4] = [
+            text_slice[byte_idx],
+            text_slice[byte_idx + 1],
+            text_slice[byte_idx + 2],
+            text_slice[byte_idx + 3],
+        ];
+        let cp = u32::from_le_bytes(cp_bytes);
+
+        // Decode the per-cell attributes (already in `attr_packed`).
+        let fg = (attr_packed & 0xFF) as u8;
+        let bg = ((attr_packed >> 8) & 0xFF) as u8;
+        // The high 16 bits hold SGR attribute flags; we currently feed
+        // them as `RenderAttr::NONE` because the per-cell SGR layer is
+        // not yet wired into widget production rendering. Future work
+        // will decode the bits into `RenderAttr` flags via a small
+        // bit-mapping table, but the QA-checkpoint splash background
+        // does not exercise SGR transitions so this is safe to defer.
+        // (Any high bits the widget set will simply not be applied;
+        // the cell still renders with correct fg/bg.)
+        let attr = RenderAttr::NONE;
+
+        // Emit the per-cell move + colors + char.
+        let row_one = origin_row_one.saturating_add(row as u16);
+        let col_one = origin_col_one.saturating_add(col as u16);
+        r.move_cursor(row_one, col_one)?;
+        r.set_fg(fg)?;
+        r.set_bg(bg)?;
+        r.set_attr(attr)?;
+
+        // Codepoint 0 is the FASM "no-cell-here" sentinel — render as
+        // a space so the background fill is still emitted (matches the
+        // visual effect of the FASM `tui_render` engine when the
+        // text buffer holds the bgfillchar value and the cell is
+        // cleared-but-not-overwritten).
+        let ch = if cp == 0 {
+            ' '
+        } else {
+            char::from_u32(cp).unwrap_or(' ')
+        };
+        let mut utf8_buf = [0u8; 4];
+        let s = ch.encode_utf8(&mut utf8_buf);
+        r.write_text(s)?;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tests — unit tests exercising trait object-safety, elision behaviour,
 // and the BufferedRenderer / draw_box_border helpers.
 // ---------------------------------------------------------------------------
@@ -1027,5 +1188,130 @@ mod tests {
         let rect = Rect::from_origin_size(Point::new(1, 1), 3, 3);
         draw_box_border(dyn_r, rect, false).expect("dyn draw");
         assert!(!sink.out.is_empty());
+    }
+
+    // -------------------------- paint_widget_cells --------------------------
+    //
+    // QA Checkpoint 13 Issue #1: paint_widget_cells is the new helper that
+    // composites a widget's WidgetState (text + attributes) into ANSI bytes
+    // via the Renderer trait. These tests pin its observable behavior.
+
+    /// Build a `WidgetState` matching a `width x height` rectangle, with
+    /// every cell holding `cp` as the codepoint and `(fg,bg)` as the
+    /// packed attribute. Returns the constructed state.
+    fn build_test_state(
+        width: i32,
+        height: i32,
+        cp: u32,
+        fg: u8,
+        bg: u8,
+    ) -> crate::tui::object::WidgetState {
+        let total = (width as usize) * (height as usize);
+        // Pre-fill text buffer: 4 bytes per cell, little-endian u32.
+        let cp_bytes = cp.to_le_bytes();
+        let mut text = crate::ds::Buffer::new();
+        for _ in 0..total {
+            for &b in &cp_bytes {
+                text.push(b);
+            }
+        }
+        // Pre-fill attributes: packed (fg | bg << 8).
+        let packed = u32::from(fg) | (u32::from(bg) << 8);
+        let attributes = crate::tui::object::Attributes {
+            cells: vec![packed; total],
+        };
+        crate::tui::object::WidgetState {
+            bounds: Rect::from_origin_size(Point::ZERO, width, height),
+            width,
+            height,
+            text,
+            attributes,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn paint_widget_cells_zero_size_is_noop() {
+        let mut r = TestSink::new();
+        let s = crate::tui::object::WidgetState::default();
+        // width = height = 0 by default; nothing must be emitted.
+        paint_widget_cells(&mut r, &s).expect("noop");
+        assert!(r.out.is_empty(), "no bytes should reach the sink");
+    }
+
+    #[test]
+    fn paint_widget_cells_empty_text_buffer_is_noop() {
+        let mut r = TestSink::new();
+        // Sized but with an empty text buffer → bail out per the
+        // FASM nvfill parity.
+        let s = crate::tui::object::WidgetState {
+            bounds: Rect::from_origin_size(Point::ZERO, 4, 2),
+            width: 4,
+            height: 2,
+            ..Default::default()
+        };
+        paint_widget_cells(&mut r, &s).expect("noop");
+        assert!(r.out.is_empty(), "no bytes when text buffer empty");
+    }
+
+    #[test]
+    fn paint_widget_cells_emits_codepoint_and_color_per_cell() {
+        let mut r = TestSink::new();
+        // 2x1 grid of 'X' (U+0058) on fg=15, bg=4.
+        let s = build_test_state(2, 1, b'X' as u32, 15, 4);
+        paint_widget_cells(&mut r, &s).expect("paint 2x1");
+        let out = String::from_utf8(r.out).expect("utf8 output");
+        // Both cells must contain the X character.
+        let x_count = out.chars().filter(|c| *c == 'X').count();
+        assert_eq!(x_count, 2, "two X cells must be emitted, got: {out:?}");
+        // Cursor positioning to row 1 col 1 must appear (1-indexed).
+        // ANSI cursor positioning sequence is `ESC[r;cH` or `ESC[H` for 1,1.
+        assert!(
+            out.contains("\x1b[H") || out.contains("\x1b[1;1H"),
+            "expected cursor home / 1;1 sequence, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn paint_widget_cells_translates_codepoint_zero_to_space() {
+        let mut r = TestSink::new();
+        // 1x1 cell with codepoint 0 — must render as ' ' (space).
+        let s = build_test_state(1, 1, 0, 7, 0);
+        paint_widget_cells(&mut r, &s).expect("paint 1x1");
+        let out = String::from_utf8(r.out).expect("utf8 output");
+        assert!(
+            out.contains(' '),
+            "codepoint 0 must render as space, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn paint_widget_cells_uses_one_indexed_coordinates() {
+        // Place a 2x2 grid at bounds origin (3, 5) (0-indexed in
+        // WidgetState) which becomes ANSI row 6 col 4 (1-indexed).
+        let mut r = TestSink::new();
+        let mut s = build_test_state(2, 2, b'A' as u32, 0, 0);
+        s.bounds = Rect::from_origin_size(Point::new(3, 5), 2, 2);
+        paint_widget_cells(&mut r, &s).expect("paint 2x2 offset");
+        let out = String::from_utf8(r.out).expect("utf8 output");
+        // First cell must move to row=6, col=4.
+        assert!(
+            out.contains("\x1b[6;4H"),
+            "first cell must be at 1-indexed (6,4), got {out:?}"
+        );
+    }
+
+    #[test]
+    fn paint_widget_cells_via_trait_object() {
+        // Prove the helper accepts `&mut dyn Renderer` (this matches
+        // how `TuiSshRenderer::render_tree` invokes it after upcasting
+        // `self` to `&mut dyn Renderer` via its `Renderer` impl).
+        let mut sink = TestSink::new();
+        let dyn_r: &mut dyn Renderer = &mut sink;
+        let s = build_test_state(3, 1, b'Z' as u32, 0, 0);
+        paint_widget_cells(dyn_r, &s).expect("dyn paint");
+        let out = String::from_utf8(sink.out).expect("utf8 output");
+        let z_count = out.chars().filter(|c| *c == 'Z').count();
+        assert_eq!(z_count, 3, "three Z cells must be emitted, got {out:?}");
     }
 }

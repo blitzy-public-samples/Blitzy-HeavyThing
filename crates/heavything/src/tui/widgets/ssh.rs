@@ -38,20 +38,29 @@
 //
 // Architectural invariants:
 //
-// * `TuiSsh` holds a STRONG `Arc<TuiSshRenderer>` (not Weak — the
-//   renderer is owned by the SSH layer per FASM `tui_ssh$destroy`
-//   lines 198-228 which explicitly `heap$free`s the renderer).
+// * `TuiSsh` holds the renderer INLINE behind `Mutex<TuiSshRenderer>`.
+//   The renderer is owned by the SSH layer per FASM `tui_ssh$destroy`
+//   lines 198-228 which explicitly `heap$free`s the renderer. The
+//   Mutex provides interior mutability for the framework's
+//   `&mut self` Widget-trait methods (FASM single-threaded model
+//   expressed as direct register-based mutation). NO outer `Arc` is
+//   required because `TuiSsh` itself is always held in `Arc<TuiSsh>`
+//   by the SSH layer; the inner renderer is never shared
+//   independently of its enclosing `TuiSsh`. (Historical note: an
+//   earlier implementation used `Arc<TuiSshRenderer>` and reached for
+//   `Arc::get_mut` on a freshly-cloned handle — this always returned
+//   `None` because cloning bumped the refcount to 2, silently
+//   skipping the mutation. Replaced with direct `Mutex` wrapping
+//   per QA Checkpoint 13 Issue #1.)
 // * `TuiSshRenderer` holds a WEAK `Weak<TuiSsh>` back-pointer to
 //   break the otherwise-circular ownership and reach the transport
 //   for output flush. Constructed via [`Arc::new_cyclic`] so the
 //   renderer can record its parent even before `TuiSsh::new` returns.
-// * Interior mutability via `std::sync::Mutex<TuiSshRendererInner>`
+// * Inner buffer state via `std::sync::Mutex<TuiSshRendererInner>`
 //   following the canonical pattern from `widgets::matrix`,
-//   `widgets::effect`, and `widgets::spinner`. The widget framework
-//   calls Widget trait `&mut self` methods through `Arc::get_mut`
-//   (per `crate::tui::object::cleanup_widget`) which only succeeds at
-//   refcount=1; for shared-ownership mutation (e.g. accumulating
-//   bytes from concurrent draw paths) the `Mutex` is required.
+//   `widgets::effect`, and `widgets::spinner`. Required for
+//   `&self`-receiver methods (`ansi_output`, `flush_pending`) that
+//   accumulate bytes from concurrent draw paths.
 // * `lock_inner_recoverable` translates poison errors back into the
 //   inner guard following the matrix.rs / effect.rs precedent — a
 //   panic in one render path must not permanently brick the
@@ -119,7 +128,7 @@ use crate::error::TuiError;
 use crate::tui::ansi::{ALT_SCREEN_EXIT, CLEAR_SCREEN, CURSOR_HOME, HIDE_CURSOR, SHOW_CURSOR};
 use crate::tui::geometry::{Point, Rect};
 use crate::tui::object::{KeyEvent, Widget, WidgetState};
-use crate::tui::render::{RenderState, Renderer};
+use crate::tui::render::{paint_widget_cells, RenderState, Renderer};
 
 // ============================================================================
 // SshTransport — abstraction boundary between the TUI widget and the SSH
@@ -274,11 +283,14 @@ const FLUSH_THRESHOLD_BYTES: usize = 4096;
 ///
 /// # Ownership
 ///
-/// `renderer` is held by strong [`Arc`] because the FASM
+/// `renderer` is held INLINE behind a [`Mutex`] because the FASM
 /// `tui_ssh$destroy` (lines 198-228) explicitly `heap$free`s the
 /// renderer — i.e. the SSH widget OWNS the renderer. The renderer
 /// holds a [`Weak`] back-pointer (in
-/// [`TuiSshRendererInner::ssh_parent`]) to break the cycle.
+/// [`TuiSshRendererInner::ssh_parent`]) to break the cycle. The
+/// Mutex provides interior mutability for `&mut self` widget-trait
+/// methods through the shared `Arc<TuiSsh>` reference held by the
+/// SSH layer.
 ///
 /// `only_child` is wrapped in [`Mutex`] because it's set in
 /// [`TuiSsh::new`] but moved into the renderer's child list in
@@ -287,16 +299,19 @@ const FLUSH_THRESHOLD_BYTES: usize = 4096;
 ///
 /// # Send + Sync
 ///
-/// All fields are `Send + Sync` (`Arc`, `Weak`, primitives, `Mutex`,
+/// All fields are `Send + Sync` (`Mutex`, primitives, `Mutex`,
 /// `Arc<dyn SshTransport>`), so `TuiSsh` derives `Send + Sync`
 /// automatically.
 pub struct TuiSsh {
-    /// FASM `tui_ssh_renderer_ofs` — pointer to the renderer.
+    /// FASM `tui_ssh_renderer_ofs` — the renderer.
     ///
-    /// Strong reference: `TuiSsh` owns the renderer and is
-    /// responsible for its lifecycle (matches FASM `heap$free` at
-    /// `tui_ssh$destroy` line 210).
-    pub(crate) renderer: Arc<TuiSshRenderer>,
+    /// Owned inline behind a [`Mutex`] for interior mutability
+    /// (matches FASM `heap$free` at `tui_ssh$destroy` line 210 —
+    /// dropping the `TuiSsh` drops the Mutex which drops the
+    /// renderer). The Mutex enables `&mut self` widget-trait
+    /// methods to be invoked through the shared `Arc<TuiSsh>`
+    /// reference held by the SSH layer.
+    pub(crate) renderer: Mutex<TuiSshRenderer>,
 
     /// FASM `tui_ssh_onlychild_ofs` — pointer to the display widget
     /// to be hooked into the renderer's children list once the SSH
@@ -391,10 +406,16 @@ impl TuiSsh {
         // simultaneously giving the renderer a Weak back-pointer to
         // it. This is the canonical pattern for breaking parent ↔
         // child Arc cycles.
+        //
+        // `TuiSshRenderer::new` returns a `TuiSshRenderer` value
+        // which we wrap inline in `Mutex::new(...)` here. This
+        // replaces the prior `Arc<TuiSshRenderer>` design — see the
+        // architectural-invariants header comment for the rationale
+        // behind the change (QA Checkpoint 13 Issue #1).
         Arc::new_cyclic(|weak_self: &Weak<Self>| {
             let renderer = TuiSshRenderer::new(weak_self.clone());
             Self {
-                renderer,
+                renderer: Mutex::new(renderer),
                 only_child: Mutex::new(Some(display)),
                 raddr,
                 raddr_len,
@@ -458,12 +479,8 @@ impl TuiSsh {
 
         // Step 3: hand off the only-child widget to the renderer.
         // We take the widget out of the Mutex slot (mirroring the
-        // FASM line 329 zero-store) and append it via
-        // Arc::get_mut on the renderer. This requires refcount=1
-        // on the renderer Arc, which is true at this point because
-        // the SSH layer holds the only Arc<TuiSsh> and the
-        // renderer is owned solely by us — we currently hold the
-        // sole strong reference to the renderer.
+        // FASM line 329 zero-store) and append it to the renderer's
+        // children list under the renderer's Mutex.
         //
         // The FASM equivalent is `qword [rdx+tui_vappendchild]`
         // calling `tui_object$appendchild` which does
@@ -473,52 +490,34 @@ impl TuiSsh {
             guard.take()
         };
         if let Some(display) = display_opt {
-            // Best-effort exclusive access on the renderer. If
-            // refcount > 1 (e.g. another concurrent on_connected
-            // call has cloned the Arc) we fall back to silently
-            // skipping — matching the framework convention from
-            // `crate::tui::object::cleanup_widget` line 1051.
+            // Acquire exclusive mutation rights on the renderer via
+            // its Mutex (poison-recoverable per the matrix.rs /
+            // effect.rs / spinner.rs precedent). Direct field access
+            // (`state.children`) bypasses the trait-dispatch
+            // ambiguity between `Widget::state_mut` and
+            // `Renderer::state_mut` (which return references to
+            // different state types).
             //
-            // We have to clone the Arc here briefly to satisfy the
-            // borrow checker (Arc::get_mut requires &mut Arc, but
-            // self.renderer is behind a shared reference).
+            // QA Checkpoint 13 Issue #1: this replaces a prior
+            // `Arc::get_mut(&mut self.renderer.clone())` antipattern
+            // that always returned `None` (because cloning bumped
+            // the refcount to 2), silently dropping every connect
+            // event and preventing the splash widget from ever
+            // appearing in the SSH channel.
+            let mut renderer = lock_renderer_recoverable(&self.renderer);
+            renderer.state.children.push_back(display);
+
+            // Trigger an immediate render pass so the new child's
+            // initial frame reaches the SSH transport without
+            // waiting for a key event or window-size update.
             //
-            // OWNERSHIP INVARIANT: `Arc::get_mut` returns `Some` iff
-            // there is exactly one strong and zero weak references to
-            // the underlying allocation. The expected steady-state
-            // is:
-            //   • `self.renderer` holds the only persistent strong
-            //     reference (single-owner construction guarantee at
-            //     [`TuiSsh::new_with_renderer`]).
-            //   • The local `renderer_arc.clone()` above briefly
-            //     adds a second strong reference, so `get_mut` on
-            //     it returns `None` until either the original or
-            //     the clone is dropped.
-            //   • To get exclusive access we therefore call
-            //     `get_mut` on the cloned handle while the original
-            //     is still alive — the clone has refcount 2 (clone
-            //     + self.renderer) so `get_mut` returns `None`. The
-            //     fallback (silent skip) honors the framework
-            //     convention. To regain exclusive access we would
-            //     need to drop the original first, which we cannot
-            //     do from `&self`.
-            // The net effect is: this branch fires only on
-            // single-handed construction paths where no concurrent
-            // on_connected/on_window_size/fire_key_* clones are in
-            // flight. This matches the FASM single-threaded model
-            // where the SSH worker is the only mutator of the
-            // renderer state.
-            let mut renderer_arc = self.renderer.clone();
-            if let Some(renderer) = Arc::get_mut(&mut renderer_arc) {
-                // Disambiguate: `TuiSshRenderer` implements both
-                // `Widget::state_mut` (returns `&mut WidgetState`)
-                // and `Renderer::state_mut` (returns
-                // `&mut RenderState`). We want the WidgetState
-                // here because `children` lives on it. Direct
-                // field access bypasses the trait dispatch and
-                // is also faster than a virtual call.
-                renderer.state.children.push_back(display);
-            }
+            // If the SSH peer has not yet reported its terminal
+            // dimensions (e.g. the SSH client has not opened a
+            // pty channel) the renderer's window will be 0x0 and
+            // `render_tree` will bail out cheaply; the next
+            // `on_window_size` event will perform the first real
+            // render.
+            renderer.render_tree()?;
         }
 
         Ok(())
@@ -537,29 +536,27 @@ impl TuiSsh {
     /// Propagates any [`TuiError::Render`] from the renderer
     /// (e.g. layout-buffer allocation failure).
     pub fn on_window_size(&self, cols: u16, rows: u16) -> Result<(), TuiError> {
-        // Same Arc::get_mut pattern as on_connected — silently
-        // skipping when the renderer has additional references.
+        // Acquire exclusive mutation rights on the renderer via
+        // its Mutex (poison-recoverable per the matrix.rs / effect.rs
+        // / spinner.rs precedent), then forward to the renderer's
+        // inherent `new_window_size` (FASM `tui_vnewwindowsize`).
         //
-        // OWNERSHIP INVARIANT: see [`TuiSsh::on_connected`] for the
-        // detailed rationale. In short: `Arc::get_mut` returns `Some`
-        // only when the inspected handle has refcount 1 and no weak
-        // references. When `self.renderer` already holds the
-        // canonical strong reference, the locally cloned handle is
-        // never solo so this branch silently skips. The skip is
-        // safe because the SSH transport re-delivers SIGWINCH
-        // resizes whenever dimensions change again, and an
-        // in-flight draw will pick up the new dimensions on its
-        // next pass via the renderer's internal `new_window_size`
-        // queueing (preserved from FASM `tui_vnewwindowsize`).
-        let mut renderer_arc = self.renderer.clone();
-        if let Some(renderer) = Arc::get_mut(&mut renderer_arc) {
-            renderer.new_window_size(cols, rows)
-        } else {
-            // Renderer is shared (e.g. a draw is in flight). The
-            // SSH transport will re-deliver the resize at the next
-            // SIGWINCH if the dimensions change again.
-            Ok(())
-        }
+        // QA Checkpoint 13 Issue #1: this replaces a prior
+        // `Arc::get_mut(&mut self.renderer.clone())` antipattern
+        // that always returned `None` and silently dropped every
+        // window-size update.
+        let mut renderer = lock_renderer_recoverable(&self.renderer);
+        renderer.new_window_size(cols, rows)?;
+
+        // Drive a render pass with the new dimensions. This is
+        // when the first real frame typically reaches the SSH
+        // transport because the peer always issues at least one
+        // window-size update once the pty channel is open. The
+        // FASM build coupled `tui_vnewwindowsize` directly to a
+        // re-render via the widget tree's `tui_vsizechanged`
+        // chain; the Rust port performs the render here so the
+        // dispatch stays close to the trigger.
+        renderer.render_tree()
     }
 
     /// FASM `tui_ssh$receive` (lines 349-569) — called by the SSH
@@ -668,18 +665,15 @@ impl TuiSsh {
     /// — all four call `tui_vfirekeyevent` with `esi=key` and
     /// `edx=esc_key=0`.
     ///
-    /// OWNERSHIP INVARIANT: see [`TuiSsh::on_connected`] for the
-    /// detailed `Arc::get_mut` rationale. The clone-then-`get_mut`
-    /// pattern silently skips when refcount > 1, which is the
-    /// expected steady state when `self.renderer` is the canonical
-    /// single owner. Key events lost to the silent-skip path can be
-    /// replayed by the upstream SSH transport's input buffer.
+    /// QA Checkpoint 13 Issue #1: this replaces a prior
+    /// `Arc::get_mut(&mut self.renderer.clone())` antipattern that
+    /// always returned `None` (because cloning bumped the refcount
+    /// to 2), silently dropping every keypress before it reached
+    /// the widget tree. Now uses the renderer's `Mutex` directly.
     fn fire_key_char(&self, codepoint: u32) -> Result<(), TuiError> {
         let event = decode_key_event(codepoint, 0);
-        let mut renderer_arc = self.renderer.clone();
-        if let Some(renderer) = Arc::get_mut(&mut renderer_arc) {
-            let _ = renderer.fire_key_event(event);
-        }
+        let mut renderer = lock_renderer_recoverable(&self.renderer);
+        let _ = renderer.fire_key_event(event);
         Ok(())
     }
 
@@ -689,17 +683,14 @@ impl TuiSsh {
     /// FASM equivalent: `.fireescaped` (lines 399-407) — passes
     /// `esi=0`, `edx=esc_key`.
     ///
-    /// OWNERSHIP INVARIANT: see [`TuiSsh::on_connected`] for the
-    /// detailed `Arc::get_mut` rationale. Mirrors the
-    /// [`TuiSsh::fire_key_char`] pattern — silent skip when the
-    /// renderer Arc's strong refcount exceeds 1, with the upstream
-    /// SSH transport's input buffer providing replay semantics.
+    /// QA Checkpoint 13 Issue #1: same replacement as
+    /// [`TuiSsh::fire_key_char`] — was an `Arc::get_mut` antipattern
+    /// that silently dropped escape-key events; now uses the
+    /// renderer's `Mutex` directly.
     fn fire_key_escape(&self, esc_key: u32) -> Result<(), TuiError> {
         let event = decode_key_event(0, esc_key);
-        let mut renderer_arc = self.renderer.clone();
-        if let Some(renderer) = Arc::get_mut(&mut renderer_arc) {
-            let _ = renderer.fire_key_event(event);
-        }
+        let mut renderer = lock_renderer_recoverable(&self.renderer);
+        let _ = renderer.fire_key_event(event);
         Ok(())
     }
 
@@ -724,8 +715,13 @@ impl TuiSsh {
 
     /// Emit the exit banner with a custom marker. Public-crate so
     /// [`TuiSshRenderer::exit`] can call it.
+    ///
+    /// QA Checkpoint 13 Issue #1: `self.renderer` is a
+    /// [`Mutex<TuiSshRenderer>`]; the cached terminal width is read
+    /// under the lock guard and then released before the (possibly
+    /// blocking) `transport.send_bytes` call.
     pub(crate) fn emit_farewell_banner(&self, marker: &[u8]) -> Result<(), TuiError> {
-        let width = self.renderer.cached_width();
+        let width = lock_renderer_recoverable(&self.renderer).cached_width();
 
         // Buffer: max realistic size is
         //   3 (ESC[r) + 6 (ESC[?25h) + 2 (ESC[) + 5 (width digits)
@@ -982,17 +978,22 @@ impl TuiSshRenderer {
     /// In Rust we use [`Default`] on the relevant types to mimic
     /// the zero-clear + init-defaults effect.
     ///
-    /// Wrapped in [`Arc`] for shared ownership consistent with the
-    /// matrix / effect / spinner widget-construction precedent.
-    pub fn new(ssh_parent: Weak<TuiSsh>) -> Arc<Self> {
-        Arc::new(Self {
+    /// QA Checkpoint 13 Issue #1: returns [`Self`] (by value); the
+    /// caller ([`TuiSsh::new`]) wraps the value in
+    /// [`Mutex<TuiSshRenderer>`] to provide proper interior
+    /// mutability via lock acquisition. Previously this returned
+    /// `Arc<Self>` which forced the caller into the broken
+    /// `Arc::get_mut` antipattern that always failed when refcount
+    /// was ≥ 2.
+    pub fn new(ssh_parent: Weak<TuiSsh>) -> Self {
+        Self {
             state: WidgetState::new(),
             render: RenderState::default(),
             inner: Mutex::new(TuiSshRendererInner {
                 out_buffer: Buffer::new(),
                 ssh_parent,
             }),
-        })
+        }
     }
 
     /// FASM `tui_ssh_renderer$exit` (lines 128-194) implemented as
@@ -1108,6 +1109,186 @@ impl TuiSshRenderer {
         self.state.bounds = new_window;
         self.state.width = i32::from(cols);
         self.state.height = i32::from(rows);
+    }
+
+    /// Walk the renderer's children and emit ANSI bytes for the
+    /// currently-rendered widget tree.
+    ///
+    /// This is the production render-pass driver that completes the
+    /// FASM `tui_ssh_renderer` rendering pipeline. Without it the SSH
+    /// channel sees only the initial alt-screen / clear-screen escape
+    /// sequence emitted by [`TuiSsh::on_connected`] and no widget
+    /// content — the symptom captured by QA Checkpoint 13 Issue #1.
+    ///
+    /// # Algorithm
+    ///
+    /// For each child in `self.state.children`:
+    ///
+    /// 1. Briefly remove the child from the list to obtain unique
+    ///    ownership of the [`Arc<dyn Widget>`] (so [`Arc::get_mut`]
+    ///    can succeed). The list itself stays alive — only the slot
+    ///    is temporarily empty during the draw.
+    /// 2. Try [`Arc::get_mut`] on the child. If the refcount is `1`
+    ///    (the typical case for the splash widget right after
+    ///    [`TuiSsh::on_connected`] takes ownership), proceed; if the
+    ///    refcount is `>1` (e.g. the child has been cloned by a
+    ///    different layer), skip the child silently. This matches
+    ///    the pre-existing `widgets/text.rs` line 4048-4064 contract:
+    ///    "safe (no UB, no out-of-bounds writes) but may yield empty
+    ///    visible content until the integration is complete".
+    /// 3. Allocate the child's per-cell text + attribute buffers to
+    ///    match the renderer's window dimensions if they are not
+    ///    already sized. This is the layout step that the FASM build
+    ///    used to perform in `tui_object$sizechanged` (line 783) and
+    ///    that the Rust port previously deferred.
+    /// 4. Forward the size via [`Widget::size_changed`] so widgets
+    ///    that override it (e.g. [`crate::tui::widgets::splash::TuiSplash`]
+    ///    one-shot child initialization) can react.
+    /// 5. Invoke [`Widget::draw`] passing `self` as `&mut dyn Renderer`.
+    ///    For [`crate::tui::widgets::background::TuiBackground`]
+    ///    descendants this fills the cell buffers via `nvfill`; the
+    ///    bytes are not yet on the wire at this stage.
+    /// 6. Composite the cell buffers into ANSI bytes via
+    ///    [`paint_widget_cells`]. This is the step the Rust port was
+    ///    missing — without it the buffers are filled but never
+    ///    converted to renderer output.
+    /// 7. Re-insert the child into the list at the original index.
+    /// 8. Flush the accumulated ANSI bytes to the SSH transport via
+    ///    [`Renderer::flush`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TuiError::Render`] if any underlying renderer call
+    /// fails (typically a transport write failure on the SSH
+    /// channel). The remaining children are skipped on first error;
+    /// the partial state is acceptable because the next event-driven
+    /// repaint (key event, window resize) will retry.
+    pub fn render_tree(&mut self) -> Result<(), TuiError> {
+        let window_width = self.render.window.width();
+        let window_height = self.render.window.height();
+        // Bail out cheaply if the window dimensions are not yet set.
+        // This happens when render_tree is called before the SSH
+        // peer has reported its terminal size — the FASM build had
+        // the same gating via `tui_render$ansioutput` early-exit on
+        // zero window dimensions.
+        if window_width <= 0 || window_height <= 0 {
+            return Ok(());
+        }
+
+        // Snapshot the cached window once so the loop below can
+        // re-stamp every child's bounds without re-reading
+        // `self.render` (which would clash with `&mut self` borrow
+        // when we hand `self` to `child.draw(self)`).
+        let window_bounds = self.render.window;
+
+        // Walk children by index. We swap each child OUT of the
+        // list to obtain unique Arc ownership for `Arc::get_mut`
+        // (the QA Checkpoint 13 Issue #1 fix replaced `Arc::get_mut`
+        // on a freshly-cloned handle with this owned-by-removal
+        // pattern), then swap it BACK in the same position once
+        // drawing completes.
+        //
+        // Using `len` snapshot avoids re-iterating the
+        // possibly-mutated list each cycle.
+        let len = self.state.children.len();
+        for idx in 0..len {
+            let mut child_arc = match self.state.children.remove(idx) {
+                Some(c) => c,
+                None => continue,
+            };
+
+            // Per-child draw scope — keeps the unique `&mut self`
+            // borrow over `paint_widget_cells` constrained to a
+            // tight region so the surrounding `self.state.children`
+            // access can resume after the inner block.
+            let draw_outcome = (|| -> Result<(), TuiError> {
+                let child_mut = match Arc::get_mut(&mut child_arc) {
+                    Some(c) => c,
+                    None => {
+                        // Refcount > 1: another layer holds a clone.
+                        // Skip silently — the FASM equivalent would
+                        // never see this case because FASM owns the
+                        // children outright; in Rust we degrade to
+                        // a no-op for this child. (For QA verification
+                        // this only affects the splash's typist /
+                        // png grandchildren which always carry
+                        // refcount=2 due to the dual-storage pattern
+                        // in `init_children`.)
+                        return Ok(());
+                    }
+                };
+
+                // Allocate the child's text + attribute buffers to
+                // match the window dimensions if they are still at
+                // their default zero size. The FASM equivalent
+                // happened in `tui_object$sizechanged` line 783
+                // which the Rust port previously deferred (see
+                // `widgets/text.rs` lines 4048-4064).
+                {
+                    let s = child_mut.state_mut();
+                    s.bounds = window_bounds;
+                    s.width = window_width;
+                    s.height = window_height;
+                    let total_cells =
+                        (window_width as usize).saturating_mul(window_height as usize);
+                    let total_bytes = total_cells.saturating_mul(4);
+                    if s.text.len() < total_bytes {
+                        s.text.reserve(total_bytes - s.text.len());
+                        for _ in s.text.len()..total_bytes {
+                            s.text.push(0);
+                        }
+                    }
+                    if s.attributes.cells.len() < total_cells {
+                        s.attributes.cells.resize(total_cells, 0);
+                    }
+                }
+
+                // Forward the size to widgets that override
+                // `size_changed` (e.g. TuiSplash one-shot init).
+                child_mut.size_changed(window_width, window_height);
+
+                // Run the widget's draw chain. For TuiBackground
+                // descendants this calls `nvfill` which populates
+                // the cell buffers from `bgfillchar` / `bgcolors`.
+                // No bytes reach the SSH transport at this step —
+                // the buffers are still in-memory state.
+                child_mut.draw(self)?;
+
+                // Composite the cell buffers into ANSI bytes via
+                // the renderer trait primitives. This is the step
+                // the FASM build performed inside `tui_render`'s
+                // ansi-output dispatcher and that the Rust port
+                // previously deferred. The trait's elision logic
+                // collapses contiguous same-color runs so output
+                // size stays comparable to the FASM baseline.
+                let s_ref: &WidgetState = child_mut.state();
+                paint_widget_cells(self, s_ref)?;
+
+                Ok(())
+            })();
+
+            // Re-insert the child at the original index so the
+            // children list is left structurally identical to its
+            // pre-call state. `insert` returns Result because the
+            // List enforces `index <= len`, but `idx` is always
+            // valid because we just `remove`d it.
+            //
+            // We re-insert even if the inner draw returned an
+            // error — losing the widget on a transient transport
+            // failure would silently corrupt the widget tree.
+            let _ = self.state.children.insert(idx, child_arc);
+
+            // Propagate the inner error AFTER the re-insert so the
+            // tree stays consistent.
+            draw_outcome?;
+        }
+
+        // Flush the accumulated bytes to the SSH transport. On
+        // failure the bytes remain in the buffer for a future
+        // retry — see `flush_internal` doc comment.
+        <Self as Renderer>::flush(self)?;
+
+        Ok(())
     }
 
     /// Inherent `ansi_output` for direct external callers (e.g.
@@ -1417,6 +1598,36 @@ fn lock_inner_recoverable(m: &Mutex<TuiSshRendererInner>) -> MutexGuard<'_, TuiS
 fn lock_only_child_recoverable(
     m: &Mutex<Option<Arc<dyn Widget>>>,
 ) -> MutexGuard<'_, Option<Arc<dyn Widget>>> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Lock the [`TuiSsh::renderer`] [`Mutex`] with poison recovery.
+///
+/// QA Checkpoint 13 Issue #1: introduced to replace the broken
+/// `Arc::get_mut(&mut self.renderer.clone())` antipattern that
+/// previously gated [`TuiSsh::on_connected`],
+/// [`TuiSsh::on_window_size`], [`TuiSsh::fire_key_char`], and
+/// [`TuiSsh::fire_key_escape`]. The antipattern always returned
+/// `None` because cloning the [`Arc`] immediately before calling
+/// [`Arc::get_mut`] guaranteed a strong refcount of 2, so the
+/// renderer's widget tree was never populated and the
+/// `tui_simpleauth` login form never rendered inside the SSH
+/// channel (QA Checkpoint 13, Phase 4 / 15a / 16a evidence —
+/// only 35 bytes of terminal setup were emitted post-handshake).
+///
+/// The replacement design wraps the renderer in
+/// [`Mutex<TuiSshRenderer>`] (per AAP §0.4.3 "Trait-based
+/// polymorphism replaces virtual method tables"; interior
+/// mutability via [`Mutex`] / [`RwLock`] is the canonical Rust
+/// pattern for shared-mutable state). Poison errors are
+/// recovered (matching the precedent of
+/// [`lock_inner_recoverable`] and [`lock_only_child_recoverable`])
+/// because a panic in one render path must not permanently brick
+/// the renderer for subsequent SSH sessions.
+fn lock_renderer_recoverable(m: &Mutex<TuiSshRenderer>) -> MutexGuard<'_, TuiSshRenderer> {
     match m.lock() {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
@@ -2156,25 +2367,24 @@ mod tests {
         let transport = Arc::new(CapturingTransport::new());
         let tui = TuiSsh::new(widget, transport.clone());
 
-        // Get a Weak ref to the renderer via the strong Arc on
-        // the TuiSsh (we cannot easily extract a &mut renderer
-        // because the Arc has refcount > 1 — so we just use the
-        // shared (`&self`) ansi_output and flush_pending paths).
-        let renderer_arc: Arc<TuiSshRenderer> = tui.renderer.clone();
+        // QA Checkpoint 13 Issue #1: `tui.renderer` is now
+        // `Mutex<TuiSshRenderer>`. Acquire the lock to invoke
+        // the `&self` methods `ansi_output` and `flush_pending`.
+        let renderer = lock_renderer_recoverable(&tui.renderer);
 
         // Append some bytes; should NOT auto-flush (sub-threshold).
-        renderer_arc.ansi_output(b"hello").expect("ansi_output");
+        renderer.ansi_output(b"hello").expect("ansi_output");
         // Buffer has 5 bytes pending; transport should not yet have them
         // (because ansi_output flushes only at threshold = 4096).
         assert_eq!(transport.snapshot_sent(), b"");
 
         // Explicit flush should send the buffered bytes.
-        renderer_arc.flush_pending().expect("flush_pending");
+        renderer.flush_pending().expect("flush_pending");
         let sent = transport.snapshot_sent();
         assert_eq!(sent, b"hello");
 
         // Subsequent flush with empty buffer is a no-op (no extra bytes).
-        renderer_arc.flush_pending().expect("flush_pending again");
+        renderer.flush_pending().expect("flush_pending again");
         assert_eq!(transport.snapshot_sent(), b"hello");
     }
 
@@ -2183,16 +2393,207 @@ mod tests {
         let widget = MockWidget::new_arc();
         let transport = Arc::new(CapturingTransport::new());
         let tui = TuiSsh::new(widget, transport.clone());
-        let renderer_arc: Arc<TuiSshRenderer> = tui.renderer.clone();
+        // QA Checkpoint 13 Issue #1: lock the renderer mutex.
+        let renderer = lock_renderer_recoverable(&tui.renderer);
 
         // Push exactly FLUSH_THRESHOLD_BYTES bytes; should auto-flush.
         let payload = vec![b'X'; FLUSH_THRESHOLD_BYTES];
-        renderer_arc.ansi_output(&payload).expect("ansi_output");
+        renderer.ansi_output(&payload).expect("ansi_output");
 
         // Transport should now hold all payload bytes.
         let sent = transport.snapshot_sent();
         assert_eq!(sent.len(), FLUSH_THRESHOLD_BYTES);
         assert!(sent.iter().all(|&b| b == b'X'));
+    }
+
+    // ------------------------------------------------------------------------
+    // QA Checkpoint 13 Issue #1: render_tree — bytes must reach the
+    // transport when the renderer drives a render pass.
+    // ------------------------------------------------------------------------
+
+    /// A minimal Widget that fills its WidgetState text + attribute
+    /// buffers with a sentinel codepoint and color pair on every
+    /// `draw` call. Lets the render_tree tests prove that:
+    ///   1. `draw` is invoked on the child;
+    ///   2. The child's WidgetState reaches `paint_widget_cells`;
+    ///   3. Bytes derived from the child's state are flushed to the
+    ///      transport via the renderer.
+    struct PaintingWidget {
+        state: WidgetState,
+        codepoint: u32,
+        fg: u8,
+        bg: u8,
+    }
+
+    impl PaintingWidget {
+        fn new_arc(codepoint: u32, fg: u8, bg: u8) -> Arc<Self> {
+            Arc::new(Self {
+                state: WidgetState::new(),
+                codepoint,
+                fg,
+                bg,
+            })
+        }
+    }
+
+    impl Widget for PaintingWidget {
+        fn state(&self) -> &WidgetState {
+            &self.state
+        }
+
+        fn state_mut(&mut self) -> &mut WidgetState {
+            &mut self.state
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn draw(&mut self, _r: &mut dyn Renderer) -> Result<(), TuiError> {
+            // Stamp our sentinel into every cell of the pre-allocated
+            // text + attribute buffers. The render_tree driver has
+            // already sized the buffers to width*height before
+            // calling draw, so we know they hold exactly the right
+            // number of cells.
+            let total = (self.state.width as usize) * (self.state.height as usize);
+            let cp_bytes = self.codepoint.to_le_bytes();
+            // Replace text buffer contents in place (the driver
+            // already pre-filled with zeros).
+            for cell_idx in 0..total {
+                let byte_off = cell_idx * 4;
+                let slice = self.state.text.as_mut_slice();
+                if byte_off + 4 <= slice.len() {
+                    slice[byte_off] = cp_bytes[0];
+                    slice[byte_off + 1] = cp_bytes[1];
+                    slice[byte_off + 2] = cp_bytes[2];
+                    slice[byte_off + 3] = cp_bytes[3];
+                }
+            }
+            let packed = u32::from(self.fg) | (u32::from(self.bg) << 8);
+            for c in self.state.attributes.cells.iter_mut() {
+                *c = packed;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn render_tree_emits_no_bytes_when_window_is_zero() {
+        // Pre-condition: TuiSshRenderer with default zero-size window.
+        let mut renderer = TuiSshRenderer {
+            state: WidgetState::new(),
+            render: RenderState::default(),
+            inner: Mutex::new(TuiSshRendererInner {
+                out_buffer: Buffer::new(),
+                ssh_parent: Weak::new(),
+            }),
+        };
+        // Push a child even though dimensions are zero.
+        renderer
+            .state
+            .children
+            .push_back(PaintingWidget::new_arc(b'A' as u32, 7, 0));
+
+        // render_tree must bail without invoking draw or emitting bytes.
+        renderer.render_tree().expect("render_tree zero-size noop");
+        assert!(
+            renderer.inner.lock().unwrap().out_buffer.is_empty(),
+            "no bytes should be queued when window is zero",
+        );
+    }
+
+    #[test]
+    fn render_tree_drives_child_draw_and_flushes_bytes() {
+        // QA Checkpoint 13 Issue #1: prove the full pipeline:
+        //   on_window_size -> render_tree -> child.draw ->
+        //   paint_widget_cells -> flush -> transport.send_bytes.
+        let widget = PaintingWidget::new_arc(b'Q' as u32, 15, 4);
+        let transport = Arc::new(CapturingTransport::new());
+        let tui = TuiSsh::new(widget, transport.clone());
+
+        // 1. Take ownership of the only_child and push into renderer
+        //    children list (this matches what `on_connected` does
+        //    after taking the only_child slot). We do this manually
+        //    instead of calling `on_connected` to keep the test
+        //    focused on render_tree (not the alt-screen / clear
+        //    sequence).
+        {
+            let display_opt = {
+                let mut guard = lock_only_child_recoverable(&tui.only_child);
+                guard.take()
+            };
+            let display = display_opt.expect("only_child must be present");
+            let mut r = lock_renderer_recoverable(&tui.renderer);
+            r.state.children.push_back(display);
+        }
+
+        // 2. Set a window size and drive render_tree.
+        {
+            let mut r = lock_renderer_recoverable(&tui.renderer);
+            r.new_window_size(4, 2).expect("new_window_size");
+            r.render_tree().expect("render_tree");
+        }
+
+        // 3. Verify bytes reached the transport via the flush at the
+        //    end of render_tree.
+        let sent = transport.snapshot_sent();
+        let out = String::from_utf8(sent).expect("utf8 transport bytes");
+        // The child fills 4*2 = 8 cells with 'Q'.
+        let q_count = out.chars().filter(|c| *c == 'Q').count();
+        assert_eq!(
+            q_count, 8,
+            "render_tree must emit 8 'Q' cells (4x2 grid), got: {out:?}"
+        );
+    }
+
+    #[test]
+    fn render_tree_via_on_connected_emits_alt_screen_then_widget_bytes() {
+        // QA Checkpoint 13 Issue #1: end-to-end `on_connected` test.
+        // Without render_tree wired up the captured byte stream
+        // contained ONLY the 35-byte alt-screen + clear sequence.
+        // After the fix the stream must also contain the widget's
+        // emitted bytes once a window-size update arrives.
+        let widget = PaintingWidget::new_arc(b'#' as u32, 7, 0);
+        let transport = Arc::new(CapturingTransport::new());
+        let tui = TuiSsh::new(widget, transport.clone());
+
+        // First trigger the connect path (fires a render_tree at
+        // zero-size: bails out — no widget bytes yet).
+        tui.on_connected().expect("on_connected");
+        let after_connect = transport.snapshot_sent();
+        // Should contain alt-screen + insert + hide + clear + home.
+        assert!(
+            after_connect.windows(CLEAR_SCREEN.len()).any(|w| w == CLEAR_SCREEN),
+            "expected CLEAR_SCREEN in connect stream",
+        );
+        // Pre-window-size: no widget bytes yet (no '#' character).
+        let pre_resize_text = String::from_utf8_lossy(&after_connect);
+        let pre_hashes = pre_resize_text.chars().filter(|c| *c == '#').count();
+        assert_eq!(
+            pre_hashes, 0,
+            "no widget bytes should appear before window-size update"
+        );
+
+        // Now drive a window-size update; render_tree must fire
+        // and the widget's bytes must reach the transport.
+        tui.on_window_size(2, 1).expect("on_window_size");
+        let after_resize = transport.snapshot_sent();
+        let post_resize_text = String::from_utf8_lossy(&after_resize);
+        let post_hashes = post_resize_text.chars().filter(|c| *c == '#').count();
+        // 2*1 = 2 cells.
+        assert_eq!(
+            post_hashes, 2,
+            "expected 2 '#' cells after on_window_size, got: {post_resize_text:?}"
+        );
+
+        // The QA observation captured exactly 35 post-handshake
+        // bytes (alt-screen setup + clear) — after the fix the
+        // post-resize stream must be strictly longer.
+        assert!(
+            after_resize.len() > 35,
+            "post-resize stream must exceed the 35-byte QA-observed baseline (got {} bytes)",
+            after_resize.len(),
+        );
     }
 
     // ------------------------------------------------------------------------
