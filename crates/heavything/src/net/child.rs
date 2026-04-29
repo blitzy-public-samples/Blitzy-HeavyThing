@@ -254,10 +254,40 @@ impl LogSeverity {
 ///
 /// Workers produce [`LogRecord`] values locally (via the syslog
 /// subsystem) and relay them to the master over the socketpair as
-/// [`LinkMessage::Log`]. The master is the sole process that opens
-/// the external syslog socket (or writes to a log file), which
-/// serializes log output across all workers and honours the 1.5 s
-/// flush timer defined in `rwasa/master.inc`.
+/// [`LinkMessage::Log`]. The master is the sole process that writes
+/// to the external `/dev/log` syslog socket (or writes to a log
+/// file), which serializes log output across all workers and honours
+/// the 1.5 s flush timer defined in `rwasa/master.inc`.
+///
+/// # Sole-writer enforcement (post-fork socket disable)
+///
+/// `init()` (in [`crate::util::syslog`]) opens the `/dev/log`
+/// `UnixDatagram` once in the master before `fork()`. The file
+/// descriptor is therefore inherited by every worker. To make the
+/// "master is sole writer" contract real (rather than aspirational),
+/// each worker calls
+/// [`crate::util::syslog::set_socket`]`(None)` immediately after
+/// installing the IPC log hook in its multi-worker startup path:
+///
+/// ```ignore
+/// // crates/webserver/src/worker.rs — multi-worker branch
+/// install_log_hook(log_tx);            // route every log() call to master via IPC
+/// install_tls_sessioncache_hook(tls_tx);
+/// syslog::set_socket(None);            // close inherited UnixDatagram
+/// ```
+///
+/// After `set_socket(None)` the worker's `log()` calls invoke only
+/// the IPC hook — the direct `/dev/log` write path is dormant. The
+/// master, having no hook installed, writes verbatim to `/dev/log`
+/// when it receives [`LinkMessage::Log`] from any worker (preserving
+/// the original RFC 5424 severity from the worker's call site, not a
+/// collapsed normal/error bit). This eliminates the duplicate
+/// datagram emission documented in QA Final Checkpoint 17 Issue #1
+/// (MAJOR severity).
+///
+/// Single-worker mode (`-cpu 1`) bypasses this entirely: the worker
+/// is the only process and writes directly. No hook is installed,
+/// no socket is closed, no relay is needed.
 ///
 /// # Fields
 ///

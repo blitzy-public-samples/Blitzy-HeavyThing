@@ -248,7 +248,7 @@ pub enum LinkMessage {
     ///
     /// ```text
     /// [8..16)         u64       webservercfg pointer (opaque to master)
-    /// [16..20)        u32       log_type (0=normal, 1=error)
+    /// [16..20)        u32       severity (RFC 5424 0..=7)
     /// [20..28)        u64       message character count (LE)
     /// [28..N)                   message raw bytes (stride-expanded)
     /// ```
@@ -257,11 +257,28 @@ pub enum LinkMessage {
     /// sends a pointer it owns (and master never dereferences); master
     /// uses it only to route the message back to the correct config's
     /// log file or syslog channel via [`heavything::util::syslog`].
+    ///
+    /// The `severity` field carries the **full** RFC 5424 severity
+    /// value (0..=7) sourced from the worker's original `syslog::log`
+    /// call site, NOT a collapsed two-state error/normal flag. This
+    /// preserves WARNING (4), NOTICE (5), DEBUG (7), etc. across the
+    /// IPC relay so the master can re-emit the message with the
+    /// original severity intact. See QA Final Checkpoint 17 Issue #1
+    /// (MAJOR) for the rationale: the prior two-bit-collapse design
+    /// flattened all non-error severities to `LOG_INFO` and all
+    /// errors to `LOG_ERR` on the master side, which caused
+    /// observable severity drift. The wire offset and width remain
+    /// `[16..20) u32` for backwards binary compatibility — only the
+    /// semantic interpretation has been widened.
     Log {
         /// Worker-side `webservercfg` pointer; master treats as opaque.
         cfg_ptr: u64,
-        /// Log severity (`0` = normal, `1` = error).
-        log_type: u32,
+        /// RFC 5424 severity (`0`..=`7`). Carries the worker's
+        /// original `syslog::log` severity verbatim. The master
+        /// re-emits with this severity intact; values `> 7` are
+        /// rejected by [`LinkMessage::parse`] with
+        /// [`ProtocolError::Insanity`]`(LINKMESSAGE_LOG)`.
+        severity: u32,
         /// Message bytes (stride-expanded per `STRING_BITS`).
         message: Vec<u8>,
     },
@@ -318,7 +335,7 @@ const LINKMESSAGE_HEADER_SIZE: usize = 8;
 /// the 8-byte shared header and the message bytes:
 ///
 /// * `[8..16)` u64 cfg_ptr  (8 bytes)
-/// * `[16..20)` u32 log_type (4 bytes)
+/// * `[16..20)` u32 severity (4 bytes; RFC 5424 0..=7)
 /// * `[20..28)` u64 message char count (8 bytes)
 ///
 /// Total: `8 + 4 + 8 = 20`. The complete `Log` frame is
@@ -429,10 +446,17 @@ impl LinkMessage {
     ///
     /// ```text
     /// [8..16)   u64 cfg_ptr
-    /// [16..20)  u32 log_type
+    /// [16..20)  u32 severity (RFC 5424 0..=7)
     /// [20..28)  u64 message char count
     /// [28..N)   message raw bytes (stride-expanded)
     /// ```
+    ///
+    /// The `severity` field is validated against the RFC 5424 range
+    /// (0..=7); any out-of-range value yields
+    /// [`ProtocolError::Insanity`]`(LINKMESSAGE_LOG)`. This guards
+    /// the master from a malformed or maliciously-crafted worker
+    /// frame steering the master into emitting an oversized or
+    /// undefined PRI value on `/dev/log`.
     fn parse_log(frame: &[u8]) -> std::result::Result<LinkMessage, ProtocolError> {
         let prefix_end = LINKMESSAGE_HEADER_SIZE + LINKMESSAGE_LOG_PAYLOAD_PREFIX;
         if frame.len() < prefix_end {
@@ -441,7 +465,16 @@ impl LinkMessage {
         let cfg_ptr = u64::from_le_bytes([
             frame[8], frame[9], frame[10], frame[11], frame[12], frame[13], frame[14], frame[15],
         ]);
-        let log_type = u32::from_le_bytes([frame[16], frame[17], frame[18], frame[19]]);
+        let severity = u32::from_le_bytes([frame[16], frame[17], frame[18], frame[19]]);
+        // RFC 5424 severities are exactly 0..=7 (3 bits). Reject any
+        // wider value as a protocol violation rather than silently
+        // truncating: wider values almost certainly indicate either
+        // (a) a stale worker speaking the pre-fix two-state log_type
+        // protocol with garbage in the upper bits, or (b) a malformed
+        // adversarial frame.
+        if severity > 7 {
+            return Err(ProtocolError::Insanity(LINKMESSAGE_LOG));
+        }
         let msg_chars = u64::from_le_bytes([
             frame[20], frame[21], frame[22], frame[23], frame[24], frame[25], frame[26], frame[27],
         ]) as usize;
@@ -457,7 +490,7 @@ impl LinkMessage {
         let message = frame[prefix_end..msg_end].to_vec();
         Ok(LinkMessage::Log {
             cfg_ptr,
-            log_type,
+            severity,
             message,
         })
     }
@@ -523,7 +556,7 @@ impl LinkMessage {
             }
             LinkMessage::Log {
                 cfg_ptr,
-                log_type,
+                severity,
                 message,
             } => {
                 let body_len = LINKMESSAGE_LOG_PAYLOAD_PREFIX.saturating_add(message.len());
@@ -532,7 +565,10 @@ impl LinkMessage {
                 out.put_u32_le(LINKMESSAGE_LOG);
                 out.put_u32_le(total_len as u32);
                 out.put_u64_le(*cfg_ptr);
-                out.put_u32_le(*log_type);
+                // Emit severity verbatim. The producer is responsible
+                // for masking to the RFC 5424 3-bit range; the parser
+                // re-validates `severity <= 7` defensively.
+                out.put_u32_le(*severity);
                 let msg_chars = (message.len() / STRING_STRIDE_BYTES) as u64;
                 out.put_u64_le(msg_chars);
                 out.put_slice(message);
@@ -1376,7 +1412,7 @@ async fn handle_worker_message(
     match msg {
         LinkMessage::Log {
             cfg_ptr,
-            log_type,
+            severity,
             message,
         } => {
             // Decode the stride-expanded message bytes back into a
@@ -1393,13 +1429,17 @@ async fn handle_worker_message(
             // Rust port routes everything through syslog and uses the
             // tag for grep-friendly disambiguation.
             let line = format!("[cfg={cfg_ptr:#018x}] {text}");
-            if log_type == 0 {
-                syslog::log(heavything::util::syslog::LOG_INFO, &line);
-            } else {
-                // Treat any non-zero log_type as error severity. The
-                // FASM enumerates only 0 (normal) and 1 (error).
-                syslog::log(heavything::util::syslog::LOG_ERR, &line);
-            }
+            // Re-emit at the worker's original RFC 5424 severity.
+            // `parse_log` has already validated `severity <= 7`, so
+            // the cast to `u8` is lossless; the syslog facility bits
+            // are OR'd in by `syslog::log` itself. This preserves the
+            // worker's intent verbatim (WARNING stays WARNING,
+            // NOTICE stays NOTICE, DEBUG stays DEBUG) — the prior
+            // implementation collapsed every non-error severity to
+            // `LOG_INFO` and every error to `LOG_ERR`, causing the
+            // observable severity drift documented in QA Final
+            // Checkpoint 17 Issue #1 (MAJOR).
+            syslog::log(severity as u8, &line);
         }
         LinkMessage::TlsUpdate { sessionid, state } => {
             // Emit a brief debug breadcrumb noting the sender and the
@@ -1787,7 +1827,9 @@ mod tests {
         }
     }
 
-    /// Round-trip a [`LinkMessage::Log`] through encode + parse.
+    /// Round-trip a [`LinkMessage::Log`] through encode + parse,
+    /// asserting that the full RFC 5424 severity is preserved
+    /// (no collapsing to a normal/error binary).
     #[test]
     fn log_roundtrip() {
         // 4 chars * 4 bytes/char = 16-byte stride-expanded buffer.
@@ -1798,9 +1840,13 @@ mod tests {
             0x20, 0x00, 0x00, 0x00, // '!' = 0x21
             0x21, 0x00, 0x00, 0x00,
         ];
+        // Use severity = 3 (LOG_ERR) as a representative "error"
+        // severity. The pre-fix protocol used `log_type: 1` for
+        // errors and collapsed to `LOG_ERR` (3) on the master side;
+        // the new protocol carries `severity: 3` end-to-end.
         let msg = LinkMessage::Log {
             cfg_ptr: 0xDEAD_BEEF_CAFE_BABE,
-            log_type: 1,
+            severity: 3,
             message: message.clone(),
         };
         let encoded = msg.encode().expect("Log encode succeeds");
@@ -1811,15 +1857,82 @@ mod tests {
         match decoded {
             LinkMessage::Log {
                 cfg_ptr,
-                log_type,
+                severity,
                 message: msg_back,
             } => {
                 assert_eq!(cfg_ptr, 0xDEAD_BEEF_CAFE_BABE);
-                assert_eq!(log_type, 1);
+                assert_eq!(severity, 3);
                 assert_eq!(msg_back, message);
             }
             _ => panic!("decoded variant mismatch"),
         }
+    }
+
+    /// Round-trip every valid RFC 5424 severity (0..=7) through
+    /// encode + parse to confirm none of the eight values is lost,
+    /// truncated, or collapsed by the new protocol. This is the
+    /// regression guard for QA Final Checkpoint 17 Issue #1.
+    #[test]
+    fn log_severity_full_range_preserved() {
+        let message = vec![0x21, 0x00, 0x00, 0x00]; // '!' single char.
+        for sev in 0_u32..=7 {
+            let msg = LinkMessage::Log {
+                cfg_ptr: 0,
+                severity: sev,
+                message: message.clone(),
+            };
+            let encoded = msg.encode().expect("encode succeeds");
+            let (decoded, _n) = LinkMessage::parse(&encoded)
+                .expect("parse Ok")
+                .expect("parse Some");
+            match decoded {
+                LinkMessage::Log {
+                    severity: decoded_sev,
+                    ..
+                } => assert_eq!(
+                    decoded_sev, sev,
+                    "severity {sev} must round-trip verbatim"
+                ),
+                _ => panic!("decoded variant mismatch for severity {sev}"),
+            }
+        }
+    }
+
+    /// Severities outside the RFC 5424 0..=7 range must be rejected
+    /// by `parse_log` with `ProtocolError::Insanity(LINKMESSAGE_LOG)`.
+    /// This guards the master from a stale worker speaking the
+    /// pre-fix two-bit log_type protocol with non-zero upper bits.
+    #[test]
+    fn log_severity_out_of_range_rejected() {
+        // Hand-build a malformed Log frame with severity = 8 (one
+        // past the RFC 5424 maximum) and confirm `parse` rejects it.
+        let mut frame = Vec::new();
+        frame.put_u32_le(LINKMESSAGE_LOG); // type
+        frame.put_u32_le(28); // total_len = 8 header + 20 prefix + 0 message
+        frame.put_u64_le(0); // cfg_ptr
+        frame.put_u32_le(8); // severity (illegal — must be <= 7)
+        frame.put_u64_le(0); // message char count
+        let parsed = LinkMessage::parse(&frame);
+        match parsed {
+            Err(ProtocolError::Insanity(LINKMESSAGE_LOG)) => {} // expected
+            other => panic!(
+                "expected ProtocolError::Insanity(LINKMESSAGE_LOG), got {other:?}"
+            ),
+        }
+
+        // Also test severity = 0xFFFF_FFFF (the worst-case stale
+        // upper-bit garbage scenario).
+        let mut frame = Vec::new();
+        frame.put_u32_le(LINKMESSAGE_LOG);
+        frame.put_u32_le(28);
+        frame.put_u64_le(0);
+        frame.put_u32_le(u32::MAX); // severity = 0xFFFF_FFFF
+        frame.put_u64_le(0);
+        let parsed = LinkMessage::parse(&frame);
+        assert!(
+            matches!(parsed, Err(ProtocolError::Insanity(LINKMESSAGE_LOG))),
+            "u32::MAX severity must be rejected"
+        );
     }
 
     /// Round-trip a [`LinkMessage::Ocsp`] through encode + parse,

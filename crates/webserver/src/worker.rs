@@ -196,18 +196,6 @@ const LOG_BUFFER_CAPACITY: usize = 65_536;
 /// epoll wakeup cycle on Linux.
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(10);
 
-/// Severity threshold below which a syslog message is treated as an
-/// "error" log type (`log_type = 1`) when forwarded to master via
-/// [`LinkMessage::Log`]. RFC 5424 severities `0..=3`
-/// (Emergency..Error) are errors; `4..` (Warning, Notice, Info,
-/// Debug) are routed as the default "normal" log type (`0`).
-///
-/// Mirrors `webservercfg$logerror` (`log_type=1`) versus
-/// `webservercfg$log` (`log_type=0`) call sites in the FASM
-/// webserver — `worker.inc` `worker_loghook` accepts the type code
-/// through `edx` and writes it verbatim to the IPC frame.
-const LOG_SEVERITY_ERROR_THRESHOLD: u8 = 3;
-
 /// Sentinel value used for the `cfg_ptr` field of [`LinkMessage::Log`]
 /// frames produced by the worker-installed log hook.
 ///
@@ -510,6 +498,32 @@ async fn worker_event_loop(
         // delivered in order.
         install_log_hook(log_tx);
         install_tls_sessioncache_hook(tls_tx);
+
+        // ---------- Disable inherited /dev/log socket ----------
+        //
+        // The pre-fork master called `syslog::init()` which opened
+        // a `UnixDatagram` to `/dev/log`. The file descriptor was
+        // duplicated into every worker by `fork(2)`. Without
+        // explicit action, every worker `syslog::log()` call would:
+        //
+        //   1. Invoke the just-installed hook → IPC to master →
+        //      master writes to /dev/log (one datagram).
+        //   2. ALSO write directly via the inherited UnixDatagram
+        //      (a second datagram).
+        //
+        // The result was the duplicate-emit + severity-coercion
+        // defect documented in QA Final Checkpoint 17 Issue #1
+        // (MAJOR). Calling `set_socket(None)` here disables the
+        // direct write path on the worker side; from now on the
+        // worker's `syslog::log()` calls invoke only the IPC hook,
+        // and the master is the genuine sole `/dev/log` writer
+        // (matching the contract in
+        // `crates/heavything/src/net/child.rs` `LogRecord` doc).
+        //
+        // Order matters: install hook FIRST, then close socket.
+        // The reverse order would briefly leave both paths
+        // unavailable (a millisecond-window log dropper).
+        syslog::set_socket(None);
 
         // The outbound pump owns the write half exclusively. It
         // exits when both channels are closed (which only happens
@@ -1106,7 +1120,7 @@ async fn handle_master_message(msg: LinkMessage) {
         }
         LinkMessage::Log {
             cfg_ptr,
-            log_type,
+            severity,
             message,
         } => {
             // Workers never receive Log messages from master.
@@ -1119,7 +1133,7 @@ async fn handle_master_message(msg: LinkMessage) {
             // The exhaustive `let _ = (...)` consumes all three
             // payload fields so the destructuring above does not
             // produce unused-binding warnings under -D warnings.
-            let _ = (cfg_ptr, log_type, message);
+            let _ = (cfg_ptr, severity, message);
         }
     }
 }
@@ -1141,15 +1155,28 @@ async fn handle_master_message(msg: LinkMessage) {
 /// `log_tx` to [`outbound_pump`]. The closure is `Send + Sync +
 /// 'static` per [`syslog::set_log_hook`]'s trait bound.
 ///
-/// # Severity → log_type mapping
+/// # Severity preservation (full RFC 5424 0..=7)
 ///
-/// The FASM hook receives the log type through `edx` directly
-/// (`worker.inc` line 175 `mov [rdx+16], edx`); the Rust syslog
-/// API exposes severity instead. We map RFC 5424 severities
-/// `0..=3` (Emergency, Alert, Critical, Error) to `log_type=1`
-/// (error) and the rest to `log_type=0` (normal), which preserves
-/// the FASM `webservercfg$log` (info) versus
-/// `webservercfg$logerror` (error) split.
+/// The hook forwards the worker's original
+/// [RFC 5424](https://www.rfc-editor.org/rfc/rfc5424) severity
+/// **verbatim** to the master via the `severity` field of
+/// [`LinkMessage::Log`]. The pre-fix design collapsed the 3-bit
+/// severity to a single normal/error bit at the worker side, which
+/// caused the master to re-emit only `LOG_INFO` or `LOG_ERR`
+/// (severity drift documented in QA Final Checkpoint 17 Issue #1,
+/// MAJOR). The fix:
+///
+///   1. The worker emits the `(severity & 0x07) as u32` directly
+///      (the mask defends against `syslog::log` having received an
+///      out-of-range severity from a buggy caller; the syslog
+///      module itself already masks to 3 bits before invoking the
+///      hook, so the mask is belt-and-braces).
+///   2. The wire field `[16..20)` of [`LinkMessage::Log`] now
+///      carries the full RFC 5424 severity (0..=7), not a
+///      collapsed normal/error bit.
+///   3. The master's `route_log_message` calls
+///      `syslog::log(severity as u8, &line)` so the original
+///      severity is preserved end-to-end.
 ///
 /// # cfg_ptr sentinel
 ///
@@ -1161,12 +1188,12 @@ async fn handle_master_message(msg: LinkMessage) {
 /// routes to the default syslog channel.
 fn install_log_hook(log_tx: mpsc::UnboundedSender<Vec<u8>>) {
     syslog::set_log_hook(move |severity: u8, message: &str| {
-        // Severity → log_type mapping (see fn doc).
-        let log_type: u32 = if severity <= LOG_SEVERITY_ERROR_THRESHOLD {
-            1
-        } else {
-            0
-        };
+        // Carry the worker's RFC 5424 severity verbatim. Mask to
+        // the 3-bit range as a defensive backstop in case a future
+        // caller passes a wider value; the syslog module already
+        // masks before invoking us. See fn doc for full rationale
+        // (Final Checkpoint 17 Issue #1).
+        let severity_field: u32 = u32::from(severity & 0x07);
 
         // Stride-encode the message into the Vec<u8> form expected
         // by [`LinkMessage::Log`]'s wire layout.
@@ -1174,7 +1201,7 @@ fn install_log_hook(log_tx: mpsc::UnboundedSender<Vec<u8>>) {
 
         let frame = LinkMessage::Log {
             cfg_ptr: NO_CFG_SENTINEL,
-            log_type,
+            severity: severity_field,
             message: strided,
         };
 
@@ -1599,7 +1626,12 @@ mod tests {
     fn log_message_roundtrip() {
         let m1 = LinkMessage::Log {
             cfg_ptr: 0xdead_beef_cafe_babe,
-            log_type: 1,
+            // RFC 5424 severity 3 = LOG_ERR. The pre-fix protocol
+            // used `log_type: 1` to mean "error"; the new protocol
+            // carries the full RFC 5424 severity, so we use the
+            // direct severity value here. See QA Final Checkpoint
+            // 17 Issue #1 for rationale.
+            severity: 3,
             // Strided 5-character payload: 5 chars × 4 bytes/char
             // = 20 bytes. Each char is "h", "e", "l", "l", "o"
             // expanded to little-endian u32 — by encoding "hello"
@@ -1616,11 +1648,11 @@ mod tests {
         match m2 {
             LinkMessage::Log {
                 cfg_ptr,
-                log_type,
+                severity,
                 message,
             } => {
                 assert_eq!(cfg_ptr, 0xdead_beef_cafe_babe);
-                assert_eq!(log_type, 1);
+                assert_eq!(severity, 3);
                 assert_eq!(message, encode_strided_string("hello"));
             }
             other => panic!("expected LinkMessage::Log, got {other:?}"),
@@ -1680,32 +1712,121 @@ mod tests {
         assert_eq!(decoded, "ok");
     }
 
-    /// Verify that the worker-side log-severity-to-log-type
-    /// mapping treats RFC 5424 severities `0..=3` as errors and
-    /// the rest as normal logs. This is the schema-mandated
-    /// translation of the FASM
-    /// `webservercfg$log` / `webservercfg$logerror` split when
-    /// surfaced through the limited-information
-    /// [`syslog::set_log_hook`] interface.
+    /// Verify that the worker-side log hook (`install_log_hook`)
+    /// preserves the full RFC 5424 severity (0..=7) when
+    /// forwarding messages to master via [`LinkMessage::Log`],
+    /// rather than collapsing to a normal/error binary.
+    ///
+    /// This is the regression guard for QA Final Checkpoint 17
+    /// Issue #1 (MAJOR severity drift). Before the fix, the worker
+    /// hook collapsed every severity 0..=3 to `log_type=1`
+    /// (treated as `LOG_ERR` on the master side) and every
+    /// severity 4..=7 to `log_type=0` (treated as `LOG_INFO`).
+    /// This caused observable drift such as WARNING (4) → INFO (6)
+    /// and NOTICE (5) → INFO (6).
+    ///
+    /// The test exercises [`install_log_hook`] end-to-end: it
+    /// installs the hook, fires every RFC 5424 severity through
+    /// `syslog::log`, captures the encoded `LinkMessage::Log`
+    /// frame, parses it, and asserts that the `severity` field
+    /// matches the original verbatim.
     #[test]
-    fn severity_to_log_type_mapping() {
-        // Errors (0..=3): emergency, alert, critical, error.
-        for severity in 0..=LOG_SEVERITY_ERROR_THRESHOLD {
-            let log_type = if severity <= LOG_SEVERITY_ERROR_THRESHOLD {
-                1u32
-            } else {
-                0u32
-            };
-            assert_eq!(log_type, 1, "severity {severity} must be log_type=1");
+    fn severity_preserved_through_hook() {
+        use std::sync::Mutex as StdMutex;
+        use tokio::runtime::Runtime;
+
+        // Set up an in-process tokio runtime so we can drive the
+        // mpsc::UnboundedSender end-to-end. The hook closure is
+        // sync and channel-bound; the runtime is required only
+        // for `recv()` on the receiver.
+        let rt = Runtime::new().expect("tokio runtime");
+
+        // Capture all encoded frames the hook emits.
+        let captured: Arc<StdMutex<Vec<Vec<u8>>>> = Arc::new(StdMutex::new(Vec::new()));
+        let captured_clone = Arc::clone(&captured);
+
+        let (log_tx, mut log_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+        // Spawn the receiver to drain the channel as fast as the
+        // hook can fill it. The receiver task ends when the
+        // sender is dropped at the end of the test.
+        let recv_handle = rt.spawn(async move {
+            while let Some(frame) = log_rx.recv().await {
+                captured_clone
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(frame);
+            }
+        });
+
+        // Initialise the syslog state (idempotent across repeat
+        // calls — see `syslog::init`'s `OnceLock` semantics).
+        let _ = syslog::init();
+
+        // Install the worker log hook. This replaces any previous
+        // hook (the test runs sequentially with other tests but
+        // `set_log_hook` is replacement-semantics so this is safe
+        // even if a prior test left a sentinel hook installed).
+        install_log_hook(log_tx);
+
+        // Fire every RFC 5424 severity through the syslog API.
+        // The hook captures each one into the channel.
+        for sev in 0_u8..=7 {
+            syslog::log(sev, &format!("severity {sev} probe"));
         }
-        // Non-errors (4..=7): warning, notice, info, debug.
-        for severity in (LOG_SEVERITY_ERROR_THRESHOLD + 1)..=7 {
-            let log_type = if severity <= LOG_SEVERITY_ERROR_THRESHOLD {
-                1u32
-            } else {
-                0u32
-            };
-            assert_eq!(log_type, 0, "severity {severity} must be log_type=0");
+
+        // Block briefly to let the runtime drain the channel.
+        // Drop our hook (replace with a no-op) so the channel
+        // sender stored inside `set_log_hook`'s box is released
+        // and the receiver task exits.
+        syslog::set_log_hook(|_, _| {});
+
+        // The receiver task now sees the sender drop and ends.
+        rt.block_on(async move {
+            // Add a short timeout so a regression that leaves
+            // the channel open forever surfaces as a test failure
+            // rather than a hang.
+            let _ = tokio::time::timeout(
+                Duration::from_millis(500),
+                recv_handle,
+            )
+            .await;
+        });
+
+        // Assert: 8 frames captured (one per severity).
+        let captured = captured.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(
+            captured.len(),
+            8,
+            "expected exactly 8 frames (one per severity 0..=7), got {}",
+            captured.len()
+        );
+
+        // Decode each frame and assert the severity round-trips.
+        for (i, frame) in captured.iter().enumerate() {
+            let parsed = LinkMessage::parse(frame)
+                .expect("parse must succeed")
+                .expect("parse must yield a frame");
+            let (decoded, n) = parsed;
+            assert_eq!(n, frame.len(), "consumed full frame length");
+            match decoded {
+                LinkMessage::Log {
+                    cfg_ptr,
+                    severity,
+                    ..
+                } => {
+                    assert_eq!(
+                        cfg_ptr, NO_CFG_SENTINEL,
+                        "worker hook always uses NO_CFG_SENTINEL"
+                    );
+                    assert_eq!(
+                        severity,
+                        i as u32,
+                        "frame {i}: severity must round-trip verbatim"
+                    );
+                }
+                other => panic!("expected LinkMessage::Log, got {other:?}"),
+            }
         }
     }
 
@@ -1802,10 +1923,12 @@ mod tests {
         let leading = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         assert_eq!(leading, LINKMESSAGE_TLSUPDATE);
 
-        // Log frame
+        // Log frame: severity 6 = LOG_INFO (the "default" non-error
+        // severity). The pre-fix protocol used `log_type: 0` here
+        // for "normal"; the new protocol carries the full severity.
         let log_frame = LinkMessage::Log {
             cfg_ptr: 0,
-            log_type: 0,
+            severity: 6,
             message: encode_strided_string("x"),
         };
         let bytes = log_frame.encode().expect("Log encode");

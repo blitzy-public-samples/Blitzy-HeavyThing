@@ -69,6 +69,13 @@
 //!   master process's IPC relay. Replaces any previously-installed
 //!   hook.
 //!
+//! * [`set_socket`] — replace (or `None`-clear) the `/dev/log` socket.
+//!   `webserver` worker processes call `set_socket(None)` immediately
+//!   after [`set_log_hook`] in multi-worker mode so the worker stops
+//!   writing directly to `/dev/log` (the inherited datagram socket
+//!   from the pre-fork `init()`); the master then becomes the sole
+//!   `/dev/log` writer per AAP §0.5.1.8 / QA Final Checkpoint 17 #1.
+//!
 //! * [`flush_cfg_timer`] — returns the configured log-flush timer in
 //!   milliseconds (1500 ms = 1.5 s, per AAP §0.1.1). Used by
 //!   `net::runtime` when registering the periodic flush timer.
@@ -483,7 +490,11 @@ pub fn set_pid(pid: u32) {
 ///   log messages to the master process via the `linkmessage_log`
 ///   IPC channel (AAP §0.1.1), so only the master touches `/dev/log`
 ///   and the 1.5 s flush timer (see [`flush_cfg_timer`]) serialises
-///   output across workers.
+///   output across workers. Worker processes typically pair the
+///   hook installation with [`set_socket`]`(None)` to disable their
+///   inherited `/dev/log` socket; otherwise both the hook and the
+///   direct write would fire (resulting in duplicate datagrams as
+///   tracked by Final Checkpoint 17 QA Issue #1).
 /// * **test harnesses** — install a hook that captures log messages
 ///   into a `Vec<String>` for assertion.
 ///
@@ -506,6 +517,65 @@ where
     };
     if let Ok(mut guard) = state.hook.lock() {
         *guard = Some(Box::new(hook));
+    }
+}
+
+/// Replace the syslog `/dev/log` socket; passing `None` disables the
+/// direct datagram write while keeping any installed log hook active.
+///
+/// This is the dedicated API for post-`fork()` worker processes to
+/// drop the `UnixDatagram` they inherited from `init()` (which ran in
+/// the master before the fork). Without calling this, every worker
+/// `log()` call would emit *two* datagrams — once via the worker's
+/// own socket, then a second time via the master after the worker
+/// forwards through the [`set_log_hook`] relay — and both copies
+/// would reach `/dev/log` (Final Checkpoint 17 QA Issue #1, MAJOR).
+///
+/// # Behaviour
+///
+/// The function locks the global socket slot and writes the supplied
+/// value (typically `None` for workers, or a freshly-built socket for
+/// reconnect logic). Subsequent [`log`] calls observe the new value
+/// atomically. The previously-stored socket (if any) is dropped
+/// immediately, which closes the underlying file descriptor.
+///
+/// # Idempotence and error handling
+///
+/// * Calling with `None` when the socket is already `None` is a
+///   no-op.
+/// * If [`init`] has not been called the call is a silent no-op.
+/// * Mutex poisoning is treated as "no state to update" and silently
+///   discarded — the syslog subsystem is intentionally infallible.
+///
+/// # Thread safety
+///
+/// The socket slot is held behind a `Mutex` so concurrent
+/// `set_socket(None)` calls and concurrent `log()` calls serialise
+/// naturally. A `log()` arriving mid-call waits for the lock and
+/// observes the new state.
+///
+/// # Use case: master-worker IPC relay
+///
+/// In `webserver`'s multi-worker mode the call sequence is:
+///
+/// ```ignore
+/// // worker.rs ::run() — multi-worker branch
+/// install_log_hook(log_tx);          // hook fans out to master
+/// syslog::set_socket(None);          // disable direct /dev/log
+/// // From this point on, syslog::log() invokes only the hook;
+/// // the master receives LinkMessage::Log and writes to /dev/log.
+/// ```
+///
+/// Calling [`set_socket`] BEFORE [`set_log_hook`] would briefly
+/// orphan log messages between the two calls (no socket and no hook
+/// → silent drop). The recommended order is hook first, then
+/// `set_socket(None)`.
+pub fn set_socket(socket: Option<UnixDatagram>) {
+    let Some(state) = SYSLOG.get() else {
+        return;
+    };
+    if let Ok(mut guard) = state.socket.lock() {
+        *guard = socket;
     }
 }
 
@@ -727,6 +797,78 @@ mod tests {
     #[test]
     fn flush_cfg_timer_returns_1500ms() {
         assert_eq!(flush_cfg_timer(), 1_500);
+    }
+
+    /// `set_socket(None)` must clear the stored socket so that
+    /// subsequent `log()` calls do not write to `/dev/log` directly.
+    /// This is the worker-side fix for Final Checkpoint 17 Issue #1
+    /// (duplicate datagrams in multi-worker mode): after
+    /// `set_log_hook` is installed and `set_socket(None)` is called,
+    /// only the hook fires — the direct write is suppressed.
+    #[test]
+    fn set_socket_none_disables_direct_write() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = init();
+
+        // Install a sentinel hook so we can confirm the hook still
+        // fires after the socket is cleared (proving it is the
+        // direct-write path, not the hook path, that is suppressed).
+        static HOOK_FIRED: AtomicUsize = AtomicUsize::new(0);
+        HOOK_FIRED.store(0, Ordering::SeqCst);
+        set_log_hook(|_sev, _msg| {
+            HOOK_FIRED.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // Clear the socket — this is the new API exercised by
+        // `webserver::worker::run` immediately after the hook is
+        // installed in the multi-worker branch.
+        set_socket(None);
+
+        // Confirm the slot really is `None`.
+        let state = SYSLOG.get().expect("initialised");
+        let has_socket = state
+            .socket
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false);
+        assert!(
+            !has_socket,
+            "set_socket(None) must clear the stored UnixDatagram"
+        );
+
+        // The hook still fires — log() invokes the hook regardless
+        // of whether the direct-write socket is present.
+        log(LOG_WARNING, "post-set_socket-none probe");
+        assert_eq!(
+            HOOK_FIRED.load(Ordering::SeqCst),
+            1,
+            "set_log_hook must continue to fire after set_socket(None)"
+        );
+
+        // Cleanup so later tests do not see leftover hook state.
+        set_log_hook(|_, _| {});
+    }
+
+    /// `set_socket(None)` is a silent no-op before `init()`.
+    /// (Workers in single-process tests may reasonably attempt this
+    /// path; we must not panic.)
+    #[test]
+    fn set_socket_none_before_init_is_noop() {
+        // Note: we cannot reliably test "before init" in a multi-test
+        // process because earlier tests may already have called
+        // init(). Instead, we exercise the post-init `None` branch
+        // and confirm idempotence — calling it twice in a row.
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = init();
+        set_socket(None);
+        set_socket(None); // Second call must not panic.
+        let state = SYSLOG.get().expect("initialised");
+        let has_socket = state
+            .socket
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false);
+        assert!(!has_socket, "two consecutive None calls must remain None");
     }
 
     /// `emit_error` must not panic on arbitrary `std::error::Error`.
