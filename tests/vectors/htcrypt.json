@@ -1,0 +1,109 @@
+{
+  "primitive": "htcrypt",
+  "source": "HeavyThing htcrypt.inc self-consistency (round-trip identity) vectors. htcrypt is a custom 16-byte block cipher (64-deep AES-256 cascade); NOT a published standard, so the authoritative property is decrypt(encrypt(p))==p (AAP \u00a70.4.2). The harness performs the full round trip (or hide/show wrap+unwrap then round trip) and emits the recovered plaintext, so expected_hex == plaintext_hex for every positive case. negative_wrong_key decrypts under a different secret and asserts the result differs from the plaintext (expect_mismatch).",
+  "vectors": [
+    {
+      "id": "rt_passphrase_single",
+      "category": "happy_path",
+      "key_type": "passphrase",
+      "secret": "secretpass",
+      "plaintext_hex": "00112233445566778899aabbccddeeff",
+      "operation": "round_trip",
+      "expected_hex": "00112233445566778899aabbccddeeff"
+    },
+    {
+      "id": "rt_passphrase_two",
+      "category": "happy_path",
+      "key_type": "passphrase",
+      "secret": "correct horse",
+      "plaintext_hex": "00112233445566778899aabbccddeeff101112131415161718191a1b1c1d1e1f",
+      "operation": "round_trip",
+      "expected_hex": "00112233445566778899aabbccddeeff101112131415161718191a1b1c1d1e1f"
+    },
+    {
+      "id": "rt_keymaterial",
+      "category": "happy_path",
+      "key_type": "keymaterial",
+      "secret": "aabbccddeeff00112233445566778899",
+      "plaintext_hex": "00112233445566778899aabbccddeeff",
+      "operation": "round_trip",
+      "expected_hex": "00112233445566778899aabbccddeeff"
+    },
+    {
+      "id": "rt_raw_keymaterial",
+      "category": "happy_path",
+      "key_type": "raw_keymaterial",
+      "secret": "0f0e0d0c0b0a09080706050403020100",
+      "plaintext_hex": "00112233445566778899aabbccddeeff",
+      "operation": "round_trip",
+      "expected_hex": "00112233445566778899aabbccddeeff"
+    },
+    {
+      "id": "rt_useless",
+      "category": "happy_path",
+      "key_type": "useless",
+      "secret": "",
+      "plaintext_hex": "00112233445566778899aabbccddeeff",
+      "operation": "round_trip",
+      "expected_hex": "00112233445566778899aabbccddeeff"
+    },
+    {
+      "id": "hide_show_passphrase",
+      "category": "happy_path",
+      "key_type": "passphrase",
+      "secret": "secretpass",
+      "plaintext_hex": "00112233445566778899aabbccddeeff",
+      "operation": "hide_show",
+      "expected_hex": "00112233445566778899aabbccddeeff"
+    },
+    {
+      "id": "edge_empty",
+      "category": "edge_case_empty",
+      "key_type": "passphrase",
+      "secret": "secretpass",
+      "plaintext_hex": "",
+      "operation": "round_trip",
+      "expected_hex": ""
+    },
+    {
+      "id": "edge_single_byte",
+      "category": "edge_case_single_byte",
+      "key_type": "passphrase",
+      "secret": "secretpass",
+      "plaintext_hex": "aa",
+      "operation": "round_trip",
+      "expected_hex": "aa"
+    },
+    {
+      "id": "edge_block_boundary",
+      "category": "edge_case_block_boundary",
+      "key_type": "passphrase",
+      "secret": "secretpass",
+      "plaintext_hex": "000102030405060708090a0b0c0d0e0f",
+      "operation": "round_trip",
+      "expected_hex": "000102030405060708090a0b0c0d0e0f"
+    },
+    {
+      "id": "neg_wrong_passphrase",
+      "category": "negative_wrong_key",
+      "key_type": "passphrase",
+      "secret": "rightpass",
+      "plaintext_hex": "00112233445566778899aabbccddeeff",
+      "operation": "round_trip",
+      "expected_hex": "00112233445566778899aabbccddeeff",
+      "wrong_secret": "wrongpass",
+      "expect_mismatch": true
+    },
+    {
+      "id": "neg_wrong_keymaterial",
+      "category": "negative_wrong_key",
+      "key_type": "keymaterial",
+      "secret": "aabbccddeeff00112233445566778899",
+      "plaintext_hex": "00112233445566778899aabbccddeeff",
+      "operation": "round_trip",
+      "expected_hex": "00112233445566778899aabbccddeeff",
+      "wrong_secret": "ffffffffffffffffffffffffffffffff",
+      "expect_mismatch": true
+    }
+  ]
+}
