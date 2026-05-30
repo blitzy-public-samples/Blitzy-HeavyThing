@@ -1,6 +1,6 @@
 /* kat_aes.c - AES KAT driver (aes.inc).
  * argv: <mode> <key_hex> <block_hex>
- *   mode in {ecb_encrypt, ecb_decrypt, round_trip}
+ *   mode in {ecb_encrypt, ecb_decrypt, round_trip, tls_encrypt, tls_decrypt}
  *   key_hex : 16/24/32 bytes  -> AES-128/192/256
  *   block_hex: exactly one 16-byte block
  * Emits (lowercase hex): the ciphertext (ecb_encrypt), the recovered plaintext
@@ -47,7 +47,7 @@ int main(int argc, char **argv) {
     ht_kat_init();
     if (argc < 4) {
         static const char u[] =
-            "usage: kat_aes <ecb_encrypt|ecb_decrypt|round_trip> <key_hex> <block_hex>\n";
+            "usage: kat_aes <ecb_encrypt|ecb_decrypt|round_trip|tls_encrypt|tls_decrypt> <key_hex> <block_hex>\n";
         ht$syscall(1, 1L, (long)u, (long)strlen(u));
         ht_kat_exit(2);
     }
@@ -83,6 +83,21 @@ int main(int argc, char **argv) {
         aes$init_decrypt(ctx, key, kl);
         aes$decrypt(ctx, blk);
         ht_kat_hex_print(blk, 16);   /* recovered plaintext == original */
+    } else if (streq(mode, "tls_encrypt")) {
+        /* Encrypt THROUGH the aes$tls dispatch table (tls[0]=init_encrypt,
+         * tls[1]=encrypt; layout verified from aes.inc). Emitting the result
+         * proves the specialized TLS call form produces the same ciphertext as
+         * the plain ECB encrypt path (AAP 0.3.1). */
+        ((aes_init_fn)aes$tls[0])(ctx, key, kl);
+        ((aes_crypt_fn)aes$tls[1])(ctx, blk);
+        ht_kat_hex_print(blk, 16);
+    } else if (streq(mode, "tls_decrypt")) {
+        /* Decrypt THROUGH the aes$tls dispatch table (tls[2]=init_decrypt,
+         * tls[3]=decrypt; layout verified from aes.inc). The recovered
+         * plaintext must match the plain ECB decrypt path (AAP 0.3.1). */
+        ((aes_init_fn)aes$tls[2])(ctx, key, kl);
+        ((aes_crypt_fn)aes$tls[3])(ctx, blk);
+        ht_kat_hex_print(blk, 16);
     } else {
         ht_kat_exit(2);
     }
