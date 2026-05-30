@@ -1,0 +1,92 @@
+{
+  "primitive": "hmac_sha224",
+  "source": "RFC 4231 inputs; HeavyThing-specific output: B=64 + outer hash uses SHA-256 IV (sha224$final delegates to sha256$final which re-inits via sha256$init). Captured from HeavyThing reference build; reproducible as SHA256(okey64||SHA224(ikey64||m))[:28].",
+  "vectors": [
+    {
+      "id": "rfc4231_tc1",
+      "category": "happy_path",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "data_hex": "4869205468657265",
+      "expected_hex": "5d7fe4f6835b314b595686023d64fff87f3bc20b7558b2c00bb03728"
+    },
+    {
+      "id": "rfc4231_tc2",
+      "category": "happy_path",
+      "key_hex": "4a656665",
+      "data_hex": "7768617420646f2079612077616e7420666f72206e6f7468696e673f",
+      "expected_hex": "2a359a1fdf8033a0dce1f45d7226b0f20d00597bf84e9259ebff482b"
+    },
+    {
+      "id": "rfc4231_tc3",
+      "category": "happy_path",
+      "key_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "data_hex": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "expected_hex": "188cb653988e725edae2daf11edcc1e6426c52800fa482280011bdd3"
+    },
+    {
+      "id": "rfc4231_tc4",
+      "category": "happy_path",
+      "key_hex": "0102030405060708090a0b0c0d0e0f10111213141516171819",
+      "data_hex": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "expected_hex": "049e12d0d73641c48a41c57797472e8c9678246cc98f7597106d4f44"
+    },
+    {
+      "id": "rfc4231_tc6_longkey",
+      "category": "happy_path",
+      "key_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "data_hex": "54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b6579202d2048617368204b6579204669727374",
+      "expected_hex": "b01aea68f373adea4bb52f83434253c301baa63cb10c87e429921652"
+    },
+    {
+      "id": "rfc4231_tc7_longkey_longdata",
+      "category": "happy_path",
+      "key_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "data_hex": "5468697320697320612074657374207573696e672061206c6172676572207468616e20626c6f636b2d73697a65206b657920616e642061206c6172676572207468616e20626c6f636b2d73697a6520646174612e20546865206b6579206e6565647320746f20626520686173686564206265666f7265206265696e6720757365642062792074686520484d414320616c676f726974686d2e",
+      "expected_hex": "9c52eb99795f5cf503fd5b66faf57a37794e88089cb9c803c533b499"
+    },
+    {
+      "id": "edge_empty_data",
+      "category": "edge_case_empty",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "data_hex": "",
+      "expected_hex": "4c96ce786deeaf2618a91a85d59610077dd6e96e3568a483af99d317"
+    },
+    {
+      "id": "edge_empty_key",
+      "category": "edge_case_empty",
+      "key_hex": "",
+      "data_hex": "616263",
+      "expected_hex": "43b4af5158eb9cfd71c864e556f119584652204aa892725d1a136093"
+    },
+    {
+      "id": "edge_key_blocksize_64",
+      "category": "edge_case_block_boundary",
+      "key_hex": "42424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242",
+      "data_hex": "626c6f636b2073697a65206b6579",
+      "expected_hex": "b9ba97a2a88712f12743262d4ff2379f4c1e2605540394cc9e6e4cf0"
+    },
+    {
+      "id": "edge_key_gt_blocksize",
+      "category": "edge_case_block_boundary",
+      "key_hex": "55555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555",
+      "data_hex": "6b6579206c6f6e676572207468616e20626c6f636b",
+      "expected_hex": "b610fa5190435d09cd9d8a46a586b39e33fa8b2f4ff2d90f56ee582a"
+    },
+    {
+      "id": "negative_tampered_mac",
+      "category": "negative_tampered_mac",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "data_hex": "4869205468657265",
+      "expected_hex": "5c7fe4f6835b314b595686023d64fff87f3bc20b7558b2c00bb03728",
+      "expect_mismatch": true
+    },
+    {
+      "id": "negative_wrong_key",
+      "category": "negative_wrong_key",
+      "key_hex": "f40b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "data_hex": "4869205468657265",
+      "expected_hex": "5d7fe4f6835b314b595686023d64fff87f3bc20b7558b2c00bb03728",
+      "expect_mismatch": true
+    }
+  ]
+}
