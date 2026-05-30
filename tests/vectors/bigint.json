@@ -1,0 +1,140 @@
+{
+  "primitive": "bigint",
+  "source": "Knuth TAoCP Vol 2 \u00a74.3 multiple-precision arithmetic identities. HeavyThing bigint performs standard signed integer arithmetic; output is byte-aligned big-endian magnitude hex (even-length, leading zero nibble preserved on the top byte) with a leading '-' for negative results and '00' for zero (per bigint$encode + bigint_negative_ofs). isprime returns 01/00. All values cross-checked against Python integer arithmetic and captured from the HeavyThing reference build.",
+  "vectors": [
+    {
+      "id": "knuth_add_large",
+      "category": "happy_path",
+      "op": "add",
+      "a_hex": "fedcba9876543210fedcba9876543210",
+      "b_hex": "0123456789abcdef0123456789abcdef",
+      "expected_hex": "ffffffffffffffffffffffffffffffff"
+    },
+    {
+      "id": "knuth_sub_large",
+      "category": "happy_path",
+      "op": "sub",
+      "a_hex": "fedcba9876543210fedcba9876543210",
+      "b_hex": "0123456789abcdef0123456789abcdef",
+      "expected_hex": "fdb97530eca86421fdb97530eca86421"
+    },
+    {
+      "id": "knuth_mul_large",
+      "category": "happy_path",
+      "op": "mul",
+      "a_hex": "fedcba9876543210fedcba9876543210",
+      "b_hex": "0123456789abcdef0123456789abcdef",
+      "expected_hex": "0121fa00ad77d742247acc9140513b74458fab20783af1222236d88fe5618cf0"
+    },
+    {
+      "id": "knuth_mod_large",
+      "category": "happy_path",
+      "op": "mod",
+      "a_hex": "fedcba9876543210fedcba9876543210",
+      "b_hex": "0123456789abcdef0123456789abcdef",
+      "expected_hex": "f000000000000000f0"
+    },
+    {
+      "id": "mod_inverse_mod13",
+      "category": "happy_path",
+      "op": "mod_inverse",
+      "a_hex": "08",
+      "b_hex": "0d",
+      "expected_hex": "05"
+    },
+    {
+      "id": "mod_inverse_mod65537",
+      "category": "happy_path",
+      "op": "mod_inverse",
+      "a_hex": "03",
+      "b_hex": "010001",
+      "expected_hex": "5556"
+    },
+    {
+      "id": "isprime_65537",
+      "category": "happy_path",
+      "op": "isprime",
+      "a_hex": "010001",
+      "expected_hex": "01"
+    },
+    {
+      "id": "isprime_255_composite",
+      "category": "happy_path",
+      "op": "isprime",
+      "a_hex": "ff",
+      "expected_hex": "00"
+    },
+    {
+      "id": "isprime_2",
+      "category": "happy_path",
+      "op": "isprime",
+      "a_hex": "02",
+      "expected_hex": "01"
+    },
+    {
+      "id": "edge_zero_operand_add",
+      "category": "edge_case_empty",
+      "op": "add",
+      "a_hex": "00",
+      "b_hex": "fedcba9876543210fedcba9876543210",
+      "expected_hex": "fedcba9876543210fedcba9876543210"
+    },
+    {
+      "id": "edge_one_operand_mul",
+      "category": "edge_case_single_byte",
+      "op": "mul",
+      "a_hex": "fedcba9876543210fedcba9876543210",
+      "b_hex": "01",
+      "expected_hex": "fedcba9876543210fedcba9876543210"
+    },
+    {
+      "id": "edge_single_byte_mul",
+      "category": "edge_case_single_byte",
+      "op": "mul",
+      "a_hex": "07",
+      "b_hex": "09",
+      "expected_hex": "3f"
+    },
+    {
+      "id": "edge_word_boundary_mul",
+      "category": "edge_case_block_boundary",
+      "op": "mul",
+      "a_hex": "ffffffffffffffff",
+      "b_hex": "ffffffffffffffff",
+      "expected_hex": "fffffffffffffffe0000000000000001"
+    },
+    {
+      "id": "edge_negative_add",
+      "category": "edge_case_single_byte",
+      "op": "add",
+      "a_hex": "-30",
+      "b_hex": "20",
+      "expected_hex": "-10"
+    },
+    {
+      "id": "edge_negative_sub_result",
+      "category": "edge_case_max_length",
+      "op": "sub",
+      "a_hex": "0123",
+      "b_hex": "fedcba",
+      "expected_hex": "-fedb97"
+    },
+    {
+      "id": "edge_max_length_mul",
+      "category": "edge_case_max_length",
+      "op": "mul",
+      "a_hex": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "b_hex": "0fedcba9876543210fedcba9876543210fedcba9876543210fedcba987654321",
+      "expected_hex": "0fdbac097c8dc5aceda61ee073602f69cb7091b76a329926a93b048e610502e3674e1f525ebbe1468983ac7b67e97789abb939a471170dcccdeec6cd7a44a410"
+    },
+    {
+      "id": "negative_mod_inverse_noncoprime",
+      "category": "negative_mod_inverse",
+      "op": "mod_inverse",
+      "a_hex": "08",
+      "b_hex": "0c",
+      "expected_hex": "05",
+      "expect_mismatch": true
+    }
+  ]
+}
