@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
     if (argc < 4) {
         static const char u[] =
             "usage: kat_aes <ecb_encrypt|ecb_decrypt|round_trip|tls_encrypt|tls_decrypt> <key_hex> <block_hex>\n";
-        ht$syscall(1, 1L, (long)u, (long)strlen(u));
+        ht$syscall(1, 2L, (long)u, (long)strlen(u));   /* usage -> stderr (fd 2) */
         ht_kat_exit(2);
     }
     const char *mode = argv[1];

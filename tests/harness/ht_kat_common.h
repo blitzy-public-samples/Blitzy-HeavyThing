@@ -124,13 +124,25 @@ long ht_kat_atoi(const char *s);
 int ht_kat_hex_decode(const char *hex, unsigned char *out, size_t out_size);
 
 /* ht_kat_hex_arg -- decode a hex command-line argument (e.g. argv[n]) into
- * out[], tolerating a missing argument.
+ * out[], tolerating a missing argument and supporting the documented "-"
+ * read-from-stdin convention.
  *
  * Convenience wrapper over ht_kat_hex_decode for the common driver pattern of
- * decoding an argv slot that may be absent: a NULL pointer is treated as an
- * empty (zero-byte) input so a driver can pass a possibly-missing argument
- * directly without a prior NULL check. Returns the decoded byte count, or -1
- * on malformed hex or insufficient out_size. */
+ * decoding an argv slot that may be absent or deferred to stdin:
+ *
+ *   - A NULL pointer is treated as an empty (zero-byte) input, so a driver can
+ *     pass a possibly-missing argument directly without a prior NULL check.
+ *   - The single-character argument "-" means "read the hex from standard
+ *     input" (file descriptor 0). Every kat_*.c driver that advertises an
+ *     "<..._hex|->" argument relies on this so the Python runner can thread a
+ *     large or awkward-to-quote payload via subprocess stdin instead of argv.
+ *     The stdin bytes are read as a hex text string (an optional trailing
+ *     newline / whitespace is ignored) and decoded to raw bytes exactly as a
+ *     hex argv value would be.
+ *   - Any other string is decoded as hex via ht_kat_hex_decode.
+ *
+ * Returns the decoded byte count, or -1 on malformed hex, a stdin read error,
+ * or input that would exceed out_size -- consistent with ht_kat_hex_decode. */
 int ht_kat_hex_arg(const char *hex, unsigned char *out, size_t out_size);
 
 /* ht_kat_hex_print -- write the lowercase hex encoding of buf[0..len) to

@@ -1,6 +1,6 @@
 {
   "primitive": "htxts",
-  "source": "HeavyThing htxts.inc self-consistency (round-trip identity) vectors. htxts is XTS-mode (XEX tweaked-codebook, GF(2^128) tweak LFSR with 0x87 reduction) but its underlying block cipher is HeavyThing's custom htcrypt 64-deep AES-256 cascade, NOT raw AES, so there is no external published KAT (NIST SP 800-38E / IEEE 1619-2018 define the mode; the cipher differs). Authoritative property: decrypt(encrypt(sector))==sector. The harness emits the recovered plaintext for round_trip (expected_hex==data_hex). negative cases run encrypt only and assert the ciphertext differs from the plaintext (expect_mismatch), proving encryption is genuine.",
+  "source": "ACCEPTED DEVIATION (AAP 0.10.2; see the Accepted Deviations Registry in tests/README.md). HeavyThing htxts.inc self-consistency (round-trip identity) vectors. htxts is XTS-mode (XEX tweaked-codebook, GF(2^128) tweak LFSR with 0x87 reduction) but its underlying block cipher is HeavyThing's custom htcrypt 64-deep AES-256 cascade, NOT raw AES, so there is no external published KAT (NIST SP 800-38E / IEEE 1619-2018 define the mode; the cipher differs). Authoritative property: decrypt(encrypt(sector))==sector. The harness emits the recovered plaintext for round_trip (expected_hex==data_hex). negative cases run encrypt only and assert the ciphertext differs from the plaintext (expect_mismatch), proving encryption is genuine.",
   "vectors": [
     {
       "id": "rt_16B",

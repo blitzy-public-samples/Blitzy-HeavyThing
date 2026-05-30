@@ -132,13 +132,69 @@ int ht_kat_hex_decode(const char *hex, unsigned char *out, size_t out_size) {
     return (int)n;
 }
 
-/* ht_kat_hex_arg -- NULL-tolerant wrapper over ht_kat_hex_decode for the common
- * driver pattern of decoding an argv slot that may be absent: a NULL pointer is
- * treated as an empty (zero-byte) input so a driver can pass a possibly-missing
- * argument directly without a prior NULL check. Returns the decoded byte count,
- * or -1 on malformed hex or insufficient out_size. (ht_kat_hex_decode already
- * maps NULL -> 0, so the contract is expressed by delegation.) */
+/* read_stdin_hex -- slurp the entire contents of standard input (fd 0) as a
+ * hex text string into out[], then decode it in place to raw bytes. Returns
+ * the decoded byte count, or -1 on a read error, oversize input, or malformed
+ * hex (a non-hex character or an odd number of nibbles) -- the same error
+ * contract as ht_kat_hex_decode. This backs the "-" argument convention shared
+ * by the kat_*.c drivers (read the hex from stdin instead of from argv), which
+ * the Python runner uses to thread a payload via subprocess stdin.
+ *
+ * The hex text is read directly into out[] and then decoded forward in place:
+ * result byte i is produced from the hex nibbles at out[2i] and out[2i+1], and
+ * because i <= 2i the write never clobbers a nibble that has not yet been read.
+ * The decoded result therefore occupies out[0 .. count-1]; the largest stdin
+ * payload that can be decoded is out_size hex characters (out_size/2 bytes). A
+ * trailing newline / carriage-return / tab / space (common when a hex string is
+ * piped in) is stripped before decoding so it is not mistaken for a hex nibble.
+ *
+ * Uses HeavyThing's raw syscall primitive for the read: ht$syscall(0, 0, buf,
+ * len) == read(fd=0, buf, len), returning the byte count, 0 at EOF, or a
+ * negative errno on error -- matching the write/exit syscalls used elsewhere in
+ * this file (no libc is available under -nostdlib). */
+static int read_stdin_hex(unsigned char *out, size_t out_size) {
+    size_t total = 0;
+    /* Read until EOF or the buffer is full, accumulating the hex text. */
+    while (total < out_size) {
+        long r = ht$syscall(0, 0, (long)(out + total), (long)(out_size - total));
+        if (r < 0) return -1;        /* read error */
+        if (r == 0) break;           /* EOF */
+        total += (size_t)r;
+    }
+    if (total == out_size) {
+        /* Buffer filled exactly: any remaining stdin byte means oversize. */
+        unsigned char probe;
+        long r = ht$syscall(0, 0, (long)&probe, 1L);
+        if (r != 0) return -1;       /* more data (oversize) or read error */
+    }
+    /* Strip trailing ASCII whitespace (a piped hex line usually ends "\n"). */
+    while (total > 0) {
+        unsigned char c = out[total - 1];
+        if (c == '\n' || c == '\r' || c == '\t' || c == ' ') total--;
+        else break;
+    }
+    if (total & 1) return -1;        /* odd number of nibbles */
+    /* Decode forward, in place (see the in-place safety note above). */
+    size_t count = total >> 1;
+    for (size_t i = 0; i < count; i++) {
+        int hi = hexval((char)out[2 * i]);
+        int lo = hexval((char)out[2 * i + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        out[i] = (unsigned char)((hi << 4) | lo);
+    }
+    return (int)count;
+}
+
+/* ht_kat_hex_arg -- decode an argv slot into out[], tolerating a missing
+ * argument and honouring the "-" read-from-stdin convention. A NULL pointer
+ * maps to an empty (zero-byte) input (ht_kat_hex_decode already maps NULL ->
+ * 0). The single-character argument "-" reads the hex from standard input
+ * (fd 0) via read_stdin_hex; every other string is decoded as hex via
+ * ht_kat_hex_decode. Returns the decoded byte count, or -1 on malformed hex, a
+ * stdin read error, or input that would exceed out_size. */
 int ht_kat_hex_arg(const char *hex, unsigned char *out, size_t out_size) {
+    if (hex && hex[0] == '-' && hex[1] == '\0')
+        return read_stdin_hex(out, out_size);
     return ht_kat_hex_decode(hex, out, out_size);
 }
 

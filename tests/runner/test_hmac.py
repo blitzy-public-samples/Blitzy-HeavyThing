@@ -14,9 +14,13 @@ the lowercase-hex MAC) and asserts that output against ``expected_hex``:
 * ``state_replace_key`` -> ``expected_hex`` is HMAC(key2, data); since the
   harness emits HMAC(arg_key, data), this category is driven with ``key2_hex``.
 * ``prf_phash`` / ``prf_phash_xor`` -> ``expected_hex`` is a TLS 1.2 P_hash
-  stream; ``kat_hmac`` exercises ``hmac$phash`` / ``hmac$phash_xor`` internally
-  but emits only the HMAC(key, data) MAC, so these are not stdout-comparable
-  through this binary and are skipped (AAP 0.3.1 / 0.4.2 harness contract).
+  stream; ``kat_hmac`` is invoked in its PRF mode
+  (``<hash> <key_hex> phash <seed_hex> <out_len>``, and the ``phash_xor`` form
+  with a trailing ``<xor_in_hex>`` preload) so it emits the ``hmac$phash`` /
+  ``hmac$phash_xor`` output as lowercase hex, which is asserted against
+  ``expected_hex`` exactly like every other category (AAP 0.3.1 / 0.4.2;
+  Rule 5 -- every committed vector is subprocess-run and stdout-asserted, none
+  skipped).
 
 The bare hash (e.g. ``sha256``) is the harness ``argv[1]`` selector while the
 node-id prefix is the file stem (``hmac_sha256``), so ``-k "hmac_sha256 and
@@ -50,22 +54,32 @@ PARAMS = [(hash_name, vector)
 IDS = [param_id(vector, prefix="hmac_" + hash_name)
        for hash_name in HASHES for vector in _BY_HASH[hash_name]]
 
-# TLS-1.2 P_hash categories: kat_hmac calls hmac$phash / hmac$phash_xor
-# internally for 100% API coverage but does not emit their output (it prints
-# only the HMAC(key, data) MAC), so these are not output-comparable through
-# this binary and are skipped rather than mis-asserted.
-_PRF_CATEGORIES = frozenset({"prf_phash", "prf_phash_xor"})
-
 
 def _args(hash_name, vector):
-    """Build the ``kat_hmac`` argv ``[<hash>, <key_hex>, <data_hex>]``.
+    """Build the ``kat_hmac`` argv for ``vector``.
+
+    Three argv shapes, selected by category:
+
+    * ``prf_phash`` -> ``[<hash>, <key_hex>, "phash", <seed_hex>, <out_len>]``
+    * ``prf_phash_xor`` -> the above with ``"phash_xor"`` and a trailing
+      ``<xor_in_hex>`` (the bytes the P_hash stream is XORed into; its length
+      must equal ``out_len``).
+    * everything else (MAC mode) -> ``[<hash>, <key_hex>, <data_hex>]``.
 
     ``state_replace_key`` expects HMAC(key2, data) and the harness emits
     HMAC(arg_key, data), so that category is driven with ``key2_hex``; all
     others use ``key_hex``. Defensive ``.get`` keeps an empty/omitted key or
     data field from raising ``KeyError`` (empty fields pass through as ``""``).
     """
-    if vector["category"] == "state_replace_key":
+    cat = vector["category"]
+    if cat == "prf_phash":
+        return [hash_name, vector["key_hex"], "phash",
+                vector["seed_hex"], str(vector["out_len"])]
+    if cat == "prf_phash_xor":
+        return [hash_name, vector["key_hex"], "phash_xor",
+                vector["seed_hex"], str(vector["out_len"]),
+                vector["xor_in_hex"]]
+    if cat == "state_replace_key":
         key = vector["key2_hex"]
     else:
         key = vector.get("key_hex", "")
@@ -76,17 +90,12 @@ def _args(hash_name, vector):
 def test_kat(hash_name, vector):
     """Run one HMAC KAT vector through ``kat_hmac`` and assert its hex output.
 
-    Dispatch: PRF vectors are skipped (output not emitted -- see module doc);
-    otherwise the harness must exit 0, ``expect_mismatch`` vectors (tampered
-    MAC, wrong key) must NOT reproduce ``expected_hex``, and every other vector
-    (digest, ``state_reset``, re-keyed ``state_replace_key``) must match it.
+    The harness must exit 0; ``expect_mismatch`` vectors (tampered MAC, wrong
+    key) must NOT reproduce ``expected_hex``; every other vector -- digest,
+    ``state_reset``, re-keyed ``state_replace_key``, and the ``prf_phash`` /
+    ``prf_phash_xor`` TLS P_hash streams (driven via ``kat_hmac``'s PRF mode,
+    see ``_args``) -- must match ``expected_hex``.
     """
-    if vector["category"] in _PRF_CATEGORIES:
-        pytest.skip(
-            "kat_hmac emits only the HMAC(key,data) MAC; hmac$phash / "
-            "hmac$phash_xor are exercised internally and their TLS P_hash "
-            "output is not stdout-comparable through this binary"
-        )
     rc, out = run_kat("kat_hmac", vector, args=_args(hash_name, vector))
     assert rc == 0, f"kat_hmac {hash_name} exited {rc} for {vector['id']}"
     if vector.get("expect_mismatch"):

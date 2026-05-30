@@ -59,8 +59,18 @@ int main(int argc, char **argv) {
         ht_kat_exit(2);
     }
 
+    /* The documented field selector is exactly [p|g]; reject anything else
+     * rather than silently treating an unknown field as 'p'. */
     const char *field = (argc >= 3) ? argv[2] : "p";
-    void *bi = streq(field, "g") ? dh$pool_g[i] : dh$pool_p[i];
+    void *bi;
+    if      (streq(field, "p")) bi = dh$pool_p[i];
+    else if (streq(field, "g")) bi = dh$pool_g[i];
+    else {
+        static const char e[] = "field must be 'p' or 'g'\n";
+        (void)ht$syscall(1, 2, (void *)e, (long)(sizeof e - 1));
+        ht_kat_exit(2);
+        return 2;
+    }
 
     long w = bigint$encode(bi, outbuf);
     ht_kat_hex_print(outbuf, (size_t)w);

@@ -11,12 +11,22 @@ of ``scrypt.inc`` are exercised (AAP §0.3.1: 2 of 2 -> 100%).
 The RFC 7914 N=1,048,576 vector needs ~1 GiB of RAM and substantial time, so it
 is gated behind BOTH ``requires_slow`` (run only when ``HT_KAT_SLOW=1``) and
 ``requires_ram_gb(1.0)`` (skip when < 1 GiB is available), keeping the default
-suite fast (AAP §0.7.2, §0.9.1). The committed ``expected_hex`` values are
-HeavyThing-actual self-consistency KATs: HeavyThing bakes N/r/p and the PRF at
-compile time and ignores the runtime arguments, so the RFC 7914 outputs are
-AAP-approved DEFERRED (see the fixture's ``source`` field and
-``tests/harness/kat_scrypt.c``). Pure stdlib + pytest, no mocks (scrypt is a
-pure function of its inputs).
+suite fast (AAP §0.7.2, §0.9.1).
+
+ACCEPTED DEVIATION (scrypt / RFC 7914): HeavyThing's ``scrypt`` takes only
+``(dest, destlen, password, passwordlen, salt, saltlen)`` -- it bakes the cost
+parameters and PRF at compile time (``scrypt_N = 1024``, ``scrypt_r = 1``,
+``scrypt_p = 1``, and HMAC-SHA512 rather than RFC 7914's HMAC-SHA256) and
+ignores any runtime N/r/p. Reproducing RFC 7914's published vectors would
+require variable N/r/p and the SHA-256 PRF, impossible without editing
+``ht_defaults.inc`` / ``scrypt.inc`` -- both forbidden by the AAP scope. Per
+AAP 0.10.2 (the same policy that defers primitives absent from the repository,
+e.g. Poly1305) this is a formally accepted deferral: the committed
+``expected_hex`` values are HeavyThing-ACTUAL deterministic self-consistency
+outputs, NOT RFC 7914 ReturnedBits. The "Accepted Deviations Registry" in
+``tests/README.md`` carries the rationale and ``tests/vectors/scrypt.json``
+records the matching ``source`` attribution. Pure stdlib + pytest, no mocks
+(scrypt is a pure function of its inputs).
 """
 
 import pytest
