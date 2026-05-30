@@ -51,16 +51,48 @@ static int streq(const char *a, const char *b) {
     return *a == *b;
 }
 
-static unsigned char ina[8192];
-static unsigned char inb[8192];
-static unsigned char outbuf[8192];
+/* Operand magnitude cap (bytes). HeavyThing bigints hold at most
+ * bigint_maxwords = 512 64-bit words (= 4096 bytes); a value/result needing
+ * >= 512 words trips bigint.inc's `.kakked: breakpoint` (SIGTRAP). Capping
+ * each operand at 1024 bytes keeps the worst case -- multiply, whose product
+ * is ~ bytecount(a)+bytecount(b) -- at <= 2048 bytes (256 words), well within
+ * that limit, so every accepted operation is computed correctly and no input
+ * can drive HeavyThing into the breakpoint. ina/inb are sized to the cap, so
+ * decode_operand()'s `sizeof` out_size argument rejects any larger operand via
+ * ht_kat_hex_decode() -> -1 -> usage() -> exit 2 before allocation. The cap is
+ * generous: the largest committed kat_bigint vector operand is 64 bytes. */
+#define BIGINT_OPERAND_MAX 1024
+static unsigned char ina[BIGINT_OPERAND_MAX];
+static unsigned char inb[BIGINT_OPERAND_MAX];
+/* Worst-case output is multiply: bytecount(a)+bytecount(b) <= 1024+1024 =
+ * 2048 bytes, far below HeavyThing's 4096-byte (512-word) bigint capacity.
+ * outbuf is sized generously and emit_bi() additionally guards on bytecount
+ * (defense-in-depth) so bigint$encode can never write past it. */
+static unsigned char outbuf[16384 + 16];
 
-static void *parse_bi(const char *s, unsigned char *scratch, long cap) {
-    int neg = 0;
-    if (s[0] == '-') { neg = 1; s++; }
+/* usage(): write the usage line to stderr (fd 2) and exit non-zero (2). */
+static void usage(void) {
+    static const char u[] =
+        "usage: kat_bigint <add|sub|mul|div|mod|mod_inverse|isprime> <a_hex> [b_hex]\n";
+    ht$syscall(1, 2L, (long)u, (long)strlen(u));   /* usage -> stderr */
+    ht_kat_exit(2);
+}
+
+/* decode_operand(): decode a signed-hex operand into scratch[] WITHOUT
+ * allocating. Sets *neg for a leading '-'. Exits 2 (usage) on malformed or
+ * oversized hex, so a bad vector never becomes a silent zero bigint and no
+ * bigint can leak on the failure path. Returns the decoded byte length. */
+static long decode_operand(const char *s, unsigned char *scratch, long cap, int *neg) {
+    *neg = 0;
+    if (s[0] == '-') { *neg = 1; s++; }
     int len = ht_kat_hex_decode(s, scratch, (size_t)cap);
-    if (len < 0) len = 0;
-    void *bi = bigint$new_encoded(scratch, len);
+    if (len < 0) usage();
+    return len;
+}
+
+/* make_bi(): construct a bigint from already-validated operand bytes. */
+static void *make_bi(const unsigned char *buf, long len, int neg) {
+    void *bi = bigint$new_encoded(buf, len);
     if (neg) bigint$negate(bi);
     return bi;
 }
@@ -68,6 +100,11 @@ static void *parse_bi(const char *s, unsigned char *scratch, long cap) {
 static void emit_bi(void *bi) {
     long bc = bigint$bytecount(bi);
     if (bc <= 0) { ht_kat_hex_print((const unsigned char *)"\x00", 1); return; }
+    /* Guard BEFORE writing anything: never let bigint$encode write past outbuf,
+     * even for an unexpectedly large result (defense-in-depth on top of the
+     * worst-case buffer size). Checked before the sign byte so no partial
+     * output precedes the abort. */
+    if (bc > (long)sizeof outbuf) ht_kat_exit(2);
     if (((unsigned char *)bi)[BIGINT_NEGATIVE_OFS])
         (void)ht$syscall(1, 1, (void *)"-", 1);
     long w = bigint$encode(bi, outbuf);
@@ -76,21 +113,36 @@ static void emit_bi(void *bi) {
 
 int main(int argc, char **argv) {
     ht_kat_init();
-    if (argc < 3) {
-        static const char u[] =
-            "usage: kat_bigint <add|sub|mul|div|mod|mod_inverse|isprime> "
-            "<a_hex> [b_hex]\n";
-        (void)ht$syscall(1, 2, (void *)u, (long)(sizeof u - 1));
-        ht_kat_exit(2);
-    }
+    if (argc < 3) usage();
 
     const char *op = argv[1];
-    void *a = parse_bi(argv[2], ina, sizeof ina);
-    void *b = (argc >= 4) ? parse_bi(argv[3], inb, sizeof inb) : (void *)0;
 
-    if (streq(op, "isprime")) {
+    /* Classify arity and validate the selector + operand count BEFORE decoding
+     * or allocating anything. isprime is unary (exactly one operand); every
+     * other op is binary (exactly two). An unknown op, a missing second operand,
+     * or an extra operand exits 2 with NO allocation -- so no NULL is ever
+     * passed into a bigint routine (CRITICAL) and no bigint is leaked. */
+    int unary  = streq(op, "isprime");
+    int binary = streq(op,"add") || streq(op,"sub") || streq(op,"mul")
+              || streq(op,"div") || streq(op,"mod") || streq(op,"mod_inverse");
+    if (!unary && !binary) usage();          /* unknown op             */
+    if (unary  && argc != 3) usage();        /* isprime: one operand   */
+    if (binary && argc != 4) usage();        /* binary ops: two operands */
+
+    /* Decode all operands first (validates hex; exits 2 on bad input); only
+     * then allocate bigints, so a decode failure leaks nothing. */
+    int nega = 0, negb = 0;
+    long la = decode_operand(argv[2], ina, sizeof ina, &nega);
+    void *a = make_bi(ina, la, nega);
+    void *b = (void *)0;
+    if (binary) {
+        long lb = decode_operand(argv[3], inb, sizeof inb, &negb);
+        b = make_bi(inb, lb, negb);
+    }
+
+    if (unary) {                             /* isprime */
         int r  = bigint$isprime(a);
-        int r2 = bigint$isprime2(a);     /* coverage; agrees with r */
+        int r2 = bigint$isprime2(a);         /* coverage; agrees with r */
         (void)r2;
         unsigned char o = (unsigned char)(r ? 1 : 0);
         ht_kat_hex_print(&o, 1);
@@ -104,21 +156,17 @@ int main(int argc, char **argv) {
     else if (streq(op, "mul"))         { d = bigint$new_copy(a); bigint$multiply(d, b); }
     else if (streq(op, "mod"))         { d = bigint$new_copy(a); bigint$modby(d, b); }
     else if (streq(op, "mod_inverse")) { d = bigint$new(); bigint$inversemod(d, a, b); }
-    else if (streq(op, "div")) {
+    else /* div (the only remaining validated binary op) */ {
         void *rem = bigint$new();
         d = bigint$new();
-        bigint$divide(rem, d, a, b);    /* d = quotient */
+        bigint$divide(rem, d, a, b);         /* d = quotient */
         bigint$destroy(rem);
-    } else {
-        static const char e[] = "unknown op\n";
-        (void)ht$syscall(1, 2, (void *)e, (long)(sizeof e - 1));
-        ht_kat_exit(2);
     }
 
     emit_bi(d);
     bigint$destroy(d);
     bigint$destroy(a);
-    if (b) bigint$destroy(b);
+    bigint$destroy(b);                        /* non-NULL for every binary op */
     ht_kat_exit(0);
     return 0;
 }

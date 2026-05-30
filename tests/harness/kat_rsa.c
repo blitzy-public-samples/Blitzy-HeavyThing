@@ -51,8 +51,19 @@ extern void  monty$destroy(void *ctx);
 
 #define BIGINT_MONTY_POWMOD_OFS 24
 
-static unsigned char ibuf[1024];
+static unsigned char nbuf[1024];
+static unsigned char ebuf[1024];
+static unsigned char dbuf[1024];
+static unsigned char cbuf[1024];
 static unsigned char obuf[1024];
+
+/* usage(): write the usage line to stderr (fd 2) and exit non-zero (2). */
+static void usage(void) {
+    static const char u[] =
+        "usage: kat_rsa <n_hex> <e_hex> <d_hex> <ciphertext_hex>\n";
+    ht$syscall(1, 2L, (long)u, (long)strlen(u));   /* usage -> stderr */
+    ht_kat_exit(2);
+}
 
 static void *small_bi(unsigned v) {
     unsigned char b[1]; b[0] = (unsigned char)v;
@@ -135,26 +146,29 @@ static int rsa_factor(void *n, void *e, void *d, void **pp, void **pq) {
 
 int main(int argc, char **argv) {
     ht_kat_init();
-    if (argc < 5) {
-        static const char u[] =
-            "usage: kat_rsa <n_hex> <e_hex> <d_hex> <ciphertext_hex>\n";
-        (void)ht$syscall(1, 2, (void *)u, (long)(sizeof u - 1));
-        ht_kat_exit(2);
-    }
+    if (argc < 5) usage();
 
-    int ln = ht_kat_hex_decode(argv[1], ibuf, sizeof ibuf);
-    void *n = bigint$new_encoded(ibuf, ln < 0 ? 0 : ln);
-    int le = ht_kat_hex_decode(argv[2], ibuf, sizeof ibuf);
-    void *e = bigint$new_encoded(ibuf, le < 0 ? 0 : le);
-    int ld = ht_kat_hex_decode(argv[3], ibuf, sizeof ibuf);
-    void *d = bigint$new_encoded(ibuf, ld < 0 ? 0 : ld);
-    int lc = ht_kat_hex_decode(argv[4], ibuf, sizeof ibuf);
-    void *c = bigint$new_encoded(ibuf, lc < 0 ? 0 : lc);
+    /* Decode all four inputs into SEPARATE buffers and reject any malformed or
+     * oversized hex BEFORE constructing any bigint: an invalid vector must exit
+     * 2, never run as a zero-valued RSA input, and never leak a bigint. */
+    int ln = ht_kat_hex_decode(argv[1], nbuf, sizeof nbuf);
+    int le = ht_kat_hex_decode(argv[2], ebuf, sizeof ebuf);
+    int ld = ht_kat_hex_decode(argv[3], dbuf, sizeof dbuf);
+    int lc = ht_kat_hex_decode(argv[4], cbuf, sizeof cbuf);
+    if (ln < 0 || le < 0 || ld < 0 || lc < 0) usage();
+
+    void *n = bigint$new_encoded(nbuf, ln);
+    void *e = bigint$new_encoded(ebuf, le);
+    void *d = bigint$new_encoded(dbuf, ld);
+    void *c = bigint$new_encoded(cbuf, lc);
 
     void *p = (void *)0, *q = (void *)0;
     if (!rsa_factor(n, e, d, &p, &q)) {
         static const char ef[] = "rsa_factor: failed to factor n\n";
-        (void)ht$syscall(1, 2, (void *)ef, (long)(sizeof ef - 1));
+        (void)ht$syscall(1, 2L, (long)ef, (long)strlen(ef));
+        /* p/q were never set on failure; free the four inputs and exit. */
+        bigint$destroy(n); bigint$destroy(e);
+        bigint$destroy(d); bigint$destroy(c);
         ht_kat_exit(1);
     }
 
@@ -190,6 +204,21 @@ int main(int argc, char **argv) {
 
     long w = bigint$encode(c, obuf);
     ht_kat_hex_print(obuf, (size_t)w);
+
+    /* Destroy every allocation before exit. bigint$destroy(p)/bigint$destroy(q)
+     * AUTO-destroy the monty contexts attached at offset 24 (mp/mq) exactly
+     * once -- verified in bigint.inc: destroy loads [bi+24] and calls
+     * monty$destroy when that pointer is non-NULL -- so mp/mq must NOT be passed
+     * to monty$destroy separately (that would double-free). Every other bigint
+     * here carries a NULL monty pointer, so each destroy frees exactly one
+     * object. */
+    bigint$destroy(p); bigint$destroy(q);          /* also frees mp, mq */
+    bigint$destroy(one);
+    bigint$destroy(pm1); bigint$destroy(qm1);
+    bigint$destroy(dmodp); bigint$destroy(dmodq);
+    bigint$destroy(invqmodp);
+    bigint$destroy(x); bigint$destroy(y); bigint$destroy(z);
+    bigint$destroy(n); bigint$destroy(e); bigint$destroy(d); bigint$destroy(c);
     ht_kat_exit(0);
     return 0;
 }

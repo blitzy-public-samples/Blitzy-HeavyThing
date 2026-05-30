@@ -37,6 +37,14 @@ static void emit_bool(int v) {
     ht_kat_hex_print(&o, 1);
 }
 
+/* usage(): write the usage line to stderr (fd 2) and exit non-zero (2). */
+static void usage(void) {
+    static const char u[] =
+        "usage: kat_dsa <p_hex> <q_hex> <g_hex>   (or: kat_dsa generate)\n";
+    ht$syscall(1, 2L, (long)u, (long)strlen(u));   /* usage -> stderr */
+    ht_kat_exit(2);
+}
+
 int main(int argc, char **argv) {
     ht_kat_init();
 
@@ -49,19 +57,15 @@ int main(int argc, char **argv) {
         ht_kat_exit(0);
     }
 
-    if (argc < 4) {
-        static const char u[] =
-            "usage: kat_dsa <p_hex> <q_hex> <g_hex>   (or: kat_dsa generate)\n";
-        (void)ht$syscall(1, 2, (void *)u, (long)(sizeof u - 1));
-        ht_kat_exit(2);
-    }
+    if (argc < 4) usage();
 
+    /* Decode all three parameters first and reject any malformed/oversized hex
+     * BEFORE constructing bigints: an invalid input must exit 2, not be tested
+     * as a zero-valued parameter. No bigint is allocated on the failure path. */
     int lp = ht_kat_hex_decode(argv[1], bp, sizeof bp);
     int lq = ht_kat_hex_decode(argv[2], bq, sizeof bq);
     int lg = ht_kat_hex_decode(argv[3], bg, sizeof bg);
-    if (lp < 0) lp = 0;
-    if (lq < 0) lq = 0;
-    if (lg < 0) lg = 0;
+    if (lp < 0 || lq < 0 || lg < 0) usage();
 
     void *p = bigint$new_encoded(bp, lp);
     void *q = bigint$new_encoded(bq, lq);

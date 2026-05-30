@@ -310,10 +310,21 @@ from the HeavyThing reference build:
   finalize through the SHA-256/512 IV path. Details are documented in each
   `hmac_sha{224,384,512}.json` `source` field. HMAC-MD5, HMAC-SHA-1, and HMAC-SHA-256
   are unaffected and remain the published RFC 2202 / RFC 4231 values.
-- **[2] scrypt** bakes its cost parameters at compile time (`scrypt_N=1024`,
-  `scrypt_r=1`, `scrypt_p=1`) and uses an HMAC-SHA-512 PRF rather than RFC 7914's
-  HMAC-SHA-256, ignoring the supplied N/r/p arguments. The expected keys are therefore
-  HeavyThing-actual over the RFC 7914 §12 inputs, as documented in `scrypt.json`.
+- **[2] scrypt — RFC 7914 variable-parameter KATs are AAP-approved DEFERRED.**
+  HeavyThing bakes its cost parameters **and** its PRF at compile time
+  (`scrypt_N=1024`, `scrypt_r=1`, `scrypt_p=1`, `scrypt_sha512=1` ⇒ HMAC-SHA-512),
+  ignoring the supplied N/r/p arguments, whereas RFC 7914 §12 requires
+  runtime-varying N/r/p (16, 1024, 16384, 1048576) and an HMAC-SHA-256 PRF.
+  Reaching the published RFC values would require either modifying the read-only
+  HeavyThing `.inc` source (forbidden by Rule R2 / scope §0.8.2) or a per-tuple
+  multi-build matrix that the single-shim / single-`libht.a` build model
+  (§0.4.1, §0.5.4) does not provide. Per the AAP deferral policy (§0.10.2 /
+  §0.1.3 — the same principle that defers `poly1305`/`chacha20` below), the
+  RFC 7914 standards-body scrypt KATs are therefore **DEFERRED**. The committed
+  `scrypt.json` instead holds HeavyThing-actual self-consistency KATs
+  (deterministic regression anchors) over the RFC 7914 §12 *inputs*; the N/r/p
+  fields are informational only. Full record: the `kat_scrypt.c` header and the
+  `scrypt.json` `source` field.
 - **[3] DH parameter pool** ships 20 custom 2 Ton Digital 2048-bit safe primes
   (Sophie-Germain verified) instead of the RFC 3526 MODP moduli, and the generator
   varies per entry (g[0]=3, g[1]=2, …) rather than RFC 3526's fixed g=2. The expected

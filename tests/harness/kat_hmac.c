@@ -27,7 +27,7 @@ int main(int argc, char **argv) {
     ht_kat_init();
     if (argc < 4) {
         static const char u[] = "usage: kat_hmac <md5|sha1|sha224|sha256|sha384|sha512> <key_hex|-> <data_hex>\n";
-        ht$syscall(1, 1L, (long)u, (long)strlen(u));
+        ht$syscall(1, 2L, (long)u, (long)strlen(u));   /* usage -> stderr */
         ht_kat_exit(2);
     }
     const char *h = argv[1];

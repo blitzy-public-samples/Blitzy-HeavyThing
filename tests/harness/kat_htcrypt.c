@@ -42,6 +42,21 @@ void  aes$init_decrypt(void *ctx, const void *key, int keylen_bytes);
 
 static int streq(const char *a, const char *b){ while(*a&&*a==*b){a++;b++;} return *a==*b; }
 
+/* usage(): write the usage line to stderr (fd 2) and exit non-zero (2). */
+static void usage(void) {
+    static const char u[] =
+        "usage: kat_htcrypt <round_trip|hide_show> "
+        "<passphrase|keymaterial|raw_keymaterial|useless> "
+        "<secret> <plaintext_hex> [wrong_secret]\n";
+    ht$syscall(1, 2L, (long)u, (long)strlen(u));   /* usage -> stderr */
+    ht_kat_exit(2);
+}
+
+static int valid_key_type(const char *kt) {
+    return streq(kt, "passphrase") || streq(kt, "keymaterial")
+        || streq(kt, "raw_keymaterial") || streq(kt, "useless");
+}
+
 static unsigned char km[8192];
 static unsigned char pt[4096];
 static _Alignas(16) unsigned char aes_enc[288];
@@ -57,9 +72,15 @@ static void *build_ctx(const char *key_type, const char *secret) {
         return htcrypt$new_passphrase(secret, (int)strlen(secret));
     if (streq(key_type, "useless"))
         return htcrypt$new_useless();
-    /* keymaterial / raw_keymaterial: secret is hex, zero-padded to 8192 bytes */
-    for (int i = 0; i < 8192; i++) km[i] = 0;
-    ht_kat_hex_decode(secret, km, sizeof km);   /* count ignored; zero-padded */
+    /* keymaterial / raw_keymaterial: secret is hex. Reject malformed/oversized
+     * hex BEFORE building the key material, and only THEN zero-pad the unused
+     * tail to the full 8192-byte key buffer. This both prevents a bad vector
+     * from silently becoming an all-zero key and clears any stale bytes left in
+     * the shared km[] by a previous build_ctx() call (e.g. the wrong_secret
+     * negative path). */
+    int kn = ht_kat_hex_decode(secret, km, sizeof km);
+    if (kn < 0) usage();                            /* malformed/oversized hex */
+    for (int i = kn; i < 8192; i++) km[i] = 0;      /* zero-pad AFTER success  */
     if (streq(key_type, "raw_keymaterial"))
         return htcrypt$new_raw_keymaterial(km);
     return htcrypt$new_keymaterial(km);
@@ -67,19 +88,16 @@ static void *build_ctx(const char *key_type, const char *secret) {
 
 int main(int argc, char **argv) {
     ht_kat_init();
-    if (argc < 5) {
-        static const char u[] =
-            "usage: kat_htcrypt <round_trip|hide_show> "
-            "<passphrase|keymaterial|raw_keymaterial|useless> "
-            "<secret> <plaintext_hex> [wrong_secret]\n";
-        ht$syscall(1, 1L, (long)u, (long)strlen(u));
-        ht_kat_exit(2);
-    }
+    if (argc < 5) usage();
     const char *op = argv[1];
     const char *kt = argv[2];
     const char *secret = argv[3];
+    /* Validate selectors BEFORE allocating any context: an unknown key_type or
+     * operation must NOT fall through to a valid crypto path -- it exits 2. */
+    if (!valid_key_type(kt)) usage();
+    if (!streq(op, "round_trip") && !streq(op, "hide_show")) usage();
     int n = ht_kat_hex_arg(argv[4], pt, sizeof pt);
-    if (n < 0) ht_kat_exit(2);
+    if (n < 0) usage();
     int m = ((n + 15) / 16) * 16;
     for (int i = n; i < m; i++) pt[i] = 0;          /* zero-pad final block */
 

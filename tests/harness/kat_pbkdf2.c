@@ -32,7 +32,7 @@ int main(int argc, char **argv) {
 	ht_kat_init();
 	if (argc < 6) {
 		static const char u[] = "usage: kat_pbkdf2 <md5|sha1|sha224|sha256|sha384|sha512> <password> <salt_hex|-> <iterations> <dk_len>\n";
-		ht$syscall(1, 1L, (long)u, (long)strlen(u));
+		ht$syscall(1, 2L, (long)u, (long)strlen(u));   /* usage -> stderr */
 		ht_kat_exit(2);
 	}
 	const char *h  = argv[1];
