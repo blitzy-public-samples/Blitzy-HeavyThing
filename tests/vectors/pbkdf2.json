@@ -1,0 +1,138 @@
+{
+  "primitive": "pbkdf2",
+  "source": "RFC 6070 (PBKDF2-HMAC-SHA1) + RFC 7914 \u00a711 (PBKDF2-HMAC-SHA256). SHA-224/384/512 variants inherit HeavyThing's HMAC truncated-hash/B=64 deviation and are captured from the HeavyThing reference build.",
+  "vectors": [
+    {
+      "id": "rfc6070_tc1",
+      "category": "happy_path",
+      "hash_algorithm": "sha1",
+      "password": "password",
+      "salt_hex": "73616c74",
+      "iterations": 1,
+      "dk_len": 20,
+      "expected_hex": "0c60c80f961f0e71f3a9b524af6012062fe037a6"
+    },
+    {
+      "id": "rfc6070_tc2",
+      "category": "happy_path",
+      "hash_algorithm": "sha1",
+      "password": "password",
+      "salt_hex": "73616c74",
+      "iterations": 2,
+      "dk_len": 20,
+      "expected_hex": "ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957"
+    },
+    {
+      "id": "rfc6070_tc3",
+      "category": "happy_path",
+      "hash_algorithm": "sha1",
+      "password": "password",
+      "salt_hex": "73616c74",
+      "iterations": 4096,
+      "dk_len": 20,
+      "expected_hex": "4b007901b765489abead49d926f721d065a429c1"
+    },
+    {
+      "id": "rfc6070_tc5_multiblock",
+      "category": "edge_case_max_length",
+      "hash_algorithm": "sha1",
+      "password": "passwordPASSWORDpassword",
+      "salt_hex": "73616c7453414c5473616c7453414c5473616c7453414c5473616c7453414c5473616c74",
+      "iterations": 4096,
+      "dk_len": 25,
+      "expected_hex": "3d2eec4fe41c849b80c8d83662c0e44a8b291a964cf2f07038"
+    },
+    {
+      "id": "sha1_dklen_gt_hashlen",
+      "category": "edge_case_block_boundary",
+      "hash_algorithm": "sha1",
+      "password": "password",
+      "salt_hex": "73616c74",
+      "iterations": 1,
+      "dk_len": 40,
+      "expected_hex": "0c60c80f961f0e71f3a9b524af6012062fe037a6e0f0eb94fe8fc46bdc637164ac2e7a8e3f9d2e83"
+    },
+    {
+      "id": "rfc7914_sha256_c1",
+      "category": "happy_path",
+      "hash_algorithm": "sha256",
+      "password": "passwd",
+      "salt_hex": "73616c74",
+      "iterations": 1,
+      "dk_len": 64,
+      "expected_hex": "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783"
+    },
+    {
+      "id": "rfc7914_sha256_c80000",
+      "category": "happy_path",
+      "hash_algorithm": "sha256",
+      "password": "Password",
+      "salt_hex": "4e61436c",
+      "iterations": 80000,
+      "dk_len": 64,
+      "expected_hex": "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56a1d425a1225833549adb841b51c9b3176a272bdebba1d078478f62b397f33c8d"
+    },
+    {
+      "id": "md5_c1000",
+      "category": "happy_path",
+      "hash_algorithm": "md5",
+      "password": "password",
+      "salt_hex": "73616c74",
+      "iterations": 1000,
+      "dk_len": 16,
+      "expected_hex": "8d189946a32d883622a16ae18af0632f"
+    },
+    {
+      "id": "sha224_c4096",
+      "category": "happy_path",
+      "hash_algorithm": "sha224",
+      "password": "password",
+      "salt_hex": "73616c74",
+      "iterations": 4096,
+      "dk_len": 28,
+      "expected_hex": "6466b8047faa0389f4599a4ebb89095ce92fe7c5c204553f7480f692"
+    },
+    {
+      "id": "sha384_c4096",
+      "category": "happy_path",
+      "hash_algorithm": "sha384",
+      "password": "password",
+      "salt_hex": "73616c74",
+      "iterations": 4096,
+      "dk_len": 48,
+      "expected_hex": "71fbd0e2b5b4fe0acaa679377ee0454012b54cde577353ad2eb42a55f232a557f81dab1f7dbe89809ccc14d92def8b73"
+    },
+    {
+      "id": "sha512_c4096",
+      "category": "happy_path",
+      "hash_algorithm": "sha512",
+      "password": "password",
+      "salt_hex": "73616c74",
+      "iterations": 4096,
+      "dk_len": 64,
+      "expected_hex": "78c989342d96d966f5ef57664c55dca8d4c5a785b299827c34acc41685f641c7d949b71bae0151fa8b3f5042c6fd1b817d9f59d05378da45ebc8722defe648f4"
+    },
+    {
+      "id": "negative_different_password",
+      "category": "negative_wrong_key",
+      "hash_algorithm": "sha1",
+      "password": "PASSWORD",
+      "salt_hex": "73616c74",
+      "iterations": 4096,
+      "dk_len": 20,
+      "expected_hex": "4b007901b765489abead49d926f721d065a429c1",
+      "expect_mismatch": true
+    },
+    {
+      "id": "rfc6070_tc4_16777216_slow",
+      "category": "happy_path",
+      "hash_algorithm": "sha1",
+      "password": "password",
+      "salt_hex": "73616c74",
+      "iterations": 16777216,
+      "dk_len": 20,
+      "slow": true,
+      "expected_hex": "eefe3d61cd4da4e4e9945b3d6ba2158c2634e984"
+    }
+  ]
+}
