@@ -1,0 +1,88 @@
+{
+  "primitive": "htxts",
+  "source": "HeavyThing htxts.inc self-consistency (round-trip identity) vectors. htxts is XTS-mode (XEX tweaked-codebook, GF(2^128) tweak LFSR with 0x87 reduction) but its underlying block cipher is HeavyThing's custom htcrypt 64-deep AES-256 cascade, NOT raw AES, so there is no external published KAT (NIST SP 800-38E / IEEE 1619-2018 define the mode; the cipher differs). Authoritative property: decrypt(encrypt(sector))==sector. The harness emits the recovered plaintext for round_trip (expected_hex==data_hex). negative cases run encrypt only and assert the ciphertext differs from the plaintext (expect_mismatch), proving encryption is genuine.",
+  "vectors": [
+    {
+      "id": "rt_16B",
+      "category": "happy_path",
+      "key1_hex": "000102030405060708090a0b0c0d0e0f",
+      "key2_hex": "101112131415161718191a1b1c1d1e1f",
+      "tweak_hex": "33333333333333333333333333333333",
+      "data_hex": "44444444444444444444444444444444",
+      "operation": "round_trip",
+      "expected_hex": "44444444444444444444444444444444"
+    },
+    {
+      "id": "rt_32B",
+      "category": "happy_path",
+      "key1_hex": "000102030405060708090a0b0c0d0e0f",
+      "key2_hex": "101112131415161718191a1b1c1d1e1f",
+      "tweak_hex": "33333333333333333333333333333333",
+      "data_hex": "4444444444444444444444444444444455555555555555555555555555555555",
+      "operation": "round_trip",
+      "expected_hex": "4444444444444444444444444444444455555555555555555555555555555555"
+    },
+    {
+      "id": "rt_48B",
+      "category": "happy_path",
+      "key1_hex": "000102030405060708090a0b0c0d0e0f",
+      "key2_hex": "101112131415161718191a1b1c1d1e1f",
+      "tweak_hex": "33333333333333333333333333333333",
+      "data_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+      "operation": "round_trip",
+      "expected_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
+    },
+    {
+      "id": "rt_pattern_zerotweak",
+      "category": "happy_path",
+      "key1_hex": "000102030405060708090a0b0c0d0e0f",
+      "key2_hex": "101112131415161718191a1b1c1d1e1f",
+      "tweak_hex": "00000000000000000000000000000000",
+      "data_hex": "00112233445566778899aabbccddeeff",
+      "operation": "round_trip",
+      "expected_hex": "00112233445566778899aabbccddeeff"
+    },
+    {
+      "id": "edge_block_boundary_16B",
+      "category": "edge_case_block_boundary",
+      "key1_hex": "000102030405060708090a0b0c0d0e0f",
+      "key2_hex": "101112131415161718191a1b1c1d1e1f",
+      "tweak_hex": "33333333333333333333333333333333",
+      "data_hex": "00112233445566778899aabbccddeeff",
+      "operation": "round_trip",
+      "expected_hex": "00112233445566778899aabbccddeeff"
+    },
+    {
+      "id": "edge_empty",
+      "category": "edge_case_empty",
+      "key1_hex": "000102030405060708090a0b0c0d0e0f",
+      "key2_hex": "101112131415161718191a1b1c1d1e1f",
+      "tweak_hex": "33333333333333333333333333333333",
+      "data_hex": "",
+      "operation": "round_trip",
+      "expected_hex": ""
+    },
+    {
+      "id": "neg_encrypt_changes_data",
+      "category": "negative_round_trip",
+      "key1_hex": "000102030405060708090a0b0c0d0e0f",
+      "key2_hex": "101112131415161718191a1b1c1d1e1f",
+      "tweak_hex": "33333333333333333333333333333333",
+      "data_hex": "44444444444444444444444444444444",
+      "operation": "encrypt",
+      "expected_hex": "44444444444444444444444444444444",
+      "expect_mismatch": true
+    },
+    {
+      "id": "neg_encrypt_changes_data2",
+      "category": "negative_round_trip",
+      "key1_hex": "000102030405060708090a0b0c0d0e0f",
+      "key2_hex": "101112131415161718191a1b1c1d1e1f",
+      "tweak_hex": "00000000000000000000000000000000",
+      "data_hex": "00112233445566778899aabbccddeeff",
+      "operation": "encrypt",
+      "expected_hex": "00112233445566778899aabbccddeeff",
+      "expect_mismatch": true
+    }
+  ]
+}
