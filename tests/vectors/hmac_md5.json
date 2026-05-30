@@ -1,6 +1,6 @@
 {
   "primitive": "hmac_md5",
-  "source": "RFC 2202",
+  "source": "RFC 2202 (digest vectors). State/PRF vectors exercise HeavyThing hmac$reset / hmac$replace_key / hmac$phash / hmac$phash_xor: state_reset asserts a reset+recompute reproduces the TC1 MAC; state_replace_key asserts replace_key(K2) yields HMAC(K2, data); prf_phash / prf_phash_xor are TLS 1.2 P_hash(secret, seed) per RFC 5246 \u00a75 (phash_xor pre-filled 0xff so expected = NOT(phash)). Captured from the HeavyThing reference build.",
   "vectors": [
     {
       "id": "rfc2202_tc1",
@@ -87,6 +87,38 @@
       "data_hex": "4869205468657265",
       "expected_hex": "9294727a3638bb1c13f48ef8158bfc9d",
       "expect_mismatch": true
+    },
+    {
+      "id": "state_reset_tc1",
+      "category": "state_reset",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "data_hex": "4869205468657265",
+      "expected_hex": "9294727a3638bb1c13f48ef8158bfc9d"
+    },
+    {
+      "id": "state_replace_key",
+      "category": "state_replace_key",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "key2_hex": "4a656665",
+      "data_hex": "4869205468657265",
+      "expected_hex": "ab1abeee55d15696750d0865dbe10e33"
+    },
+    {
+      "id": "prf_phash",
+      "category": "prf_phash",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "seed_hex": "616263",
+      "out_len": 48,
+      "expected_hex": "de8be94d1808f15d6a3c6fc9f5b0f2e2bea70276f0111683ea639c751d627fc8615838aab92dc268c34720f5e6c6b285"
+    },
+    {
+      "id": "prf_phash_xor",
+      "category": "prf_phash_xor",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "seed_hex": "616263",
+      "out_len": 48,
+      "xor_in_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected_hex": "217416b2e7f70ea295c390360a4f0d1d4158fd890feee97c159c638ae29d80379ea7c75546d23d973cb8df0a19394d7a"
     }
   ]
 }

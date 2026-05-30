@@ -286,17 +286,38 @@ indentation and committed with a trailing newline for diff readability.
 | MD5 | `md5.inc` | RFC 1321 §A.5 |
 | SHA-1 | `sha1.inc` | NIST FIPS 180-4 |
 | SHA-2 (224 / 256 / 384 / 512) | `sha2.inc` | NIST FIPS 180-4 + CAVP |
-| HMAC | `hmac.inc` | RFC 2202 (MD5, SHA-1) + RFC 4231 (SHA-2 family) + FIPS 198-1 |
+| HMAC | `hmac.inc` | RFC 2202 (MD5, SHA-1) + RFC 4231 (SHA-2 family) + FIPS 198-1 — see note [1] |
 | HMAC-DRBG | `hmac_drbg.inc` | NIST SP 800-90A CAVP |
 | PBKDF2 | `pbkdf2.inc` | RFC 6070 + RFC 7914 §11 |
-| scrypt | `scrypt.inc` | RFC 7914 §12 |
+| scrypt | `scrypt.inc` | RFC 7914 §12 — see note [2] |
 | AES | `aes.inc` | NIST FIPS 197 Appendix B/C + CAVP |
 | htcrypt | `htcrypt.inc` | self-consistency (round-trip identity) |
 | htxts (XTS-AES) | `htxts.inc` | NIST SP 800-38E / IEEE Std 1619-2018 |
 | bigint arithmetic | `bigint.inc` | Knuth TAoCP §4.3 identities |
 | RSA (`bigint$rsaprivate`) | `bigint.inc` | RFC 8017 PKCS#1 v1.5 §C |
 | DSA (`bigint$dsa_params` / `bigint$verify_dsa_params`) | `bigint.inc` | FIPS 186-4 Appendix A.1.1.2 |
-| DH parameter pool | `dh_pool*.inc` | RFC 3526 §3 / RFC 7919 |
+| DH parameter pool | `dh_pool*.inc` | RFC 3526 §3 / RFC 7919 — see note [3] |
+
+**Notes on HeavyThing-specific deviations.** The per-file JSON `source` field is the
+authoritative record; the notes below mirror it so the table above is not misread as
+"pure published-RFC output". For these primitives the standards-body *inputs* are
+used verbatim, but the *expected outputs* are HeavyThing-actual and were captured
+from the HeavyThing reference build:
+
+- **[1] HMAC-SHA-224 / SHA-384 / SHA-512** use the RFC 2202 / RFC 4231 inputs, but the
+  expected MACs are not the published RFC digests. HeavyThing fixes the HMAC block
+  size at B=64 for every hash (RFC 4231 uses B=128 for SHA-384/512), and SHA-224/384
+  finalize through the SHA-256/512 IV path. Details are documented in each
+  `hmac_sha{224,384,512}.json` `source` field. HMAC-MD5, HMAC-SHA-1, and HMAC-SHA-256
+  are unaffected and remain the published RFC 2202 / RFC 4231 values.
+- **[2] scrypt** bakes its cost parameters at compile time (`scrypt_N=1024`,
+  `scrypt_r=1`, `scrypt_p=1`) and uses an HMAC-SHA-512 PRF rather than RFC 7914's
+  HMAC-SHA-256, ignoring the supplied N/r/p arguments. The expected keys are therefore
+  HeavyThing-actual over the RFC 7914 §12 inputs, as documented in `scrypt.json`.
+- **[3] DH parameter pool** ships 20 custom 2 Ton Digital 2048-bit safe primes
+  (Sophie-Germain verified) instead of the RFC 3526 MODP moduli, and the generator
+  varies per entry (g[0]=3, g[1]=2, …) rather than RFC 3526's fixed g=2. The expected
+  moduli and generators are HeavyThing-actual, as documented in `dh_pool.json`.
 
 ### Deferred primitives
 

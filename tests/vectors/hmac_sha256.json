@@ -1,6 +1,6 @@
 {
   "primitive": "hmac_sha256",
-  "source": "RFC 4231",
+  "source": "RFC 4231 (digest vectors). State/PRF vectors exercise HeavyThing hmac$reset / hmac$replace_key / hmac$phash / hmac$phash_xor: state_reset asserts a reset+recompute reproduces the TC1 MAC; state_replace_key asserts replace_key(K2) yields HMAC(K2, data); prf_phash / prf_phash_xor are TLS 1.2 P_hash(secret, seed) per RFC 5246 \u00a75 (phash_xor pre-filled 0xff so expected = NOT(phash)). Captured from the HeavyThing reference build.",
   "vectors": [
     {
       "id": "rfc4231_tc1",
@@ -87,6 +87,38 @@
       "data_hex": "4869205468657265",
       "expected_hex": "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
       "expect_mismatch": true
+    },
+    {
+      "id": "state_reset_tc1",
+      "category": "state_reset",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "data_hex": "4869205468657265",
+      "expected_hex": "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+    },
+    {
+      "id": "state_replace_key",
+      "category": "state_replace_key",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "key2_hex": "4a656665",
+      "data_hex": "4869205468657265",
+      "expected_hex": "6bfb115ca30df3be0dfdffe79a51cbee88186db55acc287af148d7ff6220f92e"
+    },
+    {
+      "id": "prf_phash",
+      "category": "prf_phash",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "seed_hex": "616263",
+      "out_len": 48,
+      "expected_hex": "97de39afb6ba268038aad5a21155bc180f7cb67742718d511f32f81014371148591d54c21b2719bdaa8e96f0054267dc"
+    },
+    {
+      "id": "prf_phash_xor",
+      "category": "prf_phash_xor",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "seed_hex": "616263",
+      "out_len": 48,
+      "xor_in_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected_hex": "6821c6504945d97fc7552a5deeaa43e7f0834988bd8e72aee0cd07efebc8eeb7a6e2ab3de4d8e6425571690ffabd9823"
     }
   ]
 }

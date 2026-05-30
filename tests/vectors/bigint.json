@@ -1,6 +1,6 @@
 {
   "primitive": "bigint",
-  "source": "Knuth TAoCP Vol 2 \u00a74.3 multiple-precision arithmetic identities. HeavyThing bigint performs standard signed integer arithmetic; output is byte-aligned big-endian magnitude hex (even-length, leading zero nibble preserved on the top byte) with a leading '-' for negative results and '00' for zero (per bigint$encode + bigint_negative_ofs). isprime returns 01/00. All values cross-checked against Python integer arithmetic and captured from the HeavyThing reference build.",
+  "source": "Knuth TAoCP Vol 2 \u00a74.3 multiple-precision arithmetic identities. HeavyThing bigint performs standard signed integer arithmetic; magnitude is byte-aligned big-endian hex (even-length, leading zero nibble preserved on the top byte, '00' for zero, per bigint$encode). Sign is encoded out-of-band via the optional boolean fields a_negative / b_negative / expected_negative (absent == false), so every a_hex / b_hex / expected_hex / remainder_hex field is strictly even-length lowercase magnitude hex with no sign or separator. op 'div' returns the quotient in expected_hex with the matching remainder in remainder_hex (dividend == divisor*quotient + remainder, per bigint$divide). isprime / isprime2 return 01 (prime) or 00 (composite). All values cross-checked against Python integer arithmetic and captured from the HeavyThing reference build (bigint$add / subtract / multiply / divide / modby / inversemod / isprime / isprime2).",
   "vectors": [
     {
       "id": "knuth_add_large",
@@ -107,9 +107,11 @@
       "id": "edge_negative_add",
       "category": "edge_case_single_byte",
       "op": "add",
-      "a_hex": "-30",
+      "a_hex": "30",
+      "a_negative": true,
       "b_hex": "20",
-      "expected_hex": "-10"
+      "expected_hex": "10",
+      "expected_negative": true
     },
     {
       "id": "edge_negative_sub_result",
@@ -117,7 +119,8 @@
       "op": "sub",
       "a_hex": "0123",
       "b_hex": "fedcba",
-      "expected_hex": "-fedb97"
+      "expected_hex": "fedb97",
+      "expected_negative": true
     },
     {
       "id": "edge_max_length_mul",
@@ -135,6 +138,54 @@
       "b_hex": "0c",
       "expected_hex": "05",
       "expect_mismatch": true
+    },
+    {
+      "id": "div_identity_product_by_a",
+      "category": "happy_path",
+      "op": "div",
+      "a_hex": "0121fa00ad77d742247acc9140513b74458fab20783af1222236d88fe5618cf0",
+      "b_hex": "fedcba9876543210fedcba9876543210",
+      "expected_hex": "0123456789abcdef0123456789abcdef",
+      "remainder_hex": "00"
+    },
+    {
+      "id": "div_with_remainder",
+      "category": "happy_path",
+      "op": "div",
+      "a_hex": "fedcba9876543210fedcba9876543210",
+      "b_hex": "0123456789abcdef0123456789abcdef",
+      "expected_hex": "e0",
+      "remainder_hex": "f000000000000000f0"
+    },
+    {
+      "id": "div_small_quotient_remainder",
+      "category": "edge_case_single_byte",
+      "op": "div",
+      "a_hex": "64",
+      "b_hex": "07",
+      "expected_hex": "0e",
+      "remainder_hex": "02"
+    },
+    {
+      "id": "isprime2_65537",
+      "category": "happy_path",
+      "op": "isprime2",
+      "a_hex": "010001",
+      "expected_hex": "01"
+    },
+    {
+      "id": "isprime2_255_composite",
+      "category": "happy_path",
+      "op": "isprime2",
+      "a_hex": "ff",
+      "expected_hex": "00"
+    },
+    {
+      "id": "isprime2_7",
+      "category": "happy_path",
+      "op": "isprime2",
+      "a_hex": "07",
+      "expected_hex": "01"
     }
   ]
 }

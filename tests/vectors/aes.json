@@ -1,6 +1,6 @@
 {
   "primitive": "aes",
-  "source": "NIST FIPS 197 Appendix B (AES-128 cipher example) and Appendix C.1/C.2/C.3 (AES-128/192/256 example vectors). HeavyThing AES is fully FIPS-197 compliant (single-block ECB). Edge vectors are degenerate single-block inputs (all-zero/all-FF key/plaintext) verified against the known all-zero anchor 66e94bd4ef8a2c3b884cfa59ca342b2e. Round-trip vectors assert encrypt-then-decrypt identity. Values captured from the HeavyThing reference build.",
+  "source": "NIST FIPS 197 Appendix B (AES-128 cipher example) and Appendix C.1/C.2/C.3 (AES-128/192/256 example vectors). HeavyThing AES is fully FIPS-197 compliant (single-block ECB). Edge vectors are degenerate single-block inputs (all-zero/all-FF key/plaintext) verified against the known all-zero anchor 66e94bd4ef8a2c3b884cfa59ca342b2e. round_trip vectors are positive encrypt-then-decrypt identity tests (decrypted output == plaintext). tls_encrypt / tls_decrypt vectors exercise the aes$tls dispatch table (a 4-entry table {aes$init_encrypt, aes$encrypt, aes$init_decrypt, aes$decrypt}); because the table dispatches to those same public functions, its output is identical to standard single-block ECB by construction (here AES-128 FIPS 197 C.1). The negative_wrong_key_decrypt case decrypts the C.1 ciphertext under a 1-byte-altered key and asserts the result does NOT equal the original plaintext (expect_mismatch). Values captured from the HeavyThing reference build.",
   "vectors": [
     {
       "id": "fips197_b_aes128_enc",
@@ -99,28 +99,53 @@
       "expected_hex": "a1f6258c877d5fcd8964484538bfc92c"
     },
     {
-      "id": "negative_round_trip_aes128",
-      "category": "negative_round_trip",
+      "id": "round_trip_aes128",
+      "category": "round_trip",
       "mode": "round_trip",
       "key_hex": "000102030405060708090a0b0c0d0e0f",
       "plaintext_hex": "00112233445566778899aabbccddeeff",
       "expected_hex": "00112233445566778899aabbccddeeff"
     },
     {
-      "id": "negative_round_trip_aes192",
-      "category": "negative_round_trip",
+      "id": "round_trip_aes192",
+      "category": "round_trip",
       "mode": "round_trip",
       "key_hex": "000102030405060708090a0b0c0d0e0f1011121314151617",
       "plaintext_hex": "00112233445566778899aabbccddeeff",
       "expected_hex": "00112233445566778899aabbccddeeff"
     },
     {
-      "id": "negative_round_trip_aes256",
-      "category": "negative_round_trip",
+      "id": "round_trip_aes256",
+      "category": "round_trip",
       "mode": "round_trip",
       "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
       "plaintext_hex": "00112233445566778899aabbccddeeff",
       "expected_hex": "00112233445566778899aabbccddeeff"
+    },
+    {
+      "id": "tls_dispatch_aes128_enc",
+      "category": "happy_path",
+      "mode": "tls_encrypt",
+      "key_hex": "000102030405060708090a0b0c0d0e0f",
+      "plaintext_hex": "00112233445566778899aabbccddeeff",
+      "expected_hex": "69c4e0d86a7b0430d8cdb78070b4c55a"
+    },
+    {
+      "id": "tls_dispatch_aes128_dec",
+      "category": "happy_path",
+      "mode": "tls_decrypt",
+      "key_hex": "000102030405060708090a0b0c0d0e0f",
+      "plaintext_hex": "69c4e0d86a7b0430d8cdb78070b4c55a",
+      "expected_hex": "00112233445566778899aabbccddeeff"
+    },
+    {
+      "id": "negative_wrong_key_decrypt_aes128",
+      "category": "negative_wrong_key",
+      "mode": "ecb_decrypt",
+      "key_hex": "010102030405060708090a0b0c0d0e0f",
+      "plaintext_hex": "69c4e0d86a7b0430d8cdb78070b4c55a",
+      "expected_hex": "00112233445566778899aabbccddeeff",
+      "expect_mismatch": true
     }
   ]
 }

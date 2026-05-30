@@ -1,6 +1,6 @@
 {
   "primitive": "hmac_sha384",
-  "source": "RFC 4231 inputs; HeavyThing-specific output: B=64 + outer hash uses SHA-512 IV (sha384$final delegates to sha512$final). Captured from HeavyThing reference build; reproducible as SHA512(okey64||SHA384(ikey64||m))[:48].",
+  "source": "RFC 4231 inputs; HeavyThing-specific output: B=64 + outer hash uses SHA-512 IV (sha384$final delegates to sha512$final). Captured from HeavyThing reference build; reproducible as SHA512(okey64||SHA384(ikey64||m))[:48]. State/PRF vectors exercise hmac$reset / hmac$replace_key / hmac$phash / hmac$phash_xor: state_reset reproduces the TC1 MAC; state_replace_key yields HMAC(K2, data); prf_phash / prf_phash_xor are TLS 1.2 P_hash(secret, seed) per RFC 5246 \u00a75 (phash_xor pre-filled 0xff so expected = NOT(phash)). All captured from the HeavyThing reference build.",
   "vectors": [
     {
       "id": "rfc4231_tc1",
@@ -87,6 +87,38 @@
       "data_hex": "4869205468657265",
       "expected_hex": "e52cb154de2fee03496253c6cc459ec68a031d03190d0b5b3363c0092a9c44a493af01713d1a9afe06ec01aa845c5805",
       "expect_mismatch": true
+    },
+    {
+      "id": "state_reset_tc1",
+      "category": "state_reset",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "data_hex": "4869205468657265",
+      "expected_hex": "e52cb154de2fee03496253c6cc459ec68a031d03190d0b5b3363c0092a9c44a493af01713d1a9afe06ec01aa845c5805"
+    },
+    {
+      "id": "state_replace_key",
+      "category": "state_replace_key",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "key2_hex": "4a656665",
+      "data_hex": "4869205468657265",
+      "expected_hex": "a594dc273b6896677cb70df0e27f92298cd5d6a450f4286c02d46ed20d91270f1d647996dfe3a35b06f487d16e40c8ee"
+    },
+    {
+      "id": "prf_phash",
+      "category": "prf_phash",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "seed_hex": "616263",
+      "out_len": 48,
+      "expected_hex": "ddd401d08645a4363401f23ff0a9dc563d71394d1375eb4f84ff0d090557c75b7468afca24a8a1cdd107556dde09ba35"
+    },
+    {
+      "id": "prf_phash_xor",
+      "category": "prf_phash_xor",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "seed_hex": "616263",
+      "out_len": 48,
+      "xor_in_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected_hex": "222bfe2f79ba5bc9cbfe0dc00f5623a9c28ec6b2ec8a14b07b00f2f6faa838a48b975035db575e322ef8aa9221f645ca"
     }
   ]
 }
