@@ -1,7 +1,7 @@
 """Tier-2 regression runner for HMAC-DRBG (``hmac_drbg.inc`` -- the
-``hmac_drbg$new`` / ``hmac_drbg$generate`` / ``hmac_drbg$generate_additional`` /
-``hmac_drbg$destroy`` family) over NIST SP 800-90A CAVP HMAC_DRBG (SHA-256)
-input triples.
+``hmac_drbg$new`` / ``hmac_drbg$generate`` /
+``hmac_drbg$generate_additional`` / ``hmac_drbg$destroy`` family) over NIST
+SP 800-90A CAVP HMAC_DRBG (SHA-256) input triples.
 
 Each vector in ``tests/vectors/hmac_drbg.json`` is fanned out into one
 parametrized case that subprocess-invokes the harness as

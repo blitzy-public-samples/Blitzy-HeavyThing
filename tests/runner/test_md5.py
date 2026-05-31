@@ -51,7 +51,10 @@ def _args(vector):
     """
     if vector["category"] == "mgf1":
         return ["mgf1", vector["input_hex"], str(vector["mask_len"])]
-    args = ["-"] if vector.get("input_source") == "stdin" else [vector["input_hex"]]
+    if vector.get("input_source") == "stdin":
+        args = ["-"]
+    else:
+        args = [vector["input_hex"]]
     if "split_at" in vector:
         args.append(str(vector["split_at"]))
     return args
