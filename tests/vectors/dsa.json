@@ -1,0 +1,62 @@
+{
+  "primitive": "dsa",
+  "source": "Tier-2 DSA domain-parameter-validity regression vectors -- NOT published FIPS 186-4 example parameters. The validity rules checked by bigint$verify_dsa_params (q prime, p prime, q | (p-1), g^q mod p == 1) are those defined in FIPS 186-4 Appendix A, but the parameter trios are small textbook trios (p=23, q=11, g=4 and p=47, q=23, g=4) plus a HeavyThing-generated L=3072/N=256 trio (bigint$dsa_params) that self-verifies, not standards-body examples. Output is the verify_status boolean: 01=valid, 00=invalid. Negative trios (composite q, non-order-q generator, composite p) must return 00. Values captured from the HeavyThing reference build. See the Tier-2 Regression Vectors section of tests/README.md.",
+  "vectors": [
+    {
+      "id": "small_p23_q11_g4",
+      "category": "happy_path",
+      "p_hex": "17",
+      "q_hex": "0b",
+      "g_hex": "04",
+      "expected_hex": "01"
+    },
+    {
+      "id": "p47_q23_g4",
+      "category": "happy_path",
+      "p_hex": "2f",
+      "q_hex": "17",
+      "g_hex": "04",
+      "expected_hex": "01"
+    },
+    {
+      "id": "fips_l3072_n256_generated",
+      "category": "happy_path",
+      "p_hex": "ea2fa127a20fa1279eab8280a50037318f08764653aabd6ee333dbc8de9384d2a22c832e42f6b045deb8b77212dd7232a779363b8100139675ed73add952f8ec96ddec5e52862a1813a6da626e5e2caed561eec0e50b128e98b1888fd19ce435d28fd47f8a4dab5d81a46080d3ea7dfd1b151184d3ea5ff83cc3eab08eccce91e3919b75c4114b7cb51ba61c09de431b2ebd5a2dbc9f17fd1f2dcd4d2e3982f771df6e1982ffb7bcfd26466713083b0a423841770e7c58e9a3d1111d539f8c66d8d612c33dbb75faa2fdbcb0742f800633e9dd9511246bed0648c6060d7757e6e1fdd9cb46af9b4430568762fcda8f299071575baea1d19259b2fb64a2f8cd17a1a60986757fe3dc0fbd564b9a1d0c2c5cc679a27d21dc60ab095d248684142ecc2349dd98dd01ad91f8caee873d84ef8c5ecd4add942ef3e08663d74dd34c116165485efed729eff7781de0c61d59024bf6013d27c265b3597f75d45675c0645e76698e74316258fbf23fc755a2b50b86083b486470bd0eecddef528beb77d1",
+      "q_hex": "eb9fe770bc7a0dd6f8ef766760eef373d06c0f73eb0afab6ae69ae15342a6071",
+      "g_hex": "560c5b55569cc14ec3122868e5a08f0251bb20bb81606302aef96b6d12769300f73a0526ea525464347c88de90a6e3cbfb453e8cd658dfe4da9b16b8ebf0a1e46da431cb7f7efd658daa598a49618a2b9d6bab2fdfae1a8b06919a83532f6bad9d9aa62524843d235234d46bfe568e8b67713cc3096a8c5035d9103e5633d96f05396c1baaa177c8cd539409fb227a41312a0a01b5d57dac37120cbab24113e331f38f590a3640bb98a1e3ef1d1f404e9dd3b98e77370b258063d5732721c6b84d92c7d8174f68af21fdcf3580e1b1ac6757c46acb4aa8482349347fefedee37a35e0c2e6939588ff19e6205072bb154a3ae29a000fefca65ecf1d8c7af0b9aeb7a1b4b5e0571e5693330d433caa3a960785d92760fa6bbc0d3be64250f9e245f2ac5bd9814c915a48c00cb2fb942a87170a1ff64f21f3808a568e662a82f0e2e195c302a9014480e6fad113983a76e3289df43a34d1955a1d7fbd7677524dbf40f2429a66f963722b8ff6933af91fbe2f1415f88a8d0acf0a8ad3ad5274ddf6",
+      "expected_hex": "01"
+    },
+    {
+      "id": "edge_min_q2",
+      "category": "edge_case_single_byte",
+      "p_hex": "17",
+      "q_hex": "02",
+      "g_hex": "16",
+      "expected_hex": "01"
+    },
+    {
+      "id": "negative_composite_q",
+      "category": "negative_composite_q",
+      "p_hex": "17",
+      "q_hex": "0a",
+      "g_hex": "04",
+      "expected_hex": "00"
+    },
+    {
+      "id": "negative_bad_generator",
+      "category": "negative_bad_generator",
+      "p_hex": "17",
+      "q_hex": "0b",
+      "g_hex": "05",
+      "expected_hex": "00"
+    },
+    {
+      "id": "negative_composite_p",
+      "category": "negative_composite_p",
+      "p_hex": "21",
+      "q_hex": "02",
+      "g_hex": "14",
+      "expected_hex": "00"
+    }
+  ]
+}

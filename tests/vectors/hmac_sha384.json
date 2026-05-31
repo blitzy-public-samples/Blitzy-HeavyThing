@@ -1,0 +1,124 @@
+{
+  "primitive": "hmac_sha384",
+  "source": "RFC 4231 inputs; HeavyThing-specific output: B=64 + outer hash uses SHA-512 IV (sha384$final delegates to sha512$final). Captured from HeavyThing reference build; reproducible as SHA512(okey64||SHA384(ikey64||m))[:48]. State/PRF vectors exercise hmac$reset / hmac$replace_key / hmac$phash / hmac$phash_xor: state_reset reproduces the TC1 MAC; state_replace_key yields HMAC(K2, data); prf_phash / prf_phash_xor are TLS 1.2 P_hash(secret, seed) per RFC 5246 \u00a75 (phash_xor pre-filled 0xff so expected = NOT(phash)). All captured from the HeavyThing reference build.",
+  "vectors": [
+    {
+      "id": "rfc4231_tc1",
+      "category": "happy_path",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "data_hex": "4869205468657265",
+      "expected_hex": "e52cb154de2fee03496253c6cc459ec68a031d03190d0b5b3363c0092a9c44a493af01713d1a9afe06ec01aa845c5805"
+    },
+    {
+      "id": "rfc4231_tc2",
+      "category": "happy_path",
+      "key_hex": "4a656665",
+      "data_hex": "7768617420646f2079612077616e7420666f72206e6f7468696e673f",
+      "expected_hex": "ae2d5ca4e9af5c7ae78ad882b13691e66bc23a0580149f9074ce0b8c93fc81acf7559bc52ef10ca711a424009f53046d"
+    },
+    {
+      "id": "rfc4231_tc3",
+      "category": "happy_path",
+      "key_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "data_hex": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "expected_hex": "c9b47406f6bdbaf023a3c378ac8901a70f50e4d1aa2b77d493bf7acf8f630b49dc5fb1d319af820c57941a828ff30725"
+    },
+    {
+      "id": "rfc4231_tc4",
+      "category": "happy_path",
+      "key_hex": "0102030405060708090a0b0c0d0e0f10111213141516171819",
+      "data_hex": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "expected_hex": "dcc185238bf75d962c648fc4369648016c5b530739954086e7ab4a06c38eb9a43a48d3ac094d3b5501b3530f2952d814"
+    },
+    {
+      "id": "rfc4231_tc6_longkey",
+      "category": "happy_path",
+      "key_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "data_hex": "54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b6579202d2048617368204b6579204669727374",
+      "expected_hex": "776c4f994a1e6c76dee6beb4cc97c33e4cc29737edfcbb1d1d569a2071b9fe796e5e2b7da284e7d03a5ee95879948002"
+    },
+    {
+      "id": "rfc4231_tc7_longkey_longdata",
+      "category": "happy_path",
+      "key_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "data_hex": "5468697320697320612074657374207573696e672061206c6172676572207468616e20626c6f636b2d73697a65206b657920616e642061206c6172676572207468616e20626c6f636b2d73697a6520646174612e20546865206b6579206e6565647320746f20626520686173686564206265666f7265206265696e6720757365642062792074686520484d414320616c676f726974686d2e",
+      "expected_hex": "718f2e634c99aa07c2fad7f1df9440a6e277ae00086501c3edc449915b5cbb39d43695e010fb6675127ba025119d34db"
+    },
+    {
+      "id": "edge_empty_data",
+      "category": "edge_case_empty",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "data_hex": "",
+      "expected_hex": "6214b45565f414acf798fa464fe01f1011ae3fb50c6e740aca836234fb55bb3dfea151bfd2e6d7318f1a7099ef91295f"
+    },
+    {
+      "id": "edge_empty_key",
+      "category": "edge_case_empty",
+      "key_hex": "",
+      "data_hex": "616263",
+      "expected_hex": "f384c14f6397f80ee83ea32040c288154d626a7de57636b980984ebab081f7f66ed295aefc349263e98e3178bf88d874"
+    },
+    {
+      "id": "edge_key_blocksize_64",
+      "category": "edge_case_block_boundary",
+      "key_hex": "42424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242",
+      "data_hex": "626c6f636b2073697a65206b6579",
+      "expected_hex": "8c3bbe648dae97627b3100fefba181e2fb00db9eddf82533181981f5dc5e1e06d5e908fbd4b38307b9ce1a29925f8c4c"
+    },
+    {
+      "id": "edge_key_gt_blocksize",
+      "category": "edge_case_block_boundary",
+      "key_hex": "55555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555",
+      "data_hex": "6b6579206c6f6e676572207468616e20626c6f636b",
+      "expected_hex": "375b5ec49a1b62343d554f07a109bb1853fbacbe30f96597a1e50ef316cf58ce3d353080f48460bc8a1286877deb4ce5"
+    },
+    {
+      "id": "negative_tampered_mac",
+      "category": "negative_tampered_mac",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "data_hex": "4869205468657265",
+      "expected_hex": "e42cb154de2fee03496253c6cc459ec68a031d03190d0b5b3363c0092a9c44a493af01713d1a9afe06ec01aa845c5805",
+      "expect_mismatch": true
+    },
+    {
+      "id": "negative_wrong_key",
+      "category": "negative_wrong_key",
+      "key_hex": "f40b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "data_hex": "4869205468657265",
+      "expected_hex": "e52cb154de2fee03496253c6cc459ec68a031d03190d0b5b3363c0092a9c44a493af01713d1a9afe06ec01aa845c5805",
+      "expect_mismatch": true
+    },
+    {
+      "id": "state_reset_tc1",
+      "category": "state_reset",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "data_hex": "4869205468657265",
+      "expected_hex": "e52cb154de2fee03496253c6cc459ec68a031d03190d0b5b3363c0092a9c44a493af01713d1a9afe06ec01aa845c5805"
+    },
+    {
+      "id": "state_replace_key",
+      "category": "state_replace_key",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "key2_hex": "4a656665",
+      "data_hex": "4869205468657265",
+      "expected_hex": "a594dc273b6896677cb70df0e27f92298cd5d6a450f4286c02d46ed20d91270f1d647996dfe3a35b06f487d16e40c8ee"
+    },
+    {
+      "id": "prf_phash",
+      "category": "prf_phash",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "seed_hex": "616263",
+      "out_len": 48,
+      "expected_hex": "ddd401d08645a4363401f23ff0a9dc563d71394d1375eb4f84ff0d090557c75b7468afca24a8a1cdd107556dde09ba35"
+    },
+    {
+      "id": "prf_phash_xor",
+      "category": "prf_phash_xor",
+      "key_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "seed_hex": "616263",
+      "out_len": 48,
+      "xor_in_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected_hex": "222bfe2f79ba5bc9cbfe0dc00f5623a9c28ec6b2ec8a14b07b00f2f6faa838a48b975035db575e322ef8aa9221f645ca"
+    }
+  ]
+}

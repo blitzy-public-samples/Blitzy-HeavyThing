@@ -1,0 +1,86 @@
+{
+  "primitive": "scrypt",
+  "source": "Tier-2 HeavyThing regression vectors -- NOT RFC 7914 standards-body KATs. The password and salt inputs are drawn from RFC 7914 \u00a712, but the expected_hex outputs are HeavyThing-actual self-consistency values captured from the deterministic reference build, not the RFC 7914 KAT outputs. HeavyThing bakes the scrypt parameters and PRF at compile time (scrypt_N=1024, scrypt_r=1, scrypt_p=1, scrypt_sha512=1 => HMAC-SHA512) and ignores the runtime N/r/p arguments, whereas RFC 7914 requires runtime-varying N/r/p with an HMAC-SHA256 PRF, so the two produce different bytes. Reproducing the RFC outputs would require modifying read-only HeavyThing source (Rule R2 forbids this) or a per-tuple multi-build matrix outside the single-build model; this primitive is therefore scoped as a deterministic HeavyThing regression anchor (Tier-2). The N/r/p fields are informational only. See tests/harness/kat_scrypt.c and the Tier-2 Regression Vectors section of tests/README.md.",
+  "vectors": [
+    {
+      "id": "rfc7914_empty",
+      "category": "edge_case_empty",
+      "password": "",
+      "salt_hex": "",
+      "N": 1024,
+      "r": 1,
+      "p": 1,
+      "dk_len": 64,
+      "expected_hex": "c74732cad9d826eb0e20124b0595f6a3671bae3553443929b5375e1402974dbf9e2a0292a2b0f4d1e689bf17c7af756ce23094c21a0d7517a98b2f4a17f00043"
+    },
+    {
+      "id": "rfc7914_password_nacl",
+      "category": "happy_path",
+      "password": "password",
+      "salt_hex": "4e61436c",
+      "N": 1024,
+      "r": 1,
+      "p": 1,
+      "dk_len": 64,
+      "expected_hex": "42d55801423ac0f7d3216b52ab92fe1cadf88f025e40f25ae891f26c2f0ab83fbee8d791336cf4fb0814a53e372c7ebed55effe28c9149e3477c36dae4fc7100"
+    },
+    {
+      "id": "rfc7914_pleaseletmein",
+      "category": "happy_path",
+      "password": "pleaseletmein",
+      "salt_hex": "536f6469756d43686c6f72696465",
+      "N": 1024,
+      "r": 1,
+      "p": 1,
+      "dk_len": 64,
+      "expected_hex": "06e830771c875aa92575a37dca8f0b9a8ac2f7481b578297b27454868fc6ea01a1f3e17fe0f39a436e19e2f9294427c4e73603157571f285fa4917a52b88b092"
+    },
+    {
+      "id": "single_byte_password",
+      "category": "edge_case_single_byte",
+      "password": "a",
+      "salt_hex": "73616c74",
+      "N": 1024,
+      "r": 1,
+      "p": 1,
+      "dk_len": 32,
+      "expected_hex": "8eae30081855df77fd4d1b886371ee424eddf6be11d2c7a927dcaaab0171e2f8"
+    },
+    {
+      "id": "dklen_16",
+      "category": "happy_path",
+      "password": "pleaseletmein",
+      "salt_hex": "536f6469756d43686c6f72696465",
+      "N": 1024,
+      "r": 1,
+      "p": 1,
+      "dk_len": 16,
+      "expected_hex": "06e830771c875aa92575a37dca8f0b9a"
+    },
+    {
+      "id": "negative_different_salt",
+      "category": "negative_wrong_key",
+      "password": "password",
+      "salt_hex": "4f7468657253616c74",
+      "N": 1024,
+      "r": 1,
+      "p": 1,
+      "dk_len": 64,
+      "expected_hex": "42d55801423ac0f7d3216b52ab92fe1cadf88f025e40f25ae891f26c2f0ab83fbee8d791336cf4fb0814a53e372c7ebed55effe28c9149e3477c36dae4fc7100",
+      "expect_mismatch": true
+    },
+    {
+      "id": "rfc7914_largeN_1048576_slow",
+      "category": "happy_path",
+      "password": "pleaseletmein",
+      "salt_hex": "536f6469756d43686c6f72696465",
+      "N": 1048576,
+      "r": 8,
+      "p": 1,
+      "dk_len": 64,
+      "slow": true,
+      "min_ram_gb": 1,
+      "expected_hex": "06e830771c875aa92575a37dca8f0b9a8ac2f7481b578297b27454868fc6ea01a1f3e17fe0f39a436e19e2f9294427c4e73603157571f285fa4917a52b88b092"
+    }
+  ]
+}

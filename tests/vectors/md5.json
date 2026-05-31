@@ -1,0 +1,114 @@
+{
+  "primitive": "md5",
+  "source": "RFC 1321 \u00a7A.5 (digest/chained-update vectors). MGF1 mask-generation vectors follow RFC 2437 \u00a710.2.1 (MGF1 with MD5): mask = MGF1(seed, mask_len). Expected mask bytes captured from the HeavyThing reference build (md5$mgf1); the multi-block case requests mask_len > one digest to exercise the counter-iteration path.",
+  "vectors": [
+    {
+      "id": "rfc1321_abc",
+      "category": "happy_path",
+      "input_hex": "616263",
+      "expected_hex": "900150983cd24fb0d6963f7d28e17f72"
+    },
+    {
+      "id": "stdin_abc",
+      "category": "edge_case_stdin",
+      "input_source": "stdin",
+      "stdin": "616263\n",
+      "expected_hex": "900150983cd24fb0d6963f7d28e17f72"
+    },
+    {
+      "id": "rfc1321_md",
+      "category": "happy_path",
+      "input_hex": "6d65737361676520646967657374",
+      "expected_hex": "f96b697d7cb7938d525a2f31aaf161d0"
+    },
+    {
+      "id": "rfc1321_alpha",
+      "category": "happy_path",
+      "input_hex": "6162636465666768696a6b6c6d6e6f707172737475767778797a",
+      "expected_hex": "c3fcd3d76192e4007dfb496cca67e13b"
+    },
+    {
+      "id": "rfc1321_alnum",
+      "category": "happy_path",
+      "input_hex": "4142434445464748494a4b4c4d4e4f505152535455565758595a6162636465666768696a6b6c6d6e6f707172737475767778797a30313233343536373839",
+      "expected_hex": "d174ab98d277d9f5a5611c2c9f419d9f"
+    },
+    {
+      "id": "rfc1321_8x80",
+      "category": "happy_path",
+      "input_hex": "3132333435363738393031323334353637383930313233343536373839303132333435363738393031323334353637383930313233343536373839303132333435363738393031323334353637383930",
+      "expected_hex": "57edf4a22be3c955ac49da2e2107b67a"
+    },
+    {
+      "id": "empty",
+      "category": "edge_case_empty",
+      "input_hex": "",
+      "expected_hex": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    {
+      "id": "single_byte_61",
+      "category": "edge_case_single_byte",
+      "input_hex": "61",
+      "expected_hex": "0cc175b9c0f1b6a831c399e269772661"
+    },
+    {
+      "id": "block_boundary_64",
+      "category": "edge_case_block_boundary",
+      "input_hex": "61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "expected_hex": "014842d480b571495a4a0363793f7367"
+    },
+    {
+      "id": "block_boundary_63",
+      "category": "edge_case_block_boundary",
+      "input_hex": "616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "expected_hex": "b06521f39153d618550606be297466d5"
+    },
+    {
+      "id": "block_boundary_128",
+      "category": "edge_case_block_boundary",
+      "input_hex": "6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "expected_hex": "e510683b3f5ffe4093d021808bc6ff70"
+    },
+    {
+      "id": "max_length_1024",
+      "category": "edge_case_max_length",
+      "input_hex": "078a0d901396199c1fa225a82bae31b437ba3dc043c649cc4fd255d85bde61e467ea6df073f679fc7f0285088b0e9114971a9d20a326a92caf32b538bb3ec144c74acd50d356d95cdf62e568eb6ef174f77afd800386098c0f9215981b9e21a427aa2db033b639bc3fc245c84bce51d457da5de063e669ec6ff275f87bfe8104870a8d109316991c9f22a528ab2eb134b73abd40c346c94ccf52d558db5ee164e76aed70f376f97cff8205880b8e1194179a1da023a629ac2fb235b83bbe41c447ca4dd053d659dc5fe265e86bee71f477fa7d008306890c8f1295189b1ea124a72aad30b336b93cbf42c548cb4ed154d75add60e366e96cef72f578fb7e0184078a0d901396199c1fa225a82bae31b437ba3dc043c649cc4fd255d85bde61e467ea6df073f679fc7f0285088b0e9114971a9d20a326a92caf32b538bb3ec144c74acd50d356d95cdf62e568eb6ef174f77afd800386098c0f9215981b9e21a427aa2db033b639bc3fc245c84bce51d457da5de063e669ec6ff275f87bfe8104870a8d109316991c9f22a528ab2eb134b73abd40c346c94ccf52d558db5ee164e76aed70f376f97cff8205880b8e1194179a1da023a629ac2fb235b83bbe41c447ca4dd053d659dc5fe265e86bee71f477fa7d008306890c8f1295189b1ea124a72aad30b336b93cbf42c548cb4ed154d75add60e366e96cef72f578fb7e0184078a0d901396199c1fa225a82bae31b437ba3dc043c649cc4fd255d85bde61e467ea6df073f679fc7f0285088b0e9114971a9d20a326a92caf32b538bb3ec144c74acd50d356d95cdf62e568eb6ef174f77afd800386098c0f9215981b9e21a427aa2db033b639bc3fc245c84bce51d457da5de063e669ec6ff275f87bfe8104870a8d109316991c9f22a528ab2eb134b73abd40c346c94ccf52d558db5ee164e76aed70f376f97cff8205880b8e1194179a1da023a629ac2fb235b83bbe41c447ca4dd053d659dc5fe265e86bee71f477fa7d008306890c8f1295189b1ea124a72aad30b336b93cbf42c548cb4ed154d75add60e366e96cef72f578fb7e0184078a0d901396199c1fa225a82bae31b437ba3dc043c649cc4fd255d85bde61e467ea6df073f679fc7f0285088b0e9114971a9d20a326a92caf32b538bb3ec144c74acd50d356d95cdf62e568eb6ef174f77afd800386098c0f9215981b9e21a427aa2db033b639bc3fc245c84bce51d457da5de063e669ec6ff275f87bfe8104870a8d109316991c9f22a528ab2eb134b73abd40c346c94ccf52d558db5ee164e76aed70f376f97cff8205880b8e1194179a1da023a629ac2fb235b83bbe41c447ca4dd053d659dc5fe265e86bee71f477fa7d008306890c8f1295189b1ea124a72aad30b336b93cbf42c548cb4ed154d75add60e366e96cef72f578fb7e0184",
+      "expected_hex": "15ee510138a80d0470331212a023ab66"
+    },
+    {
+      "id": "chained_update_split",
+      "category": "chained_update",
+      "input_hex": "54686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f67",
+      "split_at": 17,
+      "expected_hex": "9e107d9d372bb6826bd81d3542a419d6"
+    },
+    {
+      "id": "chained_update_block",
+      "category": "chained_update",
+      "input_hex": "616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "split_at": 64,
+      "expected_hex": "ab75504250558b788f99d1ebd219abf2"
+    },
+    {
+      "id": "mgf1_seed_abc_8",
+      "category": "mgf1",
+      "input_hex": "616263",
+      "mask_len": 8,
+      "expected_hex": "fb03fb6058f6a5f0"
+    },
+    {
+      "id": "mgf1_seed_abc_digest",
+      "category": "mgf1",
+      "input_hex": "616263",
+      "mask_len": 16,
+      "expected_hex": "fb03fb6058f6a5f05af4b27ef297a8c8"
+    },
+    {
+      "id": "mgf1_seed_abc_multiblock",
+      "category": "mgf1",
+      "input_hex": "616263",
+      "mask_len": 39,
+      "expected_hex": "fb03fb6058f6a5f05af4b27ef297a8c84b764998f709de6d1a5a95c36b2e895a04bd28429eeb5f"
+    }
+  ]
+}

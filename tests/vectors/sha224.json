@@ -1,0 +1,89 @@
+{
+  "primitive": "sha224",
+  "source": "NIST CAVP / FIPS 180-4 (digest/chained-update vectors). MGF1 mask-generation vectors follow RFC 2437 \u00a710.2.1 (MGF1 with SHA-224): mask = MGF1(seed, mask_len). Expected mask bytes captured from the HeavyThing reference build (sha224$mgf1); the multi-block case requests mask_len > one digest to exercise the counter-iteration path.",
+  "vectors": [
+    {
+      "id": "fips_abc",
+      "category": "happy_path",
+      "input_hex": "616263",
+      "expected_hex": "23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7"
+    },
+    {
+      "id": "fips_two_block",
+      "category": "happy_path",
+      "input_hex": "6162636462636465636465666465666765666768666768696768696a68696a6b696a6b6c6a6b6c6d6b6c6d6e6c6d6e6f6d6e6f706e6f7071",
+      "expected_hex": "75388b16512776cc5dba5da1fd890150b0c6455cb4f58b1952522525"
+    },
+    {
+      "id": "empty",
+      "category": "edge_case_empty",
+      "input_hex": "",
+      "expected_hex": "d14a028c2a3a2bc9476102bb288234c415a2b01f828ea62ac5b3e42f"
+    },
+    {
+      "id": "single_byte_61",
+      "category": "edge_case_single_byte",
+      "input_hex": "61",
+      "expected_hex": "abd37534c7d9a2efb9465de931cd7055ffdb8879563ae98078d6d6d5"
+    },
+    {
+      "id": "block_boundary_64",
+      "category": "edge_case_block_boundary",
+      "input_hex": "61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "expected_hex": "a88cd5cde6d6fe9136a4e58b49167461ea95d388ca2bdb7afdc3cbf4"
+    },
+    {
+      "id": "block_boundary_63",
+      "category": "edge_case_block_boundary",
+      "input_hex": "616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "expected_hex": "1d4e051f4d6fed2a63fd2421e65834cec00d64456553de3496ae8b1d"
+    },
+    {
+      "id": "block_boundary_128",
+      "category": "edge_case_block_boundary",
+      "input_hex": "6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "expected_hex": "39873a2441c56608137850f4c54dde157710b9a2b83c8bdc756dd643"
+    },
+    {
+      "id": "max_length_1024",
+      "category": "edge_case_max_length",
+      "input_hex": "078a0d901396199c1fa225a82bae31b437ba3dc043c649cc4fd255d85bde61e467ea6df073f679fc7f0285088b0e9114971a9d20a326a92caf32b538bb3ec144c74acd50d356d95cdf62e568eb6ef174f77afd800386098c0f9215981b9e21a427aa2db033b639bc3fc245c84bce51d457da5de063e669ec6ff275f87bfe8104870a8d109316991c9f22a528ab2eb134b73abd40c346c94ccf52d558db5ee164e76aed70f376f97cff8205880b8e1194179a1da023a629ac2fb235b83bbe41c447ca4dd053d659dc5fe265e86bee71f477fa7d008306890c8f1295189b1ea124a72aad30b336b93cbf42c548cb4ed154d75add60e366e96cef72f578fb7e0184078a0d901396199c1fa225a82bae31b437ba3dc043c649cc4fd255d85bde61e467ea6df073f679fc7f0285088b0e9114971a9d20a326a92caf32b538bb3ec144c74acd50d356d95cdf62e568eb6ef174f77afd800386098c0f9215981b9e21a427aa2db033b639bc3fc245c84bce51d457da5de063e669ec6ff275f87bfe8104870a8d109316991c9f22a528ab2eb134b73abd40c346c94ccf52d558db5ee164e76aed70f376f97cff8205880b8e1194179a1da023a629ac2fb235b83bbe41c447ca4dd053d659dc5fe265e86bee71f477fa7d008306890c8f1295189b1ea124a72aad30b336b93cbf42c548cb4ed154d75add60e366e96cef72f578fb7e0184078a0d901396199c1fa225a82bae31b437ba3dc043c649cc4fd255d85bde61e467ea6df073f679fc7f0285088b0e9114971a9d20a326a92caf32b538bb3ec144c74acd50d356d95cdf62e568eb6ef174f77afd800386098c0f9215981b9e21a427aa2db033b639bc3fc245c84bce51d457da5de063e669ec6ff275f87bfe8104870a8d109316991c9f22a528ab2eb134b73abd40c346c94ccf52d558db5ee164e76aed70f376f97cff8205880b8e1194179a1da023a629ac2fb235b83bbe41c447ca4dd053d659dc5fe265e86bee71f477fa7d008306890c8f1295189b1ea124a72aad30b336b93cbf42c548cb4ed154d75add60e366e96cef72f578fb7e0184078a0d901396199c1fa225a82bae31b437ba3dc043c649cc4fd255d85bde61e467ea6df073f679fc7f0285088b0e9114971a9d20a326a92caf32b538bb3ec144c74acd50d356d95cdf62e568eb6ef174f77afd800386098c0f9215981b9e21a427aa2db033b639bc3fc245c84bce51d457da5de063e669ec6ff275f87bfe8104870a8d109316991c9f22a528ab2eb134b73abd40c346c94ccf52d558db5ee164e76aed70f376f97cff8205880b8e1194179a1da023a629ac2fb235b83bbe41c447ca4dd053d659dc5fe265e86bee71f477fa7d008306890c8f1295189b1ea124a72aad30b336b93cbf42c548cb4ed154d75add60e366e96cef72f578fb7e0184",
+      "expected_hex": "631722ab207d4409d73980e8156a989a17aebe0e309d2e4c9a77342b"
+    },
+    {
+      "id": "chained_update_split",
+      "category": "chained_update",
+      "input_hex": "54686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f67",
+      "split_at": 17,
+      "expected_hex": "730e109bd7a8a32b1cb9d9a09aa2325d2430587ddbc0c38bad911525"
+    },
+    {
+      "id": "chained_update_block",
+      "category": "chained_update",
+      "input_hex": "616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "split_at": 64,
+      "expected_hex": "19d7a38a7c98fee343ba850f6e82b3d3bcd7f8b00690041900f8db3a"
+    },
+    {
+      "id": "mgf1_seed_abc_8",
+      "category": "mgf1",
+      "input_hex": "616263",
+      "mask_len": 8,
+      "expected_hex": "c45f5efa2241317a"
+    },
+    {
+      "id": "mgf1_seed_abc_digest",
+      "category": "mgf1",
+      "input_hex": "616263",
+      "mask_len": 28,
+      "expected_hex": "c45f5efa2241317acd05dc3037785809ee5d828a44f8ed2afc75a693"
+    },
+    {
+      "id": "mgf1_seed_abc_multiblock",
+      "category": "mgf1",
+      "input_hex": "616263",
+      "mask_len": 63,
+      "expected_hex": "c45f5efa2241317acd05dc3037785809ee5d828a44f8ed2afc75a69346c386ebccef82ba0bb0b095aaa5548b03cdff6951871c6fb505af68f885d324a47d21"
+    }
+  ]
+}

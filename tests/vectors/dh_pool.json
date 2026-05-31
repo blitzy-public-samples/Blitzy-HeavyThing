@@ -1,0 +1,292 @@
+{
+  "primitive": "dh_pool",
+  "source": "RFC 3526 \u00a73 / RFC 7919 group-pool integrity test, adapted to HeavyThing. DEVIATION: HeavyThing's dh_pool_2k.inc ships 20 *custom* 2 Ton Digital 2048-bit safe primes (Sophie-Germain verified), NOT the RFC 3526 MODP moduli, and the per-entry generator VARIES (g[0]=3, g[1]=2, ...), unlike RFC 3526's fixed g=2. expected_hex values are the HeavyThing-actual big-endian moduli/generators read from dh$pool_p[i] / dh$pool_g[i] and the pool count (dh$pool_count=20=0x14). This is a static-data integrity KAT: it certifies the shipped pool is intact.",
+  "vectors": [
+    {
+      "id": "pool_count",
+      "category": "happy_path",
+      "index": "count",
+      "expected_hex": "14"
+    },
+    {
+      "id": "group_2048_0_p",
+      "category": "happy_path",
+      "index": 0,
+      "field": "p",
+      "expected_hex": "934907c43831c37769050881922aafd335bf5a2cea663da91ef6ed9721e64419ac5bd488978f38715e49e4f7e3351cf202660b7aa536ceae290e06525cebc2ea3cd694db8e018a8d52d106531aff15868a2451976f08f7b0d6b940e648e21c92724f3828e6dcaff51bb3067d413e91ae74d3e61cd55fbaf9ddc3ffea7b57da5b74127a6cd529f2c074f101d1b51edc5b7dcb71158cc7b572dcb8c775bf76b700ebbcb074b3a9a72daf3301215276630ecea722e70103032b9b8603b32f16488c22344c34a7262e56c0384e0cb4e135e32a7c413263be4e6cab5f2f1a5319af29a0e3878a06267b6ca9db4bae03eb9c037f2b007b1ffa06738504f88c3996a07b"
+    },
+    {
+      "id": "group_2048_1_p",
+      "category": "happy_path",
+      "index": 1,
+      "field": "p",
+      "expected_hex": "e251e0be321c8341e2ee205ebbcf94bac24a0e6565f77ffd1c2615e828c085c34b49d97c9757bff121652ac6f8146cf0eee27b8af026b832c0347811fb47189174234b6cfaebfca5a147758cc6371d4db07a77c265a5a36fe825875f7d0bd685a9f1e525c176a7154fd6a44c8190f533ecd0cc5881ecd7cc33c8a09284f355eb28ae0b8bf7dc04ceefe75698e76600d0e69cc708251fa49c0b98faa53e9d7df9a7b1a8954bd3b7aea53c7c7eef650e4bb946ca2d4e6f5d6e95b453adf2adc316b0a0e0607c96a7953552202dcc0fdda2dd6285debb340d01e651299169aeb27c1bab2586376eee5e415556ea5cc6b3a6c82bf5ff4835decfd314c58c2122a62f"
+    },
+    {
+      "id": "group_2048_2_p",
+      "category": "happy_path",
+      "index": 2,
+      "field": "p",
+      "expected_hex": "e83889e2102b3e45e948e2ba1bc526fedcc9f4ec496faf1dd8d2d32fbdac84c488f4e4f35d1763f2b7be50fc051dd3a451b8ff57a9e433146bb6a3bb625775157a3c6df41e3637c71a2e909578570fd08c35f532a53cfe3458619fb542d11b321641d68debcfd8809073c69facd455ae1251a4023591715aa376fd1f66758b34b50150e157eef149afc2025e3800146979dbb710bf743c9c90f2aa3eb6a38291224a445cdaa39e9516c219aa8b572e0a5cbf42d90f9c1d462d1bad56ac838737d513bfe72a887f1170aa13bc711e9a4c65b251d7668d9d1a092494dc9d36a1972cdd6e0f764165de26720f375f8a17350ecc1035d62f74dab8408375c4a1aa2b"
+    },
+    {
+      "id": "group_2048_3_p",
+      "category": "happy_path",
+      "index": 3,
+      "field": "p",
+      "expected_hex": "e25bdb4c9b89f229a25d2e03b09a9243fc6eea81734b6d2e60dc25c3ebffe2c4b91035adbdb9d3916d839cf7efdc825b98cf89e3f33effb682e41e9beec56910be15caaf8edc2b039f11f34f625582a8f1c15a292160bcb9dae632da59422d54b021213fbfb6aa256e0980021c57f3d581714f1d6abc8e3be95f7ee678e1aedfc79ad4415aa86eb3ce3362aeb41a66b74654d0c9484bc878bac6ab3e65828c1c79963159787f9bc66ee517e95ea4349bb711cf5978c13d53d034e0754373058218bf572bc81fe15e34137c54f5f166c6bccecf8f897beb444220038a22dd7d215ecf33d2442b2061ae95f832097fc5b5d9530faaee8a038b0453e0b8e8f4c48b"
+    },
+    {
+      "id": "group_2048_4_p",
+      "category": "happy_path",
+      "index": 4,
+      "field": "p",
+      "expected_hex": "e24c259c3ff3273017440017e729b3623c0ef1c566edd3661bc1947f1a3e5f12a7efb7e96d57a6dd4224fb201c597bbc489a2304568eecc881c76558f20cdb1eed32f574286570f4c959372bd165e6b6bc3a632c4baf66c33533d47416ea555acd6e57bc451aac1c6a4743504faefdacd0136bd76f91e97b1ee74ce9465e6da4be8f9b5fcf7eff81109e43941de817b16acff41e37e4a1627f4942673514d74d193b5824e5862420f419e8a034cb4bca828951ffc671f0799723860457d049182d33baac3063ce0f86f243bee7d8fb7e839f7e6dd2a8265d804342b072ba04869524e3a0a3aee73444477dd6d3d98146f1adb6180cd82f137b6367492aa8545f"
+    },
+    {
+      "id": "group_2048_5_p",
+      "category": "happy_path",
+      "index": 5,
+      "field": "p",
+      "expected_hex": "d4ed0b19c45c59cde6dd14d40cbd9f62842cd24fdafad87a220aa6f5351215a25b45920aad046a57bcdef02b6ae4a8965efc7de96c8aac0d3eb2e7067280e0d6e09ca9752a74f70a8ba7de2f95dbc144d3ebfc8af72f67ac7ae01e4edc15dbb814d354dd81f96a761bb8d650f5a82a16f2480eb05bf511f7adc7c952b2a8ba9b7c71419704194cce0b12dccf3ee2a24efb32b162fa05412254fdb6d362b68e3bd35c9a5ccc0f79ffa1025e4c8aea165167d1a6dbe20ebd1cbd318fd3124c82cc70d4b0f58df153496e94e557e15136317204d7e700242848458b7b7135ba13e80ea8f97a96611ff5f4e330880e6754799f5c5f26fdb46c1588a4d930d9bb4d47"
+    },
+    {
+      "id": "group_2048_6_p",
+      "category": "happy_path",
+      "index": 6,
+      "field": "p",
+      "expected_hex": "d5a414554783d7bd0ba871d50ab14ed2287c9b692ddb9dcd0890c9ec3261eab75137c138f366cf2baf2ae56e7c13d5381532095b07405a95df79fe0a8e8f0c6f768109bcd072ae709d01249a9e59245a5c4c1ba73ea6b0def0d670957d0a8831415803963db8a056ed7ad328af6baa9e79b046893b1840a0cbac4f03d767f758075e1dfe682585538ba31a9495faf6f7fe02d3899addc62b4337a34661c7b80515797a0f6e79143607c37206768d58d9d3ac78f85fcde6ce92ea64edd61fff8acd701a74541fc59c8e45e7fdc553b303662af7eb2f326b7482a11c9a1d3fca9e7623f731df847858c69ef4fb0926d024ee41c50c44676fb253eb53f97453713b"
+    },
+    {
+      "id": "group_2048_7_p",
+      "category": "happy_path",
+      "index": 7,
+      "field": "p",
+      "expected_hex": "fd90aaf3d5b3b698f4f094039d5280b3e2572a6ead95495ae8e6e9e7740822feb607ea42a5cdee81f1ddd7030de7400cd7572a247c7ff8a4919a2316cd89d4b95adbb98100ff1b13c7f482d1040ce814cce6fc544ee8ad61d6d5ffdda23518436acc6ae06a5f242c0396755f4f8b1c623033c9f0e7b25bd24d38b49b492619b5b9a994e2e590d04b31803443d54257bf17dc51f793f2746232a9552ea5d852ec36b02e80b123640a155fdcd5a8468affeddb9250892eede12c29869e215ef1b5320156d36515c371d473f08b2ba4f29763980fc42e9810327bb7207d1fae8752510c5ab9e5dbd199c5000adb4fb4adbb6b7004c6ef6b8de0923312865b097777"
+    },
+    {
+      "id": "group_2048_8_p",
+      "category": "happy_path",
+      "index": 8,
+      "field": "p",
+      "expected_hex": "d1fce0970ac9637297042d580b6f0197042fa1c24b417e3a755efc379497232fbc3ca80eae1bc54c1c7d103c092aa5d71149e33ebc70df719344a825b75162208628ec7328f67dfe9cc7413bcc95705798f8a5f86a9b525a242e350f4085622acf4ed03aa9f2c21cc538791044556b4955921d01c8d445a788a6f7fb45a20ffa2f0a4553216d9f68465c3793a9e33e5b6696d9cd2446a2397707537d2961122bcf6da4bb940e2f5d7b0c457d7ed2caf046249a4a01c5e80eec071c7065736d52861cd01899b39e7170f3a2a53874c2c980bb91ffaa16ce489ac578a87194ba42fea6f8d12d78ceb1ed7954f7942e7664035c847e7c17add27679909c71213a47"
+    },
+    {
+      "id": "group_2048_9_p",
+      "category": "happy_path",
+      "index": 9,
+      "field": "p",
+      "expected_hex": "f853855f001db759ef5f5573ca954441a54d2684906ca77ca24bd9f5294973c25d1a86496b4811b327a78f52493b581794a0d283bfb789dda07070187e96dee8459d9fa6e93bb3374a90ed9d60987eba64647715e61b875840fdab151d6f4e456a4f7250ff748558bffab5bd33c602ece0e4b9a9b23ccfde59b1f5d99386e87e51629045d1817ea585d7f0c64644939ff0720386d23dd1bc37beaccf861fe08768f267fb4edceed25269478c2969963c4748fcdaf6a680e6629f42a5b26e645b6df53c5b7e84dcb322bb049239faecb010c5ee1fc781082cfd8db2daeaeb2e383f25d672233f0404640bd41a9b59f3d8d6125e6022a8b583806b3ce528d1cccf"
+    },
+    {
+      "id": "group_2048_10_p",
+      "category": "happy_path",
+      "index": 10,
+      "field": "p",
+      "expected_hex": "d02f72fd9195665dacb229ceb39e431bc890cc21d2e947920bd9865d768574a536021ce3eac9240db27ef2cd6ba671443f729d9e654fa0c1076e72e3be3956cda988fabc04ac7f28ff0d2b9ed6270812728b1318bc5e19e22f459e1d52feb32e84868fa2d29131ed8f863ea350466d9a79ec5557df9a05e5b7da0a0fe04320d826ac3c12d2e24ca67a6f3b95db8c3536442f9c88f7a01ca91e47faf3b576cf7ae12848f87dfccf8e01c9ca9455f4b3cff871bf071a026eb652a237b5dbfbae43c321688504c45bb33af5c6c69ec573d06df251c14242aa40153de781806764549815aaea22ba0714c1b806ad99606024c48ec7f5e899bf8fff28f8e8bd0ad2d7"
+    },
+    {
+      "id": "group_2048_11_p",
+      "category": "happy_path",
+      "index": 11,
+      "field": "p",
+      "expected_hex": "c08de2dfa262896d925c77d9f35adb2c2c03685ef0c1c79d7aba65f6d0bcce913cfd9f901cb57067a6bb0116fdcab51feca5b528c405f2b9fc256d619399a419ca19bc6e9558d2d19707b168bfb4e20340828f5ab988b2cdf31a93dd8e411a9fb8e5f62b9410a0e6cc453c2de0026f044c013d20e6c4e5244838a5264d29c85dc99408df031a868888e5db3152b6b0373322a865b88bba4f1a6a16a07e4b9d18fa0072cacfb16f49c60058c16bf42582b74b0d0ce4776052e7d4362b2b8f579f09004c3b826cc3685492970c163d77484f881b723ae04418f136e00042285233a8df46e5d34b815dd9888004b177be1c1e26a1f9468e885386ef76d3adda8e5f"
+    },
+    {
+      "id": "group_2048_12_p",
+      "category": "happy_path",
+      "index": 12,
+      "field": "p",
+      "expected_hex": "a8535cd937206c3eae665019c56793c5b8174852da23a52c6c35fef4b9fc669a07067d43c8e7c2e625206cb8e976e7cf2bb2b508945b19ed8945b00b1232a0e9ebaacb2dad90f24f96d1b328d7ed24fdc04dd713afb2cfe9c8ed5c5d6d2fbf00708fccc4669ac1508d6141b6e1df1e12826ef484216d27558eb0243d472cae33f176f1de763c46b48993982aa85aa047447c4d907f0c839e588aea4da2d734e8859c456b5b792b86cb723553626f275ea893e1fc463de667e24b3e5d3d94d2fe21d5d17dde00fac8df9ce97b49e3712d4b9f645989165b501d69e1bc19cad29cd4e31681b0948a0a11795c32f2dcccf4333a594b126756918b2835a75f1adc2b"
+    },
+    {
+      "id": "group_2048_13_p",
+      "category": "happy_path",
+      "index": 13,
+      "field": "p",
+      "expected_hex": "e1695a37a88b48a56a537fa53fd686d41d3914289b6fccfaffe1f301ecd5027c1ae5bd5acad85a1dbdb8fde2e4a74b2334c0e487c23cd320b63fc1e241f962298f865da3c577351df3faf27b0aaa627bf8b1cafcde5c74184fcaaa8b28b4fefa32a02118b66b4aeb72e03f73b9543c4c9984413db33ed7e8df8cf1856d0ee430659a67ac7786e9e45e72e0c2f2249af614e112ca72c5b3b196746e11919a12df18328dfc024010d54255ef11d8fe74cf53bbfecf27495a403cf53bf74a042964d3648359bdba803e368de64fe8573407bf631fe336593ede0628d7acfde15655f69002dbf3ebdbbecc5cdbc7f2e86ae1986eb96c2020093edceb5cd7040f5167"
+    },
+    {
+      "id": "group_2048_14_p",
+      "category": "happy_path",
+      "index": 14,
+      "field": "p",
+      "expected_hex": "aac7c8ac3cd1997b848e5dcbfa4b1617622cb2de768605f3b02ed3c043e4e7685cb64e914ad42cc2bef0c41d3ef57c42977490d406299836ed0efb7ad36fe330aafd628dad7e346d3e91456e342307b915ec99a87248382e2d613974ef6d8e5f5079fcd7d1d57d4de95b21a33890dc0c94174006bc398a8dbdb107699a763e11c72048746402c4d25a21f79ac07748ee53937ce681b5d0567efa8f48320a3f6093dfe6b5d823d8b4547d355550a7740f8916ad269a5e6dc3589d5a420aa16be8bbb7f7653b94c54d573f5d20cd6c626242effa9f97edfaeb9eb54fb857dcb9c40946a14f6aafd522b556758f4a06ce40e781526567e12ad7c554a0315ce00b5f"
+    },
+    {
+      "id": "group_2048_15_p",
+      "category": "happy_path",
+      "index": 15,
+      "field": "p",
+      "expected_hex": "d89c6d22d75affcf24c7dd736ef8e1306b3270611c9b2e023817dcd78313e5295f7d8a14a08dba797132a6956d5a73633b71d5f43c15ed599b0a391004ac4f200d8cab655f660245acb222bd575c468dc2167f38dab8f20df712f804de8bb220fed5a5ca387f3b47d900d71b55fb1882f056cc1db8c0f9c80d09a10824b6e893299a0083a731671c76cb30de75c1a8f999c7d129ad5297b2952abb5ad2f551996dc254fae445998ffebbc2d9039fd3bfe8c38abb290b443be73ed389f03a86799608900dd33148dab5a86dc70424adb09044996dda8c60bc79218f76e478d8f7305ac0c7ae13be87c2a287bf2445b6576fc014ee56f21d862c913434f0ac7dff"
+    },
+    {
+      "id": "group_2048_16_p",
+      "category": "happy_path",
+      "index": 16,
+      "field": "p",
+      "expected_hex": "825142328f8593480faa02e411ccbb86e3fd4d6a098c396218e562b090c08af4b2cfd1cc60e8e391d92eca1176f6de5ffd4ccac42ce1ba9be9a32c8fba93f18d2bd825a7cb77a76fbfe02187d735d116146b98a0cf155704a6240b5eef88ed863ccdf30246ad41ab5130c79f6a51807071094a9ace40629b4e9ed1c07637f928196de8aed3cd56510d32cfbbbfc466a5cb2a1a2edaec774254ae437efbb1680c0d465c760894f6c10ddd23a1f742b090478e1be9a85a005d6a59d5caffdab9fc537cee47bb0849fd45b97544c31686207ad105bd8e6bb6b6b55be205c43407e773e9b3e9dcf5d2dc8d1aa40293c21f3d1b56d8b370ea81c01f3eb4d20d7e142f"
+    },
+    {
+      "id": "group_2048_17_p",
+      "category": "happy_path",
+      "index": 17,
+      "field": "p",
+      "expected_hex": "d293765121bde62a67f56c90b513685d5f5f715d2714daf4a682b668ca5fb74026533b1e9f50eee916e4970cd747c9a74a633e12b1ddc9fa40eb957b5b105c72b5ea1831e06e1af80490ba95001322e8b9b369b457c847bf934e1b185e6b93a24636a48c5915512a57b3dd5ea0bb308002d48171a608ab8860f869663d6f32ed9a2fef1946c764c1cdb6ea431dcd92248d80fe6f8ecc2f6c21ef186056afbe66f933c9bf4ccb07460f3c1fa41c184e7e8e29108e867454015b01765b9fb0b14c1209eb5dd682e6b2ac4109a5ef9aa0691f303d6b1bcf2e684c2798a47f369ebdcd5d887378714138a2423fb8176a4f60242399205c70da03edcb1639200f1f4b"
+    },
+    {
+      "id": "group_2048_18_p",
+      "category": "happy_path",
+      "index": 18,
+      "field": "p",
+      "expected_hex": "d4b8e763d648cd8ae36d985ea69df6594aea2da69b45093c014b3432b40a2290438ce6a925a63617aae7ae67680026e1017157a89468d3192b36e699a7095ffebaea35a5206d3c5c655ef9b2540fc77edc7a868f905a3dd765f2bf452f337e08dab5f900adbe9f2c02774f5c83a5b50a81a55eaa7a1ea07877ecf05b610dc0f8006234ac351c48aab464ac545838460ff6d017aa0c941047fecfd7eee66ba516f45c5c98ac66c8226ec6bf921ca50f4478514cd87c17b701f786b2987856af1d49da1779baf0711c34944fa28a4fec6d45657c3484023d06c556969c39c593de787d1331216918f08f3dcfbfcb8621a342063abcb61e271c2d9c26fc6540fbef"
+    },
+    {
+      "id": "group_2048_19_p",
+      "category": "happy_path",
+      "index": 19,
+      "field": "p",
+      "expected_hex": "abb3e0d241b5f6381d3a5f4fcca22828684783bb01315ed68b3fc01273accc2ce134555abb2e2cbee51b2d5afb5476a57101d6b12408ea747f6a346dda60e7a4e8b6d0e82706994feaebc604536807eb0919032cd3f2ad4bea4345bf5ebeed68c792c22824d6cba30d4db48d383ef53686122288097d285d9c09c0c56f8c1519232957f17bd78dc03f1d7e29e9d35390407e730252469b540bb93889d362fedbb0e15b76e5954d955df8a26a255282d4db14f3d45943ff531543574c3bd91b58591af2b00617a87c8401482741f2600cdd91ea6dfd2c5a4c9d9bbb412127212b640eb19a5740ee4c79f6a2b3297c649a3785fe11a58f56785043338836813b4f"
+    },
+    {
+      "id": "group_2048_0_g",
+      "category": "happy_path",
+      "index": 0,
+      "field": "g",
+      "expected_hex": "03"
+    },
+    {
+      "id": "group_2048_1_g",
+      "category": "happy_path",
+      "index": 1,
+      "field": "g",
+      "expected_hex": "02"
+    },
+    {
+      "id": "group_2048_2_g",
+      "category": "happy_path",
+      "index": 2,
+      "field": "g",
+      "expected_hex": "03"
+    },
+    {
+      "id": "group_2048_3_g",
+      "category": "happy_path",
+      "index": 3,
+      "field": "g",
+      "expected_hex": "03"
+    },
+    {
+      "id": "group_2048_4_g",
+      "category": "happy_path",
+      "index": 4,
+      "field": "g",
+      "expected_hex": "02"
+    },
+    {
+      "id": "group_2048_5_g",
+      "category": "happy_path",
+      "index": 5,
+      "field": "g",
+      "expected_hex": "02"
+    },
+    {
+      "id": "group_2048_6_g",
+      "category": "happy_path",
+      "index": 6,
+      "field": "g",
+      "expected_hex": "03"
+    },
+    {
+      "id": "group_2048_7_g",
+      "category": "happy_path",
+      "index": 7,
+      "field": "g",
+      "expected_hex": "02"
+    },
+    {
+      "id": "group_2048_8_g",
+      "category": "happy_path",
+      "index": 8,
+      "field": "g",
+      "expected_hex": "02"
+    },
+    {
+      "id": "group_2048_9_g",
+      "category": "happy_path",
+      "index": 9,
+      "field": "g",
+      "expected_hex": "02"
+    },
+    {
+      "id": "group_2048_10_g",
+      "category": "happy_path",
+      "index": 10,
+      "field": "g",
+      "expected_hex": "02"
+    },
+    {
+      "id": "group_2048_11_g",
+      "category": "happy_path",
+      "index": 11,
+      "field": "g",
+      "expected_hex": "02"
+    },
+    {
+      "id": "group_2048_12_g",
+      "category": "happy_path",
+      "index": 12,
+      "field": "g",
+      "expected_hex": "03"
+    },
+    {
+      "id": "group_2048_13_g",
+      "category": "happy_path",
+      "index": 13,
+      "field": "g",
+      "expected_hex": "02"
+    },
+    {
+      "id": "group_2048_14_g",
+      "category": "happy_path",
+      "index": 14,
+      "field": "g",
+      "expected_hex": "02"
+    },
+    {
+      "id": "group_2048_15_g",
+      "category": "happy_path",
+      "index": 15,
+      "field": "g",
+      "expected_hex": "02"
+    },
+    {
+      "id": "group_2048_16_g",
+      "category": "happy_path",
+      "index": 16,
+      "field": "g",
+      "expected_hex": "02"
+    },
+    {
+      "id": "group_2048_17_g",
+      "category": "happy_path",
+      "index": 17,
+      "field": "g",
+      "expected_hex": "03"
+    },
+    {
+      "id": "group_2048_18_g",
+      "category": "happy_path",
+      "index": 18,
+      "field": "g",
+      "expected_hex": "02"
+    },
+    {
+      "id": "group_2048_19_g",
+      "category": "happy_path",
+      "index": 19,
+      "field": "g",
+      "expected_hex": "02"
+    }
+  ]
+}
