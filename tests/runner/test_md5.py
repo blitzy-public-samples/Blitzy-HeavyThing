@@ -42,10 +42,16 @@ def _args(vector):
     mode so the harness emits the generated mask; ``chained_update`` vectors
     append the ``split_at`` byte offset; every other category passes the
     single positional ``input_hex``.
+
+    A vector that feeds its input via stdin sets ``"input_source": "stdin"``
+    (with the hex payload in ``"stdin"``, threaded to the child by
+    ``run_kat``) rather than placing the non-hex ``"-"`` CLI sentinel inside
+    the hex-only ``input_hex`` field. For such a vector the literal ``"-"``
+    argv token tells ``kat_md5`` to read the input hex from standard input.
     """
     if vector["category"] == "mgf1":
         return ["mgf1", vector["input_hex"], str(vector["mask_len"])]
-    args = [vector["input_hex"]]
+    args = ["-"] if vector.get("input_source") == "stdin" else [vector["input_hex"]]
     if "split_at" in vector:
         args.append(str(vector["split_at"]))
     return args

@@ -39,12 +39,15 @@
 #     make test       # build (if needed) then run the pytest suite
 #     make clean      # remove build/ in full (sources/vectors untouched)
 #
-# Prerequisites on $PATH (see README.md / AAP section 0.6.1 for install notes):
-#     fasm   1.71+ (1.73.x preferred)  -- Flat Assembler for the shim
+# Prerequisites on $PATH (see README.md "Toolchain version pins" for the
+# CVE-driven minimums and install notes):
+#     fasm   1.73.x+                   -- Flat Assembler for the shim
+#                                         (>=1.71.22 fixes CVE-2017-20228; 1.73.x preferred)
 #     gcc    4.7+  (C11)               -- compiles the C11 KAT drivers
 #     ar, ld (binutils 2.30+)          -- archive + link
 #     make   3.81+                     -- this orchestrator
-#     python3 3.10+ with pytest 8.4+   -- the test runner
+#     python3 3.10+ with pytest 9.0.3+ -- the test runner
+#                                         (9.0.3 fixes CVE-2025-71176)
 # NOTE: `fasm` may not be packaged on every distro; if `make build` reports
 # `fasm: command not found`, install it (apt `fasm`) or drop the official
 # flatassembler.net x86_64 tarball's `fasm` binary on $PATH first.

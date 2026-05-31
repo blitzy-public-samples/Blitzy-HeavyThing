@@ -27,16 +27,15 @@
  *
  * Hash is hardcoded to SHA-256 (the runner passes no hash selector).
  *
- * ACCEPTED DEVIATION (HMAC-DRBG) -- see the "Accepted Deviations Registry" in
- *   tests/README.md. HeavyThing's hmac_drbg$new omits the final V = HMAC(K, V)
- *   update after the second K update, so its generate output DEVIATES from the
- *   published NIST SP 800-90A CAVP ReturnedBits. Per AAP 0.10.2 (honor user
- *   intent for primitives that exist; document deviations explicitly rather
- *   than fabricate standards results), the committed happy/edge vectors carry
- *   the HeavyThing-ACTUAL deterministic outputs of THIS implementation, and
- *   tests/vectors/hmac_drbg.json records the matching `source` attribution.
- *   Output is fully deterministic for fixed inputs (no /dev/urandom is touched
- *   unless the 2^19 reseed interval is hit).
+ * TIER-2 regression test (NOT a NIST SP 800-90A standards-body KAT) -- see the
+ *   "Tier-2 Regression Vectors" section in tests/README.md. HeavyThing's
+ *   hmac_drbg$new omits the final V = HMAC(K, V) update after the second K
+ *   update, so its generate output DEVIATES from the published NIST SP 800-90A
+ *   CAVP ReturnedBits. Rather than fabricate standards results, the committed
+ *   happy/edge vectors carry the HeavyThing-ACTUAL deterministic outputs of
+ *   THIS implementation, and tests/vectors/hmac_drbg.json records the matching
+ *   `source` attribution. Output is fully deterministic for fixed inputs (no
+ *   /dev/urandom is touched unless the 2^19 reseed interval is hit).
  */
 #include "ht_kat_common.h"
 
@@ -70,7 +69,14 @@ int main(int argc, char **argv)
 	int nlen = ht_kat_hex_arg(argv[2], nonce,   sizeof nonce);
 	int plen = ht_kat_hex_arg(argv[3], perso,   sizeof perso);
 	int alen = ht_kat_hex_arg(argv[4], add,     sizeof add);   /* may be 0 */
-	int reqbytes = ht_kat_atoi(argv[5]);
+	/* requested_bytes: STRICT decimal in [0, sizeof out]. 0 is the
+	 * generate-after-destroy negative sentinel (handled below). A value above
+	 * the output buffer is a validation error (rejected, NOT silently clamped),
+	 * and trailing garbage / signs are rejected too. */
+	unsigned long rb;
+	if (ht_kat_parse_uint(argv[5], 0, sizeof out, &rb) != 0)
+		ht_kat_exit(2);
+	int reqbytes = (int)rb;
 
 	if (elen < 0 || nlen < 0 || plen < 0 || alen < 0)
 		ht_kat_exit(3);
@@ -104,9 +110,9 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (reqbytes > (int)sizeof out)
-		reqbytes = (int)sizeof out;
-
+	/* No clamp here: ht_kat_parse_uint already bounded reqbytes to
+	 * [0, sizeof out], and reqbytes == 0 was consumed by the destroy sentinel
+	 * above, so reqbytes is now a valid [1, sizeof out] generate length. */
 	if (alen > 0) {
 		hmac_drbg$generate_additional(drbg, out, reqbytes, add, alen);
 		hmac_drbg$generate_additional(drbg, out, reqbytes, add, alen);

@@ -52,12 +52,16 @@ int main(int argc, char **argv) {
         ht_kat_exit(0);
     }
 
-    int i = ht_kat_atoi(argv[1]);
-    if (i < 0 || i >= DH_POOL_COUNT) {
+    /* index: STRICT decimal in [0, DH_POOL_COUNT-1]. The "count" selector was
+     * already handled above; here a malformed (trailing garbage / sign) or
+     * out-of-range index is rejected with a non-zero exit, never coerced. */
+    unsigned long iv;
+    if (ht_kat_parse_uint(argv[1], 0, DH_POOL_COUNT - 1, &iv) != 0) {
         static const char e[] = "index out of range\n";
         (void)ht$syscall(1, 2, (void *)e, (long)(sizeof e - 1));
         ht_kat_exit(2);
     }
+    int i = (int)iv;
 
     /* The documented field selector is exactly [p|g]; reject anything else
      * rather than silently treating an unknown field as 'p'. */

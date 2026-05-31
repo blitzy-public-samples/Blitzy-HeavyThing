@@ -1,5 +1,5 @@
-"""KAT runner for scrypt (``scrypt.inc``: ``scrypt`` / ``scrypt_iter``) vs
-RFC 7914 §12 parameter sets.
+"""Tier-2 regression runner for scrypt (``scrypt.inc``: ``scrypt`` /
+``scrypt_iter``) over RFC 7914 §12 input parameter sets.
 
 Each vector in ``tests/vectors/scrypt.json`` is fanned out into one
 parametrized case that subprocess-invokes
@@ -13,17 +13,17 @@ is gated behind BOTH ``requires_slow`` (run only when ``HT_KAT_SLOW=1``) and
 ``requires_ram_gb(1.0)`` (skip when < 1 GiB is available), keeping the default
 suite fast (AAP §0.7.2, §0.9.1).
 
-ACCEPTED DEVIATION (scrypt / RFC 7914): HeavyThing's ``scrypt`` takes only
+TIER-2 (NOT an RFC 7914 standards-body KAT): HeavyThing's ``scrypt`` takes only
 ``(dest, destlen, password, passwordlen, salt, saltlen)`` -- it bakes the cost
 parameters and PRF at compile time (``scrypt_N = 1024``, ``scrypt_r = 1``,
 ``scrypt_p = 1``, and HMAC-SHA512 rather than RFC 7914's HMAC-SHA256) and
-ignores any runtime N/r/p. Reproducing RFC 7914's published vectors would
-require variable N/r/p and the SHA-256 PRF, impossible without editing
-``ht_defaults.inc`` / ``scrypt.inc`` -- both forbidden by the AAP scope. Per
-AAP 0.10.2 (the same policy that defers primitives absent from the repository,
-e.g. Poly1305) this is a formally accepted deferral: the committed
-``expected_hex`` values are HeavyThing-ACTUAL deterministic self-consistency
-outputs, NOT RFC 7914 ReturnedBits. The "Accepted Deviations Registry" in
+ignores any runtime N/r/p, so it produces different bytes than RFC 7914.
+Reproducing RFC 7914's published vectors would require variable N/r/p and the
+SHA-256 PRF, impossible without editing ``ht_defaults.inc`` / ``scrypt.inc``
+(read-only REFERENCE per Rule R2). This primitive is therefore scoped as a
+deterministic HeavyThing regression anchor rather than a Tier-1 standards KAT:
+the committed ``expected_hex`` values are HeavyThing-ACTUAL self-consistency
+outputs, NOT RFC 7914 ReturnedBits. The "Tier-2 Regression Vectors" section in
 ``tests/README.md`` carries the rationale and ``tests/vectors/scrypt.json``
 records the matching ``source`` attribution. Pure stdlib + pytest, no mocks
 (scrypt is a pure function of its inputs).

@@ -60,9 +60,12 @@ int main(int argc, char **argv) {
             ht_kat_exit(2);
         }
         int  sl = ht_kat_hex_arg(argv[3], in, sizeof in);   /* seed bytes */
-        long ml = ht_kat_atoi(argv[4]);                     /* requested mask len */
-        if (sl < 0 || ml <= 0 || ml > (long)sizeof mask) ht_kat_exit(2);
-        f_mgf1(in, sl, mask, ml);
+        unsigned long ml;                                   /* requested mask len */
+        /* mask_len must be a strict decimal in [1, sizeof mask]; reject
+         * malformed / out-of-range rather than silently coercing. */
+        if (sl < 0 || ht_kat_parse_uint(argv[4], 1, sizeof mask, &ml) != 0)
+            ht_kat_exit(2);
+        f_mgf1(in, sl, mask, (long)ml);
         ht_kat_hex_print(mask, (size_t)ml);
         ht_kat_exit(0);
     }
@@ -70,7 +73,14 @@ int main(int argc, char **argv) {
     /* Digest mode (happy / edge / chained-update). */
     int n = ht_kat_hex_arg(argv[2], in, sizeof in);
     if (n < 0) ht_kat_exit(2);
-    long split = (argc >= 4) ? ht_kat_atoi(argv[3]) : -1;
+    /* Optional split offset: absent => -1 (single update). When present it must
+     * be a strict decimal in [0, n]; malformed / out-of-range exits non-zero. */
+    long split = -1;
+    if (argc >= 4) {
+        unsigned long sv;
+        if (ht_kat_parse_uint(argv[3], 0, (unsigned long)n, &sv) != 0) ht_kat_exit(2);
+        split = (long)sv;
+    }
 
     void *c = f_new();
     if (split >= 0 && split <= n) {

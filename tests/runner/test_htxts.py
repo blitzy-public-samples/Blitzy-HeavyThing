@@ -10,16 +10,15 @@ cascade, not raw AES, so there is no externally published byte-for-byte KAT
 correctness is therefore asserted by ``decrypt(encrypt(sector)) == sector``
 and cross-process determinism.
 
-ACCEPTED DEVIATION (htxts / XTS-AES): the AAP cites NIST SP 800-38E / IEEE Std
-1619-2018, but those publications standardize the XTS *mode* over a raw-AES
-block cipher, whereas HeavyThing instantiates XTS over its custom htcrypt
-AES-256 cascade. No published byte-for-byte vector applies to this cipher, so
--- exactly as for ``htcrypt`` itself, which the review accepted as a custom
-primitive validated by round-trip identity -- htxts is validated by round-trip
-identity plus cross-process determinism. Per AAP 0.10.2 this is a formally
-accepted deviation; the "Accepted Deviations Registry" in ``tests/README.md``
-carries the rationale and ``tests/vectors/htxts.json`` records the matching
-``source`` attribution.
+TIER-2 (NOT a NIST SP 800-38E / IEEE 1619 standards-body KAT): those
+publications standardize the XTS *mode* over a raw-AES block cipher, whereas
+HeavyThing instantiates XTS over its custom htcrypt AES-256 cascade. No
+published byte-for-byte vector applies to this cipher, so -- exactly as for
+``htcrypt`` itself, a custom primitive validated by round-trip identity --
+htxts is validated by round-trip identity plus cross-process determinism rather
+than as a Tier-1 standards KAT. The "Tier-2 Regression Vectors" section in
+``tests/README.md`` carries the rationale and ``tests/vectors/htxts.json``
+records the matching ``source`` attribution.
 
 Each vector in ``tests/vectors/htxts.json`` is fanned out into one
 parametrized case that subprocess-invokes the harness as

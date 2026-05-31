@@ -72,8 +72,11 @@ int main(int argc, char **argv) {
         int is_xor = streq(argv[3], "phash_xor");
         if (argc < (is_xor ? 7 : 6)) ht_kat_exit(2);
         int slen = ht_kat_hex_arg(argv[4], datab, sizeof datab);   /* seed (may be "-") */
-        long olen = ht_kat_atoi(argv[5]);                          /* requested output length */
-        if (slen < 0 || olen <= 0 || olen > (long)sizeof prfout) ht_kat_exit(2);
+        unsigned long olen;                                        /* requested output length */
+        /* out_len must be a strict decimal in [1, sizeof prfout]; reject
+         * malformed / out-of-range rather than silently coercing. */
+        if (slen < 0 || ht_kat_parse_uint(argv[5], 1, sizeof prfout, &olen) != 0)
+            ht_kat_exit(2);
 
         void *po = f_new();
         hmac$key(po, keyb, klen);

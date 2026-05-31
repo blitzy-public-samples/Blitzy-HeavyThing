@@ -39,10 +39,16 @@ int main(int argc, char **argv) {
 	const char *pw = argv[2];
 	int pwlen = (int)strlen(pw);
 	int slen  = ht_kat_hex_arg(argv[3], saltb, sizeof saltb);
-	int iter  = (int)ht_kat_atoi(argv[4]);
-	int dklen = (int)ht_kat_atoi(argv[5]);
-	if (slen < 0 || iter <= 0 || dklen <= 0) ht_kat_exit(2);
-	if (dklen > (int)sizeof out) dklen = (int)sizeof out;
+	/* iterations: STRICT decimal in [1, INT_MAX]; dk_len: STRICT decimal in
+	 * [1, sizeof out]. Malformed input (trailing garbage / sign), zero, or an
+	 * out-of-range / oversized dk_len is a validation error (rejected, NOT
+	 * silently clamped to the buffer size). */
+	unsigned long iterv, dkv;
+	if (slen < 0) ht_kat_exit(2);
+	if (ht_kat_parse_uint(argv[4], 1, 0x7fffffffUL, &iterv) != 0) ht_kat_exit(2);
+	if (ht_kat_parse_uint(argv[5], 1, sizeof out, &dkv) != 0) ht_kat_exit(2);
+	int iter  = (int)iterv;
+	int dklen = (int)dkv;
 
 	void *(*f_new)(const void*, int);
 	void  (*f_init)(void*, const void*, int);

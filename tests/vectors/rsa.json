@@ -1,6 +1,6 @@
 {
   "primitive": "rsa",
-  "source": "RFC 8017 (PKCS#1 v2.2) RSADP private-key primitive (\u00a75.1.2) exercised via HeavyThing's CRT routine bigint$rsaprivate. Textbook key n=3233 (p=61,q=53,e=17) plus freshly generated 1024-bit and 2048-bit PKCS#1 keys (public exponent 65537). expected_hex is the recovered plaintext m = c^d mod n, captured from the HeavyThing reference build and cross-checked against Python pow(c,d,n). Negative case tampers the expected plaintext so the recovered value no longer matches.",
+  "source": "Tier-2 RSA decryption-primitive (RSADP) round-trip / identity vectors -- NOT published RFC 8017 test vectors. RFC 8017 (PKCS#1 v2.2) \u00a75.1.2 specifies the RSADP algorithm exercised here via HeavyThing's CRT routine bigint$rsaprivate, but the key material is a textbook key n=3233 (p=61, q=53, e=17) plus freshly generated 1024-bit and 2048-bit PKCS#1 keys (public exponent 65537), not a standards-body example. expected_hex is the recovered plaintext m = c^d mod n, captured from the HeavyThing reference build and independently cross-checked against Python pow(c, d, n). The negative case tampers the expected plaintext so the recovered value no longer matches. See the Tier-2 Regression Vectors section of tests/README.md.",
   "vectors": [
     {
       "id": "textbook_n3233",

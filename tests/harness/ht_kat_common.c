@@ -84,24 +84,36 @@ void ht_kat_init(void) { ht$init_args(0, 0); }
 __attribute__((optimize("no-tree-loop-distribute-patterns")))
 size_t strlen(const char *s) { const char *p = s; while (*p) p++; return (size_t)(p - s); }
 
-/* ht_kat_atoi -- freestanding base-10 parser used by drivers to read numeric
- * KAT parameters from the command line (PBKDF2 iteration counts / derived-key
- * lengths, scrypt N/r/p, HMAC-DRBG requested byte counts, DH pool indices,
- * ...). An optional leading '+'/'-' sign is honoured and ASCII digits are
- * consumed until the first non-digit. The accumulator is a long (64-bit on
- * x86_64) so large counts -- RFC 6070's 16,777,216 iterations or RFC 7914's
- * N = 1,048,576 -- are represented without truncation. A NULL pointer, an
- * empty string, or a string with no leading digits yields 0. */
-long ht_kat_atoi(const char *s) {
-    long value = 0;
-    int neg = 0;
-    if (!s) return 0;
-    if (*s == '+' || *s == '-') { neg = (*s == '-'); s++; }
-    while (*s >= '0' && *s <= '9') {
-        value = value * 10 + (long)(*s - '0');
-        s++;
+/* ht_kat_parse_uint -- STRICT freestanding base-10 unsigned parser with range
+ * checking, used by drivers to read numeric KAT parameters from the command
+ * line (PBKDF2 iteration counts / derived-key lengths, scrypt N/r/p / dk_len,
+ * HMAC-DRBG requested byte counts, HMAC PRF output lengths, hash split-offsets /
+ * MGF1 mask lengths, DH pool indices, ...).
+ *
+ * A KAT harness validates machine-readable fixture metadata, so parsing is
+ * DELIBERATELY STRICT and has NO leading-prefix tolerance: the entire string
+ * must be ASCII decimal digits and the value must fall within [minv, maxv].
+ * Returns 0 and writes *out on success; returns -1 (leaving *out untouched) on a
+ * NULL/empty string, any non-digit character (which also rejects a leading
+ * '+'/'-' sign and any trailing garbage such as "1junk"), arithmetic overflow of
+ * an unsigned long, or an out-of-range value. The accumulator is an unsigned
+ * long so large in-range counts -- RFC 6070's 16,777,216 iterations or RFC
+ * 7914's N = 1,048,576 -- parse without truncation; leading zeros and the
+ * canonical 0 (when minv == 0) are accepted. The (~0UL) overflow guard keeps the
+ * function libc-free and safe under -nostdlib. */
+int ht_kat_parse_uint(const char *s, unsigned long minv, unsigned long maxv,
+                      unsigned long *out) {
+    if (!s || *s == '\0') return -1;           /* NULL or empty string */
+    unsigned long value = 0;
+    for (const char *p = s; *p; p++) {
+        if (*p < '0' || *p > '9') return -1;   /* non-digit: sign / trailing garbage */
+        unsigned long digit = (unsigned long)(*p - '0');
+        if (value > ((~0UL) - digit) / 10UL) return -1;   /* would overflow */
+        value = value * 10UL + digit;
     }
-    return neg ? -value : value;
+    if (value < minv || value > maxv) return -1;          /* out of range */
+    *out = value;
+    return 0;
 }
 
 /* hexval -- numeric value of a single hex digit (0..15), or -1 if the

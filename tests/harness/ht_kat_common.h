@@ -103,17 +103,34 @@ void ht_kat_exit(int status);
  * (implemented in tests/harness/ht_kat_common.c)
  * ------------------------------------------------------------------------ */
 
-/* ht_kat_atoi -- parse a base-10 integer from a NUL-terminated string.
+/* ht_kat_parse_uint -- STRICT base-10 unsigned parser with range checking.
  *
- * Freestanding replacement for the libc atoi/strtol family, used by drivers to
- * read numeric KAT parameters supplied on the command line (PBKDF2 iteration
- * counts, derived-key lengths, scrypt N/r/p, requested byte counts, pool
- * indices, ...). An optional leading '+'/'-' sign is honoured and ASCII digits
- * are consumed until the first non-digit. The result is returned as a long
- * (64-bit on x86_64) so large counts -- such as RFC 6070's 16,777,216 PBKDF2
- * iterations or RFC 7914's N = 1,048,576 -- are represented without
- * truncation. */
-long ht_kat_atoi(const char *s);
+ * Freestanding replacement for the libc strtoul family, used by drivers to read
+ * numeric KAT parameters supplied on the command line (PBKDF2 iteration counts
+ * and derived-key lengths, scrypt N/r/p and dk_len, HMAC-DRBG requested byte
+ * counts, HMAC PRF output lengths, hash split-offsets / MGF1 mask lengths, DH
+ * pool indices, ...). Unlike a lenient atoi, this parser is DELIBERATELY STRICT:
+ * a KAT harness validates machine-readable fixture metadata, so any malformed or
+ * out-of-range parameter must be rejected outright rather than silently coerced.
+ *
+ * On success the parsed value is written to *out and 0 is returned. On ANY of
+ * the following the function returns -1 and leaves *out unmodified, so the
+ * caller can report a clean non-zero usage/validation exit:
+ *   - s is NULL or the empty string;
+ *   - s contains any character that is not an ASCII decimal digit '0'..'9'
+ *     (this rejects a leading '+'/'-' sign AND any trailing garbage such as the
+ *     "1junk" / "20junk" forms, i.e. there is no leading-prefix tolerance);
+ *   - the accumulated value would overflow an unsigned long (64-bit on x86_64);
+ *   - the parsed value is < minv or > maxv (inclusive range).
+ *
+ * The accumulator is an unsigned long, so large in-range counts -- RFC 6070's
+ * 16,777,216 PBKDF2 iterations or RFC 7914's N = 1,048,576 -- parse without
+ * truncation. Leading zeros are accepted (unambiguous decimal); the canonical
+ * value 0 is accepted when minv == 0 (e.g. HMAC-DRBG's requested_bytes == 0
+ * generate-after-destroy sentinel). Implemented with the (~0UL) overflow guard
+ * and no libc dependency, so it is safe under -nostdlib. */
+int ht_kat_parse_uint(const char *s, unsigned long minv, unsigned long maxv,
+                      unsigned long *out);
 
 /* ht_kat_hex_decode -- decode a NUL-terminated lowercase/uppercase hex string
  * into the byte buffer out[].

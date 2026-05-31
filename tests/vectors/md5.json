@@ -11,7 +11,7 @@
     {
       "id": "stdin_abc",
       "category": "edge_case_stdin",
-      "input_hex": "-",
+      "input_source": "stdin",
       "stdin": "616263\n",
       "expected_hex": "900150983cd24fb0d6963f7d28e17f72"
     },
