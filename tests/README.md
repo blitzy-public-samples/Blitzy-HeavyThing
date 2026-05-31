@@ -139,8 +139,16 @@ one-time setup below is required only before the first build.
 ```
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
      fasm gcc make binutils python3 python3-pip
-pip3 install --user 'pytest==8.4.0'
+pip3 install --user 'pytest>=8.4'
 ```
+
+The `pytest>=8.4` pin is a **floor, not a ceiling** — any newer pytest works
+unchanged (the suite is routinely exercised under pytest 9.x). On PEP-668
+"externally-managed" Python installs (recent Debian/Ubuntu, including this
+environment), `pip3 install --user` is refused with an
+`externally-managed-environment` error; in that case install pytest into a virtual
+environment (`python3 -m venv .venv && . .venv/bin/activate && pip install 'pytest>=8.4'`)
+or add `--break-system-packages` to the `pip3` command.
 
 ### Fallback: install FASM from the official tarball
 
@@ -158,10 +166,10 @@ sudo ln -sf /opt/fasm/fasm /usr/local/bin/fasm
 
 ```
 fasm | head -1        # expect "flat assembler  version 1.73.x"
-gcc --version         # expect 13.x or 14.x
+gcc --version         # expect 13.x or newer (any C11-capable GCC, 4.7+)
 make --version        # expect 4.3+
 python3 --version     # expect 3.10+
-pytest --version      # expect 8.4.0
+pytest --version      # expect 8.4.0 or newer
 ```
 
 ### Toolchain version pins
@@ -220,8 +228,8 @@ complete failure set rather than short-circuiting on the first failure.
 # All cases for a single primitive
 cd tests && pytest -v runner/test_sha2.py
 
-# A single parameterized case by node id
-cd tests && pytest -v "runner/test_sha2.py::test_kat[sha256-abc]"
+# A single parameterized case by node id (format: <variant>-<category>-<vector id>)
+cd tests && pytest -v "runner/test_sha2.py::test_kat[sha256-happy_path-fips_abc]"
 
 # Keyword filters (pytest -k)
 cd tests && pytest -v -k "sha256 and edge_case"
@@ -239,15 +247,18 @@ cd tests && pytest -vv --tb=long runner/test_sha2.py
 cd tests && pytest -x --pdb runner/test_hmac.py
 ```
 
-You can also run a harness binary directly, without pytest, by passing it a vector
-argument. For example:
+You can also run a harness binary directly, without pytest, by passing it the same
+arguments pytest would. The SHA-2 family is driven by a single `kat_sha2` binary
+whose first argument selects the variant (`sha224` / `sha256` / `sha384` / `sha512`)
+and whose second argument is the **hex-encoded** message. For example:
 
 ```
-tests/build/bin/kat_sha256 abc
+tests/build/bin/kat_sha2 sha256 616263   # SHA-256 of "abc" (616263 = hex of "abc")
 ```
 
-prints the SHA-256 hex digest of the ASCII string `abc` to standard output and exits
-`0` — exactly the way pytest invokes it internally.
+prints `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad` to standard
+output and exits `0` — the variant selector and hex-encoded input are exactly how
+`runner/test_sha2.py` invokes it internally.
 
 ### Optional: long-running cases (`HT_KAT_SLOW`)
 
@@ -294,7 +305,7 @@ indentation and committed with a trailing newline for diff readability.
 | htcrypt | `htcrypt.inc` | self-consistency (round-trip identity) |
 | htxts (XTS-AES) | `htxts.inc` | NIST SP 800-38E / IEEE Std 1619-2018 — see note [5] |
 | bigint arithmetic | `bigint.inc` | Knuth TAoCP §4.3 identities |
-| RSA (`bigint$rsaprivate`) | `bigint.inc` | RFC 8017 PKCS#1 v1.5 §C |
+| RSA (`bigint$rsaprivate`) | `bigint.inc` | RFC 8017 (PKCS#1 v2.2) §5.1.2 RSADP |
 | DSA (`bigint$dsa_params` / `bigint$verify_dsa_params`) | `bigint.inc` | FIPS 186-4 Appendix A.1.1.2 |
 | DH parameter pool | `dh_pool*.inc` | RFC 3526 §3 / RFC 7919 — see note [3] |
 
@@ -408,7 +419,7 @@ underlying primitives are implemented in the HeavyThing library.
 
   This is expected behavior, not a bug — run `make build` first, then re-run pytest.
 - **`pytest: command not found`** — install it with
-  `pip3 install --user 'pytest==8.4.0'` and ensure `~/.local/bin` is on your `$PATH`.
+  `pip3 install --user 'pytest>=8.4'` and ensure `~/.local/bin` is on your `$PATH`.
 - **A KAT case fails** — the report (with `--tb=short`) shows the expected hex from
   the vector, the actual stdout from the harness, the harness exit code, and its
   stderr (which should be empty on success). Re-derive the expected value from the
